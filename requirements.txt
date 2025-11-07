@@ -1,0 +1,14 @@
+# Core dependencies
+openai>=1.0.0
+pandas>=2.0.0
+pathlib2>=2.3.7; python_version < '3.4'
+
+# API server dependencies
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Note: pdflatex is installed via system package manager in Docker
+

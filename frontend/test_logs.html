@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日志流测试</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        .log {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 2px solid #4ade80;
+            padding-left: 10px;
+        }
+        .error {
+            border-left-color: #f87171;
+            color: #f87171;
+        }
+        .success {
+            border-left-color: #4ade80;
+            color: #4ade80;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 10px 5px;
+            background: #4f46e5;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        input {
+            padding: 8px;
+            width: 300px;
+            margin: 5px;
+        }
+        #logs {
+            max-height: 500px;
+            overflow-y: auto;
+            background: #2d2d2d;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>日志流测试工具</h1>
+    
+    <div>
+        <input type="text" id="apiKey" placeholder="输入 OpenAI API Key (可选，用于创建测试任务)" style="width: 400px;">
+    </div>
+    <div style="margin-top: 10px;">
+        <input type="text" id="taskId" placeholder="输入 Task ID 或点击下方按钮获取">
+        <button onclick="createTestTask()">🚀 创建测试任务</button>
+        <button onclick="testLogStream()">测试日志流</button>
+        <button onclick="testLogQueue()">测试日志队列</button>
+        <button onclick="loadTasks()">📋 获取所有任务</button>
+        <button onclick="clearLogs()">清空日志</button>
+    </div>
+    
+    <div id="taskList" style="margin-top: 20px;"></div>
+    
+    <div id="logs"></div>
+    
+    <script>
+        const API_BASE_URL = 'http://localhost:8000';
+        let currentReader = null;
+        
+        function addLog(message, type = 'info') {
+            const logsDiv = document.getElementById('logs');
+            const logDiv = document.createElement('div');
+            logDiv.className = `log ${type}`;
+            logDiv.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logsDiv.appendChild(logDiv);
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+        }
+        
+        function clearLogs() {
+            document.getElementById('logs').innerHTML = '';
+        }
+        
+        async function createTestTask() {
+            const apiKey = document.getElementById('apiKey').value.trim();
+            if (!apiKey) {
+                addLog('⚠️ 请先输入 OpenAI API Key', 'error');
+                const useDefault = confirm('是否使用默认测试任务（不调用 API）？\n点击"确定"使用模拟任务，点击"取消"输入 API Key');
+                if (!useDefault) {
+                    document.getElementById('apiKey').focus();
+                    return;
+                }
+                // 使用模拟 task ID
+                const mockTaskId = 'test-' + Date.now();
+                document.getElementById('taskId').value = mockTaskId;
+                addLog(`✅ 使用模拟 Task ID: ${mockTaskId}`, 'success');
+                addLog('💡 提示：这是模拟 ID，实际测试需要真实的 API Key 和任务', 'info');
+                return;
+            }
+            
+            addLog('🚀 正在创建测试任务...', 'info');
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/course/generate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-OpenAI-API-Key': apiKey
+                    },
+                    body: JSON.stringify({
+                        course_name: '日志流测试课程',
+                        model_name: 'gpt-4o-mini',
+                        exp_name: 'test_logs_' + Date.now()
+                    })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${error}`);
+                }
+                
+                const data = await response.json();
+                const taskId = data.task_id;
+                
+                document.getElementById('taskId').value = taskId;
+                addLog(`✅ 任务创建成功！`, 'success');
+                addLog(`📋 Task ID: ${taskId}`, 'success');
+                addLog('💡 提示：现在可以点击"测试日志流"查看实时日志', 'info');
+                
+                // 自动开始测试日志流
+                setTimeout(() => {
+                    testLogStream();
+                }, 1000);
+                
+            } catch (error) {
+                addLog(`❌ 创建任务失败: ${error.message}`, 'error');
+                addLog('💡 提示：请检查 API Key 是否正确，服务是否正常运行', 'info');
+            }
+        }
+        
+        async function loadTasks() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/tasks/list`);
+                const data = await response.json();
+                
+                const taskListDiv = document.getElementById('taskList');
+                if (data.tasks.length === 0) {
+                    taskListDiv.innerHTML = '<p style="color: #888;">暂无任务</p>';
+                    return;
+                }
+                
+                let html = '<h3>可用任务：</h3><table style="width: 100%; border-collapse: collapse;">';
+                html += '<tr style="background: #333;"><th style="padding: 8px; text-align: left;">Task ID</th><th style="padding: 8px;">状态</th><th style="padding: 8px;">课程</th><th style="padding: 8px;">操作</th></tr>';
+                
+                data.tasks.forEach(task => {
+                    const statusColor = {
+                        'pending': '#f59e0b',
+                        'running': '#3b82f6',
+                        'completed': '#10b981',
+                        'failed': '#ef4444'
+                    }[task.status] || '#888';
+                    
+                    html += `<tr style="border-bottom: 1px solid #444;">
+                        <td style="padding: 8px; font-family: monospace; font-size: 0.9em;">${task.task_id.substring(0, 20)}...</td>
+                        <td style="padding: 8px;"><span style="color: ${statusColor};">${task.status}</span></td>
+                        <td style="padding: 8px;">${task.course_name || 'N/A'}</td>
+                        <td style="padding: 8px;">
+                            <button onclick="document.getElementById('taskId').value='${task.task_id}'" style="padding: 5px 10px; font-size: 0.8em;">使用</button>
+                        </td>
+                    </tr>`;
+                });
+                
+                html += '</table>';
+                taskListDiv.innerHTML = html;
+                
+            } catch (error) {
+                addLog(`获取任务列表失败: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testLogQueue() {
+            const taskId = document.getElementById('taskId').value;
+            if (!taskId) {
+                addLog('请输入 Task ID', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/course/logs/${taskId}/test`);
+                const data = await response.json();
+                addLog(`测试消息已添加到队列，队列大小: ${data.queue_size}`, 'success');
+            } catch (error) {
+                addLog(`错误: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testLogStream() {
+            const taskId = document.getElementById('taskId').value;
+            if (!taskId) {
+                addLog('请输入 Task ID', 'error');
+                return;
+            }
+            
+            // Stop previous stream
+            if (currentReader) {
+                currentReader.cancel();
+            }
+            
+            addLog(`开始连接日志流: ${taskId}`, 'info');
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/course/logs/${taskId}/stream`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                addLog(`连接成功，状态码: ${response.status}`, 'success');
+                
+                if (!response.body) {
+                    addLog('错误: 响应体为空', 'error');
+                    return;
+                }
+                
+                const reader = response.body.getReader();
+                currentReader = reader;
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let messageCount = 0;
+                
+                function read() {
+                    reader.read().then(({ done, value }) => {
+                        if (done) {
+                            addLog('日志流已结束', 'info');
+                            return;
+                        }
+                        
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop() || '';
+                        
+                        for (const line of lines) {
+                            if (line.trim() === '') continue;
+                            
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.slice(6));
+                                    messageCount++;
+                                    
+                                    if (data.type === 'connected') {
+                                        addLog('✅ 已连接到日志流', 'success');
+                                    } else if (data.type === 'log') {
+                                        addLog(`📝 ${data.message}`, 'info');
+                                    } else if (data.type === 'complete') {
+                                        addLog('✅ 任务完成', 'success');
+                                    } else if (data.type === 'error') {
+                                        addLog(`❌ 错误: ${data.message}`, 'error');
+                                    } else {
+                                        addLog(`其他消息: ${JSON.stringify(data)}`, 'info');
+                                    }
+                                } catch (e) {
+                                    addLog(`解析错误: ${line.substring(0, 100)}`, 'error');
+                                }
+                            } else {
+                                addLog(`原始数据: ${line.substring(0, 100)}`, 'info');
+                            }
+                        }
+                        
+                        read();
+                    }).catch(error => {
+                        addLog(`读取错误: ${error.message}`, 'error');
+                    });
+                }
+                
+                read();
+                
+            } catch (error) {
+                addLog(`连接失败: ${error.message}`, 'error');
+            }
+        }
+    </script>
+</body>
+</html>
+

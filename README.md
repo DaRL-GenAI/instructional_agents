@@ -23,7 +23,34 @@ An AI-powered instructional design system based on the ADDIE model for automated
 
 ---
 
-## 🔧 Quick Start
+## 🚀 快速开始（Docker 方式 - 推荐）
+
+### 使用 Docker 一键启动（包含 Web 界面）
+
+```bash
+# 1. 创建环境变量文件
+cp .env.example .env
+# 编辑 .env 文件，添加你的 OPENAI_API_KEY
+
+# 2. 启动服务
+./start.sh
+
+# 或者手动启动
+docker-compose up -d
+
+# 3. 访问服务
+# API 文档: http://localhost:8000/docs
+# Web 界面: 打开 frontend/index.html（需要配置 API 地址）
+```
+
+详细说明请查看：
+- [Docker 部署指南](README_DOCKER.md)
+- [API 文档](API_DOCUMENTATION.md)
+- [生成文件说明](FILES_GENERATED.md)
+
+---
+
+## 🔧 本地开发方式
 
 ### 1. Setup Configuration
 
@@ -37,14 +64,46 @@ Create or edit `config.json`:
 ### 2. Install Dependencies
 
 ```bash
-pip install openai pandas pathlib pdflatex
+pip install -r requirements.txt
 ```
+
+---
+
+## 🌐 Web 界面使用
+
+项目现在包含一个现代化的 Web 界面，位于 `frontend/` 目录：
+
+1. **启动 API 服务**（Docker 或本地）
+2. **打开前端界面**：在浏览器中打开 `frontend/index.html`
+3. **配置 API 地址**：如果 API 不在 `localhost:8000`，需要修改 `frontend/app.js` 中的 `API_BASE_URL`
+
+前端功能：
+- 📝 可视化课程配置表单
+- 📊 实时进度监控
+- 📁 结果文件浏览和下载
+- 📤 Catalog 文件上传和管理
 
 ---
 
 ## 🚀 Usage Examples
 
-### 🔹 Basic Workflow Execution
+### 🔹 Web API 方式（推荐）
+
+**API 服务器**: `api_server.py` – RESTful API 服务
+
+```bash
+# 启动 API 服务器
+python api_server.py
+# 或使用 Docker
+docker-compose up -d
+
+# 使用前端界面或直接调用 API
+curl -X POST http://localhost:8000/api/course/generate \
+  -H "Content-Type: application/json" \
+  -d '{"course_name": "Introduction to Machine Learning"}'
+```
+
+### 🔹 命令行方式
 
 **Entry Point**: `run.py` – Main workflow entry point
 

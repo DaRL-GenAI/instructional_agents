@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instructional Agents - 课程生成系统</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎓 Instructional Agents</h1>
+            <p class="subtitle">AI驱动的课程材料自动生成系统</p>
+        </header>
+
+        <main>
+            <!-- API Key Configuration -->
+            <section id="api-key-section" class="card">
+                <h2>API 配置</h2>
+                <div class="form-group">
+                    <label for="api-key">OpenAI API Key *</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="password" id="api-key" name="api_key" required 
+                               placeholder="sk-..." style="flex: 1;">
+                        <button type="button" id="toggle-api-key" class="btn btn-secondary" style="width: auto; padding: 12px 20px;">
+                            👁️ 显示
+                        </button>
+                    </div>
+                    <small>您的 API Key 仅保存在浏览器本地，不会上传到服务器</small>
+                </div>
+                <button type="button" id="save-api-key" class="btn btn-primary">
+                    💾 保存 API Key
+                </button>
+            </section>
+
+            <!-- Configuration Form -->
+            <section id="config-section" class="card">
+                <h2>课程配置</h2>
+                <form id="course-form">
+                    <div class="form-group">
+                        <label for="course-name">课程名称 *</label>
+                        <input type="text" id="course-name" name="course_name" required 
+                               placeholder="例如：机器学习导论">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="model-name">模型选择</label>
+                        <select id="model-name" name="model_name">
+                            <option value="gpt-4o-mini" selected>GPT-4o Mini (推荐)</option>
+                            <option value="gpt-4o">GPT-4o</option>
+                            <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="exp-name">实验名称</label>
+                        <input type="text" id="exp-name" name="exp_name" 
+                               placeholder="默认：default" value="default">
+                    </div>
+
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="copilot-mode" name="copilot">
+                            <span>启用 Copilot 模式（交互式反馈）</span>
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="catalog-mode">Catalog 模式</label>
+                        <select id="catalog-mode" name="catalog_mode">
+                            <option value="none">不使用</option>
+                            <option value="default">使用默认 Catalog</option>
+                            <option value="upload">上传 Catalog 文件</option>
+                            <option value="select">选择已有 Catalog</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="catalog-upload-group" style="display: none;">
+                        <label for="catalog-file">上传 Catalog JSON 文件</label>
+                        <input type="file" id="catalog-file" accept=".json">
+                        <small>或直接在下方输入 JSON 数据</small>
+                    </div>
+
+                    <div class="form-group" id="catalog-select-group" style="display: none;">
+                        <label for="catalog-select">选择 Catalog</label>
+                        <select id="catalog-select">
+                            <option value="">加载中...</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="catalog-json-group" style="display: none;">
+                        <label for="catalog-json">Catalog JSON 数据</label>
+                        <textarea id="catalog-json" rows="10" 
+                                  placeholder='{"student_profile": {...}, "instructor_preferences": {...}}'></textarea>
+                    </div>
+
+                    <button type="submit" id="submit-btn" class="btn btn-primary">
+                        🚀 开始生成课程
+                    </button>
+                </form>
+            </section>
+
+            <!-- Progress Section -->
+            <section id="progress-section" class="card" style="display: none;">
+                <h2>生成进度</h2>
+                <div id="progress-info">
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" id="progress-bar"></div>
+                    </div>
+                    <p id="progress-text">初始化中...</p>
+                    <p id="current-stage" class="stage-text"></p>
+                </div>
+                <div id="error-message" class="error-message" style="display: none;"></div>
+                
+                <!-- Real-time Logs -->
+                <div id="logs-section" style="margin-top: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h3 style="margin: 0;">实时日志</h3>
+                        <button type="button" id="clear-logs-btn" class="btn btn-secondary" style="width: auto; padding: 6px 12px; font-size: 0.875rem;">
+                            🗑️ 清空日志
+                        </button>
+                    </div>
+                    <div id="logs-container" class="logs-container">
+                        <p class="logs-placeholder">等待日志输出...</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section id="results-section" class="card" style="display: none;">
+                <h2>生成结果</h2>
+                <div id="results-content">
+                    <p>加载文件列表...</p>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Powered by Instructional Agents API</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
+
