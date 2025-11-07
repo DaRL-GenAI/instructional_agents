@@ -7,12 +7,15 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="container">
-        <header>
+    <!-- Hero 区域 -->
+    <div class="hero">
+        <div class="hero-content">
             <h1>🎓 Instructional Agents</h1>
-            <p class="subtitle">AI驱动的课程材料自动生成系统</p>
-        </header>
+            <p class="subtitle">AI驱动的课程材料自动生成系统<br>让教学准备变得简单高效</p>
+        </div>
+    </div>
 
+    <div class="container">
         <main>
             <!-- API Key Configuration -->
             <section id="api-key-section" class="card">
@@ -22,14 +25,15 @@
                     <div style="display: flex; gap: 10px;">
                         <input type="password" id="api-key" name="api_key" required 
                                placeholder="sk-..." style="flex: 1;">
-                        <button type="button" id="toggle-api-key" class="btn btn-secondary" style="width: auto; padding: 12px 20px;">
+                        <button type="button" id="toggle-api-key" class="btn btn-secondary" style="width: auto; padding: 12px 20px; min-width: 100px;">
                             👁️ 显示
                         </button>
                     </div>
                     <small>您的 API Key 仅保存在浏览器本地，不会上传到服务器</small>
                 </div>
                 <button type="button" id="save-api-key" class="btn btn-primary">
-                    💾 保存 API Key
+                    <span>💾</span>
+                    <span>保存 API Key</span>
                 </button>
             </section>
 
@@ -95,7 +99,8 @@
                     </div>
 
                     <button type="submit" id="submit-btn" class="btn btn-primary">
-                        🚀 开始生成课程
+                        <span>🚀</span>
+                        <span>开始生成课程</span>
                     </button>
                 </form>
             </section>
@@ -116,7 +121,7 @@
                 <div id="logs-section" style="margin-top: 20px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                         <h3 style="margin: 0;">实时日志</h3>
-                        <button type="button" id="clear-logs-btn" class="btn btn-secondary" style="width: auto; padding: 6px 12px; font-size: 0.875rem;">
+                        <button type="button" id="clear-logs-btn" class="btn btn-secondary" style="width: auto; padding: 8px 16px; font-size: 0.875rem; min-width: 100px;">
                             🗑️ 清空日志
                         </button>
                     </div>
@@ -136,7 +141,7 @@
         </main>
 
         <footer>
-            <p>Powered by Instructional Agents API</p>
+            <p style="opacity: 0.7;">Powered by <strong>Instructional Agents</strong> • AI-Powered Course Generation</p>
         </footer>
     </div>
 
