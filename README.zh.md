@@ -1,8 +1,29 @@
 # INSTRUCTIONAL AGENTS: LLM Agents on Automated Course Material Generation for Teaching Faculties
 
+
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=wingsweihua.instructional_agents&style=flat)
+[![Website](https://img.shields.io/website?url=https%3A%2F%2Fhyan-yao.github.io%2Finstructional_agents_homepage%2F&up_message=Instructional%20Agents&style=flat)](https://hyan-yao.github.io/instructional_agents_homepage/)
+![GitHub Repo stars](https://img.shields.io/github/stars/Hyan-Yao/instructional_agents?style=flat&color=red)
+
+
+
+An AI-powered instructional design system based on the ADDIE model for automated course creation and evaluation.
+
+```
+@misc{yao2025instructionalagentsllmagents,
+  title={Instructional Agents: LLM Agents on Automated Course Material Generation for Teaching Faculties},
+  author={Yao, Huaiyuan and Xu, Wanpeng and Turnau, Justin and Kellam, Nadia and Wei, Hua},
+  year={2025},
+  eprint={2508.19611},
+  archivePrefix={arXiv},
+  primaryClass={cs.AI},
+  url={https://arxiv.org/abs/2508.19611},
+}
+```
+
 <div align="right" style="margin-bottom: 20px; margin-top: 10px;">
-  <button onclick="switchLanguage('en')" id="lang-en" style="padding: 8px 16px; margin: 0 4px; border: 2px solid #14b8a6; background: #14b8a6; color: white; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🇺🇸 English</button>
-  <button onclick="switchLanguage('zh')" id="lang-zh" style="padding: 8px 16px; margin: 0 4px; border: 2px solid #e2e8f0; background: white; color: #64748b; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🇨🇳 中文</button>
+  <button onclick="switchLanguage('en')" id="lang-en" style="padding: 8px 16px; margin: 0 4px; border: 2px solid #e2e8f0; background: white; color: #64748b; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🇺🇸 English</button>
+  <button onclick="switchLanguage('zh')" id="lang-zh" style="padding: 8px 16px; margin: 0 4px; border: 2px solid #14b8a6; background: #14b8a6; color: white; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🇨🇳 中文</button>
 </div>
 
 <script>
@@ -63,10 +84,10 @@ function updateDocumentLinks(lang) {
 
 // Apply saved language preference on page load
 document.addEventListener('DOMContentLoaded', function() {
-    const savedLang = localStorage.getItem('preferredLanguage') || 'en';
-    if (savedLang === 'zh' && !window.location.pathname.includes('.zh.md')) {
-        // Auto-redirect to Chinese version if preferred
-        // window.location.href = window.location.pathname.replace('.md', '.zh.md');
+    const savedLang = localStorage.getItem('preferredLanguage') || 'zh';
+    if (savedLang === 'en' && window.location.pathname.includes('.zh.md')) {
+        // Auto-redirect to English version if preferred
+        // window.location.href = window.location.pathname.replace('.zh.md', '.md');
     } else {
         switchLanguage(savedLang);
     }
@@ -80,54 +101,36 @@ button:hover {
 }
 </style>
 
-![visitors](https://visitor-badge.laobi.icu/badge?page_id=wingsweihua.instructional_agents&style=flat)
-[![Website](https://img.shields.io/website?url=https%3A%2F%2Fhyan-yao.github.io%2Finstructional_agents_homepage%2F&up_message=Instructional%20Agents&style=flat)](https://hyan-yao.github.io/instructional_agents_homepage/)
-![GitHub Repo stars](https://img.shields.io/github/stars/Hyan-Yao/instructional_agents?style=flat&color=red)
-
-An AI-powered instructional design system based on the ADDIE model for automated course creation and evaluation.
-
-```
-@misc{yao2025instructionalagentsllmagents,
-  title={Instructional Agents: LLM Agents on Automated Course Material Generation for Teaching Faculties},
-  author={Yao, Huaiyuan and Xu, Wanpeng and Turnau, Justin and Kellam, Nadia and Wei, Hua},
-  year={2025},
-  eprint={2508.19611},
-  archivePrefix={arXiv},
-  primaryClass={cs.AI},
-  url={https://arxiv.org/abs/2508.19611},
-}
-```
-
 ---
 
-## 🚀 Quick Start (Docker - Recommended)
+## 🚀 快速开始（Docker 方式 - 推荐）
 
-### Using Docker One-Click Launch (with Web Interface)
+### 使用 Docker 一键启动（包含 Web 界面）
 
 ```bash
-# 1. Create environment variables file
+# 1. 创建环境变量文件
 cp .env.example .env
-# Edit .env file and add your OPENAI_API_KEY
+# 编辑 .env 文件，添加你的 OPENAI_API_KEY
 
-# 2. Start the service
+# 2. 启动服务
 ./start.sh
 
-# Or start manually
+# 或者手动启动
 docker-compose up -d
 
-# 3. Access the service
-# API Documentation: http://localhost:8000/docs
-# Web Interface: Open frontend/index.html (need to configure API address)
+# 3. 访问服务
+# API 文档: http://localhost:8000/docs
+# Web 界面: 打开 frontend/index.html（需要配置 API 地址）
 ```
 
-For detailed instructions, see:
-- [Docker Deployment Guide](README_DOCKER.md)
-- [API Documentation](API_DOCUMENTATION.md)
-- [Generated Files Guide](FILES_GENERATED.md)
+详细说明请查看：
+- [Docker 部署指南](README_DOCKER.zh.md)
+- [API 文档](API_DOCUMENTATION.zh.md)
+- [生成文件说明](FILES_GENERATED.zh.md)
 
 ---
 
-## 🔧 Local Development
+## 🔧 本地开发方式
 
 ### 1. Setup Configuration
 
@@ -136,7 +139,7 @@ Create or edit `config.json`:
 {
   "OPENAI_API_KEY": "your_openai_api_key_here"
 }
-```
+````
 
 ### 2. Install Dependencies
 
@@ -146,41 +149,41 @@ pip install -r requirements.txt
 
 ---
 
-## 🌐 Web Interface Usage
+## 🌐 Web 界面使用
 
-The project now includes a modern web interface located in the `frontend/` directory:
+项目现在包含一个现代化的 Web 界面，位于 `frontend/` 目录：
 
-1. **Start API Service** (Docker or local)
-2. **Open Frontend Interface**: Open `frontend/index.html` in your browser
-3. **Configure API Address**: If the API is not at `localhost:8000`, modify `API_BASE_URL` in `frontend/app.js`
+1. **启动 API 服务**（Docker 或本地）
+2. **打开前端界面**：在浏览器中打开 `frontend/index.html`
+3. **配置 API 地址**：如果 API 不在 `localhost:8000`，需要修改 `frontend/app.js` 中的 `API_BASE_URL`
 
-Frontend Features:
-- 📝 Visual course configuration form
-- 📊 Real-time progress monitoring
-- 📁 Result file browsing and download
-- 📤 Catalog file upload and management
+前端功能：
+- 📝 可视化课程配置表单
+- 📊 实时进度监控
+- 📁 结果文件浏览和下载
+- 📤 Catalog 文件上传和管理
 
 ---
 
 ## 🚀 Usage Examples
 
-### 🔹 Web API Method (Recommended)
+### 🔹 Web API 方式（推荐）
 
-**API Server**: `api_server.py` – RESTful API service
+**API 服务器**: `api_server.py` – RESTful API 服务
 
 ```bash
-# Start API server
+# 启动 API 服务器
 python api_server.py
-# Or use Docker
+# 或使用 Docker
 docker-compose up -d
 
-# Use frontend interface or call API directly
+# 使用前端界面或直接调用 API
 curl -X POST http://localhost:8000/api/course/generate \
   -H "Content-Type: application/json" \
   -d '{"course_name": "Introduction to Machine Learning"}'
 ```
 
-### 🔹 Command Line Method
+### 🔹 命令行方式
 
 **Entry Point**: `run.py` – Main workflow entry point
 
@@ -313,4 +316,3 @@ ls eval/your_experiment_name/validation_reports/
 ## 📜 License
 
 MIT License
-

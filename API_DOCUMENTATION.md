@@ -1,67 +1,96 @@
-# Instructional Agents API 文档
+<div align="right" style="margin-bottom: 20px; margin-top: 10px;">
+  <button onclick="switchLanguage('en')" id="lang-en" style="padding: 8px 16px; margin: 0 4px; border: 2px solid #14b8a6; background: #14b8a6; color: white; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🇺🇸 English</button>
+  <button onclick="switchLanguage('zh')" id="lang-zh" style="padding: 8px 16px; margin: 0 4px; border: 2px solid #e2e8f0; background: white; color: #64748b; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🇨🇳 中文</button>
+</div>
 
-## 概述
+<script>
+function switchLanguage(lang) {
+    localStorage.setItem('preferredLanguage', lang);
+    if (lang === 'en') {
+        window.location.href = window.location.pathname.replace('.zh.md', '.md');
+    } else {
+        window.location.href = window.location.pathname.replace('.md', '.zh.md');
+    }
+}
+document.addEventListener('DOMContentLoaded', function() {
+    const savedLang = localStorage.getItem('preferredLanguage') || 'en';
+    if (savedLang === 'zh' && !window.location.pathname.includes('.zh.md')) {
+        window.location.href = window.location.pathname.replace('.md', '.zh.md');
+    }
+});
+</script>
 
-Instructional Agents API 提供了基于 ADDIE 模型的自动化课程材料生成服务。系统通过 Docker 容器化部署，提供 RESTful API 接口和 Web 前端界面。
+<style>
+button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+</style>
 
-## 快速开始
+# Instructional Agents API Documentation
 
-### 1. 环境准备
+## Overview
 
-确保已安装：
-- Docker 和 Docker Compose
-- 或 Python 3.11+（本地开发）
+Instructional Agents API provides automated course material generation services based on the ADDIE model. The system is deployed via Docker containers and provides RESTful API interfaces and a web frontend.
 
-### 2. 配置环境变量
+## Quick Start
 
-创建 `.env` 文件（参考 `.env.example`）：
+### 1. Environment Setup
+
+Ensure you have installed:
+- Docker and Docker Compose
+- Or Python 3.11+ (for local development)
+
+### 2. Configure Environment Variables
+
+Create `.env` file (refer to `.env.example`):
 
 ```bash
 OPENAI_API_KEY=your_openai_api_key_here
 API_PORT=8000
 ```
 
-### 3. 使用 Docker 启动（推荐）
+### 3. Start with Docker (Recommended)
 
 ```bash
-# 构建并启动服务
+# Build and start service
 docker-compose up -d
 
-# 查看日志
+# View logs
 docker-compose logs -f
 
-# 停止服务
+# Stop service
 docker-compose down
 ```
 
-### 4. 本地开发模式
+### 4. Local Development Mode
 
 ```bash
-# 安装依赖
+# Install dependencies
 pip install -r requirements.txt
 
-# 启动 API 服务器
+# Start API server
 python api_server.py
 
-# 或使用 uvicorn
+# Or use uvicorn
 uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 5. 访问前端
+### 5. Access Frontend
 
-打开浏览器访问：`http://localhost:8000`（如果配置了前端服务）
+Open browser and visit: `http://localhost:8000` (if frontend service is configured)
 
-或直接打开 `frontend/index.html` 文件（需要配置 CORS）
+Or directly open `frontend/index.html` file (need to configure CORS)
 
-## API 端点
+## API Endpoints
 
-### 健康检查
+### Health Check
 
 ```http
 GET /health
 ```
 
-**响应：**
+**Response:**
 ```json
 {
   "status": "healthy",
@@ -70,14 +99,14 @@ GET /health
 }
 ```
 
-### 生成课程
+### Generate Course
 
 ```http
 POST /api/course/generate
 Content-Type: application/json
 
 {
-  "course_name": "机器学习导论",
+  "course_name": "Introduction to Machine Learning",
   "model_name": "gpt-4o-mini",
   "exp_name": "ml_intro_v1",
   "copilot": false,
@@ -86,7 +115,7 @@ Content-Type: application/json
 }
 ```
 
-**响应：**
+**Response:**
 ```json
 {
   "task_id": "uuid-string",
@@ -95,13 +124,13 @@ Content-Type: application/json
 }
 ```
 
-### 查询任务状态
+### Query Task Status
 
 ```http
 GET /api/course/status/{task_id}
 ```
 
-**响应：**
+**Response:**
 ```json
 {
   "task_id": "uuid-string",
@@ -115,19 +144,19 @@ GET /api/course/status/{task_id}
 }
 ```
 
-**状态值：**
-- `pending`: 等待中
-- `running`: 运行中
-- `completed`: 已完成
-- `failed`: 失败
+**Status Values:**
+- `pending`: Waiting
+- `running`: Running
+- `completed`: Completed
+- `failed`: Failed
 
-### 获取结果文件列表
+### Get Result File List
 
 ```http
 GET /api/course/results/{task_id}/files
 ```
 
-**响应：**
+**Response:**
 ```json
 {
   "task_id": "uuid-string",
@@ -143,15 +172,15 @@ GET /api/course/results/{task_id}/files
 }
 ```
 
-### 下载文件
+### Download File
 
 ```http
 GET /api/course/results/{task_id}/download/{file_path}
 ```
 
-直接下载生成的文件。
+Directly download generated files.
 
-### 上传 Catalog
+### Upload Catalog
 
 ```http
 POST /api/catalog/upload
@@ -160,7 +189,7 @@ Content-Type: multipart/form-data
 file: <catalog.json>
 ```
 
-**响应：**
+**Response:**
 ```json
 {
   "success": true,
@@ -169,13 +198,13 @@ file: <catalog.json>
 }
 ```
 
-### 列出 Catalog
+### List Catalogs
 
 ```http
 GET /api/catalog/list
 ```
 
-**响应：**
+**Response:**
 ```json
 {
   "catalogs": [
@@ -189,29 +218,29 @@ GET /api/catalog/list
 }
 ```
 
-## 请求参数说明
+## Request Parameters
 
 ### CourseRequest
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| course_name | string | 是 | 课程名称 |
-| model_name | string | 否 | OpenAI 模型（默认：gpt-4o-mini） |
-| exp_name | string | 否 | 实验名称（默认：default） |
-| copilot | boolean | 否 | 是否启用 Copilot 模式 |
-| catalog | string | 否 | Catalog 文件名（不含 .json） |
-| catalog_data | object | 否 | Catalog 数据（JSON 对象） |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| course_name | string | Yes | Course name |
+| model_name | string | No | OpenAI model (default: gpt-4o-mini) |
+| exp_name | string | No | Experiment name (default: default) |
+| copilot | boolean | No | Enable Copilot mode |
+| catalog | string | No | Catalog filename (without .json) |
+| catalog_data | object | No | Catalog data (JSON object) |
 
-## 工作流程
+## Workflow
 
-1. **提交任务**：调用 `/api/course/generate` 创建生成任务
-2. **轮询状态**：定期调用 `/api/course/status/{task_id}` 检查进度
-3. **获取结果**：任务完成后调用 `/api/course/results/{task_id}/files` 获取文件列表
-4. **下载文件**：使用 `/api/course/results/{task_id}/download/{file_path}` 下载文件
+1. **Submit Task**: Call `/api/course/generate` to create generation task
+2. **Poll Status**: Regularly call `/api/course/status/{task_id}` to check progress
+3. **Get Results**: After task completion, call `/api/course/results/{task_id}/files` to get file list
+4. **Download Files**: Use `/api/course/results/{task_id}/download/{file_path}` to download files
 
-## Catalog 格式
+## Catalog Format
 
-Catalog JSON 文件应包含以下结构：
+Catalog JSON file should contain the following structure:
 
 ```json
 {
@@ -251,9 +280,9 @@ Catalog JSON 文件应包含以下结构：
 }
 ```
 
-## 输出结构
+## Output Structure
 
-生成的文件保存在 `exp/{exp_name}/` 目录下：
+Generated files are saved in `exp/{exp_name}/` directory:
 
 ```
 exp/{exp_name}/
@@ -274,16 +303,16 @@ exp/{exp_name}/
     └── ...
 ```
 
-## 错误处理
+## Error Handling
 
-API 使用标准 HTTP 状态码：
+API uses standard HTTP status codes:
 
-- `200`: 成功
-- `400`: 请求错误（如无效的 JSON）
-- `404`: 资源未找到（如任务不存在）
-- `500`: 服务器错误
+- `200`: Success
+- `400`: Bad Request (e.g., invalid JSON)
+- `404`: Not Found (e.g., task does not exist)
+- `500`: Server Error
 
-错误响应格式：
+Error response format:
 
 ```json
 {
@@ -291,62 +320,62 @@ API 使用标准 HTTP 状态码：
 }
 ```
 
-## 性能考虑
+## Performance Considerations
 
-- 课程生成可能需要 **10-60 分钟**，取决于章节数量和模型选择
-- 建议使用 **WebSocket** 或 **Server-Sent Events** 进行实时进度更新（当前版本使用轮询）
-- 大文件下载建议使用流式传输
+- Course generation may take **10-60 minutes**, depending on number of chapters and model selection
+- Recommend using **WebSocket** or **Server-Sent Events** for real-time progress updates (current version uses polling)
+- Large file downloads should use streaming
 
-## 安全建议
+## Security Recommendations
 
-1. **生产环境**：
-   - 限制 CORS 来源
-   - 使用 HTTPS
-   - 添加身份验证
-   - 限制 API 密钥访问
+1. **Production Environment**:
+   - Restrict CORS origins
+   - Use HTTPS
+   - Add authentication
+   - Limit API key access
 
-2. **API 密钥管理**：
-   - 使用环境变量，不要硬编码
-   - 使用密钥管理服务（如 AWS Secrets Manager）
+2. **API Key Management**:
+   - Use environment variables, don't hardcode
+   - Use key management services (e.g., AWS Secrets Manager)
 
-3. **资源限制**：
-   - 设置 Docker 资源限制
-   - 限制并发任务数
-   - 设置请求超时
+3. **Resource Limits**:
+   - Set Docker resource limits
+   - Limit concurrent tasks
+   - Set request timeout
 
-## 故障排查
+## Troubleshooting
 
-### 常见问题
+### Common Issues
 
-1. **Docker 构建失败**
-   - 检查网络连接（需要下载 LaTeX 包）
-   - 确保有足够的磁盘空间（LaTeX 包较大）
+1. **Docker Build Failed**
+   - Check network connection (need to download LaTeX packages)
+   - Ensure sufficient disk space (LaTeX packages are large)
 
-2. **API 服务无法启动**
-   - 检查 `OPENAI_API_KEY` 是否设置
-   - 检查端口是否被占用
+2. **API Service Cannot Start**
+   - Check if `OPENAI_API_KEY` is set
+   - Check if port is occupied
 
-3. **任务一直处于 pending 状态**
-   - 检查容器日志：`docker-compose logs api`
-   - 检查是否有足够的资源
+3. **Task Stuck in Pending State**
+   - Check container logs: `docker-compose logs api`
+   - Check if there are sufficient resources
 
-4. **LaTeX 编译失败**
-   - 检查生成的 `.tex` 文件语法
-   - 查看编译日志：`exp/{exp_name}/.cache/`
+4. **LaTeX Compilation Failed**
+   - Check generated `.tex` file syntax
+   - View compilation logs: `exp/{exp_name}/.cache/`
 
-## 开发指南
+## Development Guide
 
-### 添加新端点
+### Add New Endpoint
 
-1. 在 `api_server.py` 中添加路由函数
-2. 定义请求/响应模型（使用 Pydantic）
-3. 更新本文档
+1. Add route function in `api_server.py`
+2. Define request/response models (using Pydantic)
+3. Update this documentation
 
-### 修改工作流
+### Modify Workflow
 
-主要逻辑在 `ADDIE.py` 和 `run.py` 中，修改后需要重启 API 服务。
+Main logic is in `ADDIE.py` and `run.py`, need to restart API service after modification.
 
-## 许可证
+## License
 
 MIT License
 
