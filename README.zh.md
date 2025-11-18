@@ -1,11 +1,10 @@
 # INSTRUCTIONAL AGENTS: LLM Agents on Automated Course Material Generation for Teaching Faculties
 
+**Language / 语言**: [English](README.md) | [中文](README.zh.md)
 
 ![visitors](https://visitor-badge.laobi.icu/badge?page_id=wingsweihua.instructional_agents&style=flat)
 [![Website](https://img.shields.io/website?url=https%3A%2F%2Fhyan-yao.github.io%2Finstructional_agents_homepage%2F&up_message=Instructional%20Agents&style=flat)](https://hyan-yao.github.io/instructional_agents_homepage/)
 ![GitHub Repo stars](https://img.shields.io/github/stars/Hyan-Yao/instructional_agents?style=flat&color=red)
-
-
 
 An AI-powered instructional design system based on the ADDIE model for automated course creation and evaluation.
 
@@ -20,86 +19,6 @@ An AI-powered instructional design system based on the ADDIE model for automated
   url={https://arxiv.org/abs/2508.19611},
 }
 ```
-
-<div align="right" style="margin-bottom: 20px; margin-top: 10px;">
-  <button onclick="switchLanguage('en')" id="lang-en" style="padding: 8px 16px; margin: 0 4px; border: 2px solid #e2e8f0; background: white; color: #64748b; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🇺🇸 English</button>
-  <button onclick="switchLanguage('zh')" id="lang-zh" style="padding: 8px 16px; margin: 0 4px; border: 2px solid #14b8a6; background: #14b8a6; color: white; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🇨🇳 中文</button>
-</div>
-
-<script>
-// Language switching functionality
-function switchLanguage(lang) {
-    // Save language preference
-    localStorage.setItem('preferredLanguage', lang);
-    
-    // Update button styles
-    const enBtn = document.getElementById('lang-en');
-    const zhBtn = document.getElementById('lang-zh');
-    
-    if (lang === 'en') {
-        enBtn.style.background = '#14b8a6';
-        enBtn.style.color = 'white';
-        enBtn.style.borderColor = '#14b8a6';
-        zhBtn.style.background = 'white';
-        zhBtn.style.color = '#64748b';
-        zhBtn.style.borderColor = '#e2e8f0';
-        
-        // Redirect to English version
-        if (window.location.pathname.includes('.zh.md')) {
-            window.location.href = window.location.pathname.replace('.zh.md', '.md');
-        }
-    } else {
-        zhBtn.style.background = '#14b8a6';
-        zhBtn.style.color = 'white';
-        zhBtn.style.borderColor = '#14b8a6';
-        enBtn.style.background = 'white';
-        enBtn.style.color = '#64748b';
-        enBtn.style.borderColor = '#e2e8f0';
-        
-        // Redirect to Chinese version
-        if (!window.location.pathname.includes('.zh.md')) {
-            window.location.href = window.location.pathname.replace('.md', '.zh.md');
-        }
-    }
-    
-    // Update all document links
-    updateDocumentLinks(lang);
-}
-
-function updateDocumentLinks(lang) {
-    const linkMap = {
-        'README_DOCKER.md': lang === 'zh' ? 'README_DOCKER.zh.md' : 'README_DOCKER.md',
-        'API_DOCUMENTATION.md': lang === 'zh' ? 'API_DOCUMENTATION.zh.md' : 'API_DOCUMENTATION.md',
-        'FILES_GENERATED.md': lang === 'zh' ? 'FILES_GENERATED.zh.md' : 'FILES_GENERATED.md'
-    };
-    
-    // Update links in the document
-    document.querySelectorAll('a[href]').forEach(link => {
-        const href = link.getAttribute('href');
-        if (linkMap[href]) {
-            link.href = linkMap[href];
-        }
-    });
-}
-
-// Apply saved language preference on page load
-document.addEventListener('DOMContentLoaded', function() {
-    const savedLang = localStorage.getItem('preferredLanguage') || 'zh';
-    if (savedLang === 'en' && window.location.pathname.includes('.zh.md')) {
-        // Auto-redirect to English version if preferred
-        // window.location.href = window.location.pathname.replace('.zh.md', '.md');
-    } else {
-        switchLanguage(savedLang);
-    }
-});
-</script>
-
-<style>
-button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-}
-</style>
 
 ---
 
