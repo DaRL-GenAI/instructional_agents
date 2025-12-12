@@ -136,6 +136,112 @@
                 </div>
             </section>
 
+            <!-- Slide Optimization Section -->
+            <section id="slide-optimization-section" class="card">
+                <h2 data-i18n="slideOptimizationTitle">📚 幻灯片优化</h2>
+                <p class="section-description" data-i18n="slideOptimizationDescription">上传您的PDF幻灯片，系统将分析内容并提供改进建议</p>
+                
+                <form id="slide-optimization-form">
+                    <div class="form-group">
+                        <label for="slide-pdf-files" data-i18n="slidePdfFilesLabel">上传PDF幻灯片文件 *</label>
+                        <input type="file" id="slide-pdf-files" accept=".pdf" multiple>
+                        <small data-i18n="slidePdfFilesTip">可以选择多个PDF文件（支持Ctrl/Cmd+点击多选）</small>
+                        <div id="slide-files-list" style="margin-top: 10px;"></div>
+                    </div>
+
+                    <div id="slide-upload-status" style="display: none; margin: 15px 0;">
+                        <div class="upload-status-message"></div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="optimization-mode" data-i18n="optimizationModeLabel">优化模式</label>
+                        <select id="optimization-mode" name="optimization_mode">
+                            <option value="chapter" selected data-i18n="optimizationModeChapter">优化指定章节</option>
+                            <option value="all" data-i18n="optimizationModeAll">优化全部课程</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="chapter-name-group">
+                        <label for="chapter-name" data-i18n="chapterNameLabel">章节名称</label>
+                        <input type="text" id="chapter-name" name="chapter_name" 
+                               placeholder="例如：Chapter 3 或 第3章" data-i18n-placeholder="chapterNamePlaceholder">
+                        <small data-i18n="chapterNameTip">支持格式：Chapter 1, Chapter1, Ch1, 第1章 等</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="user-requirements" data-i18n="userRequirementsLabel">优化需求描述 *</label>
+                        <textarea id="user-requirements" name="user_requirements" rows="4" required
+                                  placeholder="例如：添加更多实例、改进解释、增加代码示例等" data-i18n-placeholder="userRequirementsPlaceholder"></textarea>
+                    </div>
+
+                    <button type="submit" id="optimize-slides-btn" class="btn btn-primary" data-i18n="optimizeSlidesButton" data-i18n-target="html">
+                        <span>🔍</span>
+                        <span>开始分析优化</span>
+                    </button>
+                </form>
+
+                <!-- Optimization Results -->
+                <div id="optimization-results" style="display: none; margin-top: 30px;">
+                    <h3 data-i18n="optimizationResultsTitle">分析结果</h3>
+                    <div id="optimization-results-content">
+                        <p data-i18n="optimizationResultsLoading">分析中...</p>
+                    </div>
+                    
+                    <!-- Generate Enhanced Slides Button -->
+                    <div id="generate-latex-section" style="display: none; margin-top: 20px; padding: 20px; background: #f0f9ff; border-radius: 5px;">
+                        <h4 data-i18n="generateLatexTitle">生成改进后的幻灯片</h4>
+                        <p data-i18n="generateLatexDescription">基于分析结果和改进建议，生成改进后的LaTeX幻灯片文件</p>
+                        
+                        <!-- User Feedback Input -->
+                        <div id="latex-feedback-section" style="margin: 15px 0; display: none;">
+                            <h5 data-i18n="feedbackTitle">提供反馈（可选）</h5>
+                            <label for="latex-feedback-slides" style="display: block; margin: 10px 0 5px 0; font-weight: bold;">
+                                <span data-i18n="feedbackSlidesLabel">对幻灯片的反馈:</span>
+                            </label>
+                            <textarea 
+                                id="latex-feedback-slides" 
+                                rows="3" 
+                                style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit;"
+                                placeholder="例如：需要更多示例、调整内容顺序等..."
+                            ></textarea>
+                            
+                            <label for="latex-feedback-overall" style="display: block; margin: 10px 0 5px 0; font-weight: bold;">
+                                <span data-i18n="feedbackOverallLabel">总体反馈:</span>
+                            </label>
+                            <textarea 
+                                id="latex-feedback-overall" 
+                                rows="3" 
+                                style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit;"
+                                placeholder="例如：整体风格、内容深度等..."
+                            ></textarea>
+                        </div>
+                        
+                        <button type="button" id="generate-latex-btn" class="btn btn-primary" data-i18n="generateLatexButton" data-i18n-target="html">
+                            <span>📝</span>
+                            <span>生成LaTeX文件</span>
+                        </button>
+                        
+                        <button type="button" id="toggle-feedback-btn" class="btn btn-secondary" style="margin-left: 10px;">
+                            <span>💬</span>
+                            <span data-i18n="toggleFeedbackButton">添加反馈</span>
+                        </button>
+                        
+                        <div id="latex-generation-status" style="margin-top: 15px; display: none;"></div>
+                        <div id="latex-download-links" style="margin-top: 15px; display: none;"></div>
+                        
+                        <!-- Iterative Improvement Section -->
+                        <div id="latex-improve-section" style="display: none; margin-top: 20px; padding: 15px; background: #fff9e6; border-radius: 5px; border: 1px solid #ffd700;">
+                            <h5 data-i18n="improveTitle">迭代改进</h5>
+                            <p data-i18n="improveDescription">基于生成的幻灯片提供反馈，系统将重新生成改进版本</p>
+                            <button type="button" id="improve-latex-btn" class="btn btn-warning">
+                                <span>🔄</span>
+                                <span data-i18n="improveButton">基于反馈重新生成</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- Results Section -->
             <section id="results-section" class="card" style="display: none;">
                 <h2 data-i18n="resultsSectionTitle">生成结果</h2>

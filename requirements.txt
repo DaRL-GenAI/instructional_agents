@@ -10,5 +10,15 @@ python-multipart>=0.0.6
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
+# PDF processing dependencies
+PyPDF2>=3.0.0
+pdfplumber>=0.10.0
+
+# Vector database (optional - for advanced features)
+chromadb>=0.4.0
+
+# Data processing
+numpy>=1.24.0
+
 # Note: pdflatex is installed via system package manager in Docker
 

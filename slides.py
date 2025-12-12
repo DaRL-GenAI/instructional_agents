@@ -1,12 +1,237 @@
 import os
 import json
 import re
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
+from pathlib import Path
 
 from agents import (
     LLM,
     Agent,
 )
+
+
+class SlideUtils:
+    """工具类：提供幻灯片相关的可复用工具函数"""
+    
+    @staticmethod
+    def get_latex_template(catalog: bool = False, template_path: Optional[str] = None) -> str:
+        """获取LaTeX模板"""
+        default_template = r"""
+\documentclass{beamer}
+
+% Theme choice
+\usetheme{Madrid} % You can change to e.g., Warsaw, Berlin, CambridgeUS, etc.
+
+% Encoding and font
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+
+% Graphics and tables
+\usepackage{graphicx}
+\usepackage{booktabs}
+
+% Code listings
+\usepackage{listings}
+\lstset{
+basicstyle=\ttfamily\small,
+keywordstyle=\color{blue},
+commentstyle=\color{gray},
+stringstyle=\color{red},
+breaklines=true,
+frame=single
+}
+
+% Math packages
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% Colors
+\usepackage{xcolor}
+
+% TikZ and PGFPlots
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{positioning}
+
+% Hyperlinks
+\usepackage{hyperref}
+
+% Title information
+\title{Sample Beamer Presentation}
+\author{Your Name}
+\institute{Your Institution}
+\date{\today}
+
+\begin{document}
+
+% Title frame
+\begin{frame}[fragile]
+    \titlepage
+\end{frame}
+
+\end{document}
+"""
+        
+        if catalog and template_path:
+            if os.path.exists(template_path):
+                with open(template_path, "r", encoding="utf-8") as f:
+                    return f.read()
+        elif catalog:
+            template_dir = "catalog/references"
+            latex_template_path = os.path.join(template_dir, "latex_template.tex")
+            if os.path.exists(latex_template_path):
+                with open(latex_template_path, "r", encoding="utf-8") as f:
+                    return f.read()
+        
+        return default_template
+    
+    @staticmethod
+    def parse_latex_template(latex_template: str) -> Tuple[str, str]:
+        """解析LaTeX模板，分离prefix和suffix"""
+        begin_doc = latex_template.find("\\begin{document}")
+        end_doc = latex_template.find("\\end{document}")
+        
+        if begin_doc != -1 and end_doc != -1:
+            prefix = latex_template[:begin_doc + len("\\begin{document}")]
+            suffix = latex_template[end_doc:]
+            return prefix, suffix
+        elif begin_doc != -1:
+            prefix = latex_template[:begin_doc + len("\\begin{document}")]
+            suffix = "\n\n\\end{document}"
+            return prefix, suffix
+        else:
+            # 没有找到标准结构，假设整个模板是prefix
+            prefix = latex_template + "\n\n\\begin{document}\n"
+            suffix = "\n\\end{document}"
+            return prefix, suffix
+    
+    @staticmethod
+    def extract_latex_frames(latex_source: str) -> List[str]:
+        """从LaTeX源代码中提取所有frame"""
+        frame_pattern = re.compile(r'\\begin{frame}.*?\\end{frame}', re.DOTALL)
+        frames = frame_pattern.findall(latex_source)
+        return frames
+    
+    @staticmethod
+    def compile_latex_document(
+        prefix: str,
+        frames: List[str],
+        suffix: str
+    ) -> str:
+        """编译完整的LaTeX文档"""
+        latex_source = prefix + "\n\n" + "\n\n".join(frames) + "\n\n" + suffix
+        
+        # 验证文档结构
+        match = re.search(r"\\documentclass.*?\\begin\{document\}.*?\\end\{document\}", latex_source, re.DOTALL)
+        if match:
+            return match.group()
+        else:
+            return latex_source  # 即使不匹配也返回，让调用者决定
+    
+    @staticmethod
+    def generate_latex_frame_prompt(
+        title: str,
+        content: str,
+        description: Optional[str] = None,
+        current_frames: Optional[str] = None,
+        user_feedback: Optional[Dict] = None,
+        max_frames: int = 3
+    ) -> str:
+        """生成LaTeX frame的提示词"""
+        feedback_text = ""
+        if user_feedback:
+            feedback_text = f"""
+User Feedback:
+[For slides]{json.dumps(user_feedback.get('slides', {}), indent=2)}
+[For overall]{json.dumps(user_feedback.get('overall', {}), indent=2)}
+"""
+        
+        current_frames_text = ""
+        if current_frames:
+            current_frames_text = f"""
+Current LaTeX Frames (for reference):
+```latex
+{current_frames}
+```
+"""
+        
+        description_text = f"\nSlide Description: {description}" if description else ""
+        
+        return f"""
+Based on the following slide content, generate LaTeX code for a presentation slide.
+You can create multiple frames if the content is too extensive for a single frame.
+
+Slide Title: {title}{description_text}
+
+Detailed Content:
+{content[:2000]}
+
+{current_frames_text}{feedback_text}
+
+Please generate the LaTeX code for this slide using the beamer class format.
+You should first summarize the content and extract key points to A BRIEF SUMMARY.
+
+IMPORTANT: You can create multiple frames for this slide if needed (maximum {max_frames} frames). Consider creating separate frames for:
+- Different concepts or topics
+- Lengthy explanations that won't fit on one slide
+- Examples that need their own space
+- Code snippets or formulas that need more room
+
+Each frame should be structured as follows:
+\\begin{{frame}}[fragile]
+    \\frametitle{{Slide Title - Part X}}
+    % Content goes here
+\\end{{frame}}
+
+Guidelines:
+1. Don't use non-English characters directly, e.g. use $\\gamma$ instead of γ, $\\epsilon$ instead of ε
+2. If any symbol has a special meaning, add a backslash. e.g. use \\& instead of &
+3. Use bullet points or numbered lists for clarity
+4. Keep each frame focused and not overcrowded
+5. If you create multiple frames [***NO MORE THAN {max_frames} FRAMES***], ensure logical flow between them
+
+Use LaTeX features like:
+- \\begin{{itemize}} for bullet points
+- \\begin{{enumerate}} for numbered lists
+- \\begin{{block}}{{Title}} for highlighted blocks
+- \\begin{{lstlisting}} for code snippets
+- \\begin{{equation}} for mathematical formulas
+
+Your response should contain all the frames for this slide, each from \\begin{{frame}}[fragile] to \\end{{frame}}.
+Separate multiple frames with blank lines.
+"""
+    
+    @staticmethod
+    def generate_latex_frames_from_content(
+        agent: Agent,
+        title: str,
+        content: str,
+        description: Optional[str] = None,
+        current_frames: Optional[str] = None,
+        user_feedback: Optional[Dict] = None,
+        max_frames: int = 3
+    ) -> List[str]:
+        """使用Agent从内容生成LaTeX frames"""
+        prompt = SlideUtils.generate_latex_frame_prompt(
+            title=title,
+            content=content,
+            description=description,
+            current_frames=current_frames,
+            user_feedback=user_feedback,
+            max_frames=max_frames
+        )
+        
+        agent.reset_history()
+        response, _, _ = agent.generate_response(
+            prompt=prompt,
+            stream=True,
+            save_to_history=False
+        )
+        
+        frames = SlideUtils.extract_latex_frames(response)
+        return frames
+
 
 class SlidesDeliberation:
     """
@@ -143,68 +368,10 @@ class SlidesDeliberation:
             }, f, indent=2)
     
     def _get_templates(self):
-        self.latex_template = r"""
-        \documentclass{beamer}
-
-        % Theme choice
-        \usetheme{Madrid} % You can change to e.g., Warsaw, Berlin, CambridgeUS, etc.
-
-        % Encoding and font
-        \usepackage[utf8]{inputenc}
-        \usepackage[T1]{fontenc}
-
-        % Graphics and tables
-        \usepackage{graphicx}
-        \usepackage{booktabs}
-
-        % Code listings
-        \usepackage{listings}
-        \lstset{
-        basicstyle=\ttfamily\small,
-        keywordstyle=\color{blue},
-        commentstyle=\color{gray},
-        stringstyle=\color{red},
-        breaklines=true,
-        frame=single
-        }
-
-        % Math packages
-        \usepackage{amsmath}
-        \usepackage{amssymb}
-
-        % Colors
-        \usepackage{xcolor}
-
-        % TikZ and PGFPlots
-        \usepackage{tikz}
-        \usepackage{pgfplots}
-        \pgfplotsset{compat=1.18}
-        \usetikzlibrary{positioning}
-
-        % Hyperlinks
-        \usepackage{hyperref}
-
-        % Title information
-        \title{Sample Beamer Presentation}
-        \author{Your Name}
-        \institute{Your Institution}
-        \date{\today}
-
-        \begin{document}
-
-        % Title frame
-        \begin{frame}[fragile]
-            \titlepage
-        \end{frame}
-
-        \end{document}
-        """
-
-        if self.catalog:
-            template_dir = "catalog/references"
-            latex_template_path = os.path.join(template_dir, "latex_template.tex")
-            with open(latex_template_path, "r", encoding="utf-8") as f:
-                self.latex_template = f.read()
+        """获取LaTeX模板"""
+        self.latex_template = SlideUtils.get_latex_template(
+            catalog=self.catalog
+        )
     
     def _generate_slides_outline(self, chapter: Dict[str, str]):
         """Generate slides outline using Instructional Designer agent"""
@@ -682,60 +849,17 @@ class SlidesDeliberation:
         
         # Get the current LaTeX frames if they exist
         current_frames = self.latex_dict.get(slide_idx, {}).get("frames", [])
-        current_frames_text = "\n\n".join([frame["full_frame"] for frame in current_frames])
+        current_frames_text = "\n\n".join([frame["full_frame"] for frame in current_frames]) if current_frames else None
         
-        # Create the prompt for the agent
-        prompt = f"""
-        Based on the following slide content, generate LaTeX code for a presentation slide.
-        You can create multiple frames if the content is too extensive for a single frame.
-        
-        Slide Title: {slide['title']}
-        Slide Description: {slide['description']}
-        
-        Detailed Content:
-        {slide_draft}
-        
-        Current LaTeX Frames (for reference):
-        ```latex
-        {current_frames_text}
-        ```
-
-        User Feedback:
-        [For slides]{json.dumps(self.user_feedback['slides'], indent=2)}
-        [For overall]{json.dumps(self.user_feedback['overall'], indent=2)}
-        
-        Please generate the LaTeX code for this slide using the beamer class format.
-        You should first summarize the content and extract key points to A BRIEF SUMMARY.
-        
-        IMPORTANT: You can create multiple frames for this slide if needed. Consider creating separate frames for:
-        - Different concepts or topics
-        - Lengthy explanations that won't fit on one slide
-        - Examples that need their own space
-        - Code snippets or formulas that need more room
-        
-        Each frame should be structured as follows:
-        \\begin{{frame}}[fragile]
-            \\frametitle{{Slide Title - Part X}}
-            % Content goes here
-        \\end{{frame}}
-        
-        Guidelines:
-        1. Don't use non-English characters directly, e.g. use $\\gamma$ instead of γ, $\\epsilon$ instead of ε
-        2. If any symbol has a special meaning, add a backslash. e.g. use \\& instead of &
-        3. Use bullet points or numbered lists for clarity
-        4. Keep each frame focused and not overcrowded
-        5. If you create multiple frames [***NO MORE THAN 3 FRAMES***], ensure logical flow between them
-        
-        Use LaTeX features like:
-        - \\begin{{itemize}} for bullet points
-        - \\begin{{enumerate}} for numbered lists
-        - \\begin{{block}}{{Title}} for highlighted blocks
-        - \\begin{{lstlisting}} for code snippets
-        - \\begin{{equation}} for mathematical formulas
-        
-        Your response should contain all the frames for this slide, each from \\begin{{frame}}[fragile] to \\end{{frame}}.
-        Separate multiple frames with blank lines.
-        """
+        # 使用工具函数生成prompt
+        prompt = SlideUtils.generate_latex_frame_prompt(
+            title=slide['title'],
+            content=slide_draft,
+            description=slide.get('description'),
+            current_frames=current_frames_text,
+            user_feedback=self.user_feedback,
+            max_frames=3
+        )
         
         # Reset agent history to ensure clean context
         teaching_assistant.reset_history()
@@ -750,9 +874,8 @@ class SlidesDeliberation:
         self.time_slides += elapsed_time
         self.token_slides += token_usage
         
-        # Extract all frame codes from the response
-        frame_pattern = re.compile(r'\\begin{frame}.*?\\end{frame}', re.DOTALL)
-        frame_matches = frame_pattern.findall(response)
+        # 使用工具函数提取frames
+        frame_matches = SlideUtils.extract_latex_frames(response)
         
         if frame_matches:
             # Initialize slide entry if it doesn't exist
@@ -780,7 +903,7 @@ class SlidesDeliberation:
             # Fallback if no frames were found
             fallback_frame = f"""\\begin{{frame}}[fragile]
                 \\frametitle{{{slide['title']}}}
-                {slide['description']}
+                {slide.get('description', '')}
             \\end{{frame}}"""
             
             self.latex_dict[slide_idx] = {
@@ -969,23 +1092,20 @@ class SlidesDeliberation:
     def _compile_latex_source(self) -> str:
         """Compile all LaTeX frames into a complete source document"""
         # Start with the prefix
-        latex_source = self.latex_prefix if hasattr(self, 'latex_prefix') else ""
+        prefix = self.latex_prefix if hasattr(self, 'latex_prefix') else ""
         
-        # Add each frame in order
+        # Collect all frames in order
+        frames = []
         for i in range(len(self.slides_outline)):
             if i in self.latex_dict:
                 for frame in self.latex_dict[i]["frames"]:
-                    latex_source += frame["full_frame"] + "\n\n"
+                    frames.append(frame["full_frame"])
         
         # Add the suffix
-        latex_source += self.latex_suffix if hasattr(self, 'latex_suffix') else "\n\\end{document}"
-
-        match = re.search(r"\\documentclass.*?\\begin\{document\}.*?\\end\{document\}", latex_source, re.DOTALL)
-        if match:
-            latex_source = match.group()
-            return latex_source
-        else:
-            raise ValueError("LaTeX source does not contain a valid document structure")
+        suffix = self.latex_suffix if hasattr(self, 'latex_suffix') else "\n\\end{document}"
+        
+        # 使用工具函数编译
+        return SlideUtils.compile_latex_document(prefix, frames, suffix)
     
     def _compile_slides_script(self) -> str:
         """Compile all slide scripts into a markdown document"""

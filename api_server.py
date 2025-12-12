@@ -8,7 +8,7 @@ import uuid
 import asyncio
 import sys
 import io
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, List
 from pathlib import Path
 from datetime import datetime
 from queue import Queue
@@ -23,6 +23,10 @@ from typing import Optional as Opt
 import uvicorn
 
 from run import run_instructional_design
+from slide_optimizer import SlideOptimizer
+from pdf_processor import PDFSlideProcessor
+import tempfile
+import shutil
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -401,6 +405,301 @@ async def list_catalogs():
         })
     
     return {"catalogs": catalogs}
+
+# ==================== Slide Optimization Endpoints ====================
+
+@app.post("/api/slides/upload-folder")
+async def upload_slide_folder(
+    files: List[UploadFile] = File(...),
+    x_openai_api_key: Opt[str] = Header(None, alias="X-OpenAI-API-Key")
+):
+    """
+    上传PDF文件夹（暂存，不立即处理）
+    返回storage_id用于后续处理
+    """
+    api_key = get_api_key(x_openai_api_key)
+    
+    try:
+        # 创建临时文件夹
+        temp_dir = tempfile.mkdtemp()
+        
+        # 保存所有PDF文件
+        pdf_files = []
+        for file in files:
+            if file.filename and file.filename.endswith('.pdf'):
+                file_path = os.path.join(temp_dir, file.filename)
+                with open(file_path, 'wb') as f:
+                    content = await file.read()
+                    f.write(content)
+                pdf_files.append(Path(file_path))
+        
+        if not pdf_files:
+            shutil.rmtree(temp_dir)
+            raise HTTPException(status_code=400, detail="No PDF files uploaded")
+        
+        # 生成存储ID
+        storage_id = f"storage_{uuid.uuid4().hex[:12]}"
+        
+        # 存储PDF文件
+        processor = PDFSlideProcessor()
+        metadata = processor.store_pdf_files(pdf_files, storage_id)
+        
+        # 清理临时文件
+        shutil.rmtree(temp_dir)
+        
+        return {
+            "success": True,
+            "storage_id": storage_id,
+            "total_files": metadata["total_files"],
+            "message": f"Successfully stored {metadata['total_files']} PDF files. Use storage_id for analysis."
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error storing PDFs: {str(e)}")
+
+
+@app.post("/api/slides/optimize-chapter")
+async def optimize_chapter(
+    request: Dict[str, Any],
+    x_openai_api_key: Opt[str] = Header(None, alias="X-OpenAI-API-Key")
+):
+    """
+    优化指定章节
+    
+    Request body:
+    {
+        "storage_id": "storage_abc123",
+        "chapter_name": "Chapter 3",  // 或 "第3章"
+        "user_requirements": "I want to add more examples and improve explanations",
+        "exp_name": "polish"  // 可选，默认为"default"
+    }
+    """
+    api_key = get_api_key(x_openai_api_key)
+    
+    storage_id = request.get("storage_id")
+    chapter_name = request.get("chapter_name")
+    user_requirements = request.get("user_requirements", "")
+    exp_name = request.get("exp_name", "default")
+    
+    if not storage_id or not chapter_name:
+        raise HTTPException(
+            status_code=400, 
+            detail="storage_id and chapter_name are required"
+        )
+    
+    try:
+        optimizer = SlideOptimizer()
+        result = optimizer.optimize_chapter(
+            storage_id,
+            chapter_name,
+            user_requirements,
+            exp_name=exp_name
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error optimizing chapter: {str(e)}")
+
+
+@app.post("/api/slides/optimize-all")
+async def optimize_all_chapters(
+    request: Dict[str, Any],
+    x_openai_api_key: Opt[str] = Header(None, alias="X-OpenAI-API-Key")
+):
+    """
+    优化全部课程（自动检测所有章节并循环优化）
+    
+    Request body:
+    {
+        "storage_id": "storage_abc123",
+        "user_requirements": "I want to improve all slides with more examples",
+        "exp_name": "polish"  // 可选，默认为"default"
+    }
+    """
+    api_key = get_api_key(x_openai_api_key)
+    
+    storage_id = request.get("storage_id")
+    user_requirements = request.get("user_requirements", "")
+    exp_name = request.get("exp_name", "default")
+    
+    if not storage_id:
+        raise HTTPException(status_code=400, detail="storage_id is required")
+    
+    try:
+        optimizer = SlideOptimizer()
+        result = optimizer.optimize_all_chapters(
+            storage_id,
+            user_requirements,
+            auto_detect_chapters=True,
+            exp_name=exp_name
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error optimizing all chapters: {str(e)}")
+
+
+@app.get("/api/slides/storage/{storage_id}")
+async def get_storage_info(
+    storage_id: str,
+    x_openai_api_key: Opt[str] = Header(None, alias="X-OpenAI-API-Key")
+):
+    """获取存储的PDF文件夹信息"""
+    get_api_key(x_openai_api_key)
+    
+    processor = PDFSlideProcessor()
+    storage_dir = processor.output_dir / "temp_storage" / storage_id
+    
+    if not storage_dir.exists():
+        raise HTTPException(status_code=404, detail="Storage not found")
+    
+    metadata_file = storage_dir / "metadata.json"
+    if not metadata_file.exists():
+        raise HTTPException(status_code=404, detail="Storage metadata not found")
+    
+    with open(metadata_file, 'r', encoding='utf-8') as f:
+        metadata = json.load(f)
+    
+    return metadata
+
+
+@app.get("/api/slides/knowledge-bases")
+async def list_knowledge_bases(
+    x_openai_api_key: Opt[str] = Header(None, alias="X-OpenAI-API-Key")
+):
+    """列出所有已创建的知识库"""
+    get_api_key(x_openai_api_key)
+    
+    kb_dir = Path("knowledge_base")
+    if not kb_dir.exists():
+        return {"knowledge_bases": []}
+    
+    kb_list = []
+    for kb_folder in kb_dir.iterdir():
+        if kb_folder.is_dir():
+            metadata_file = kb_folder / "metadata.json"
+            if metadata_file.exists():
+                try:
+                    with open(metadata_file, 'r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+                    kb_list.append(metadata)
+                except Exception as e:
+                    print(f"Warning: Could not load metadata for {kb_folder.name}: {e}")
+    
+    return {"knowledge_bases": kb_list}
+
+
+@app.post("/api/slides/generate-latex")
+async def generate_enhanced_latex(
+    request: Dict[str, Any],
+    x_openai_api_key: Optional[str] = Header(None, alias="X-OpenAI-API-Key")
+):
+    """
+    基于改进建议生成改进后的LaTeX幻灯片
+    
+    Request body:
+    {
+        "knowledge_base_name": "storage_abc123_chapter_Ch3",
+        "recommendations": {
+            "recommendations": "..."
+        },
+        "exp_name": "my_experiment",  // 可选，默认"default"
+        "chapter_name": "Chapter 3",  // 可选，用于构建目录结构
+        "output_dir": "./enhanced_slides/",  // 可选，如果不提供将基于exp_name自动构建
+        "latex_template": "...", // 可选
+        "user_feedback": {  // 可选
+            "slides": "...",
+            "overall": "..."
+        }
+    }
+    """
+    api_key = get_api_key(x_openai_api_key)
+    
+    knowledge_base_name = request.get("knowledge_base_name")
+    recommendations = request.get("recommendations", {})
+    exp_name = request.get("exp_name", "default")
+    chapter_name = request.get("chapter_name")
+    # 忽略前端可能传递的旧 output_dir，强制基于 exp_name 构建
+    latex_template = request.get("latex_template")
+    user_feedback = request.get("user_feedback")
+    
+    if not knowledge_base_name:
+        raise HTTPException(status_code=400, detail="knowledge_base_name is required")
+    
+    if not recommendations:
+        raise HTTPException(status_code=400, detail="recommendations is required")
+    
+    # 强制基于 exp_name 构建输出目录路径：exp/{exp_name}/enhanced_slides/{chapter_name}/
+    # 尝试从knowledge_base_name中提取chapter信息（支持Lecture和Chapter格式）
+    if not chapter_name:
+        import re
+        # 支持 Lecture_X 格式
+        lecture_match = re.search(r'[Ll]ecture[_\s]*(\d+)', knowledge_base_name)
+        chapter_match = re.search(r'[Cc]hapter[_\s]*(\d+|[A-Za-z]+)', knowledge_base_name)
+        
+        if lecture_match:
+            chapter_name = f"lecture_{lecture_match.group(1)}"
+        elif chapter_match:
+            chapter_name = f"chapter_{chapter_match.group(1)}"
+        else:
+            chapter_name = "enhanced_slides"
+    
+    # 清理chapter_name，移除空格和特殊字符
+    chapter_name = chapter_name.replace(" ", "_").replace("Chapter", "chapter").replace("Lecture", "lecture")
+    
+    # 强制使用 exp_name 构建路径，忽略任何传递的 output_dir
+    output_dir = f"./exp/{exp_name}/enhanced_slides/{chapter_name}/"
+    print(f"DEBUG: Building output directory - exp_name: {exp_name}, chapter_name: {chapter_name}, output_dir: {output_dir}")
+    
+    try:
+        optimizer = SlideOptimizer()
+        result = optimizer.generate_enhanced_latex(
+            knowledge_base_name=knowledge_base_name,
+            recommendations=recommendations,
+            output_dir=output_dir,
+            latex_template=latex_template,
+            user_feedback=user_feedback,
+            exp_name=exp_name
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating LaTeX: {str(e)}")
+
+
+@app.get("/api/slides/download/{exp_name:path}/{chapter_name:path}/{filename:path}")
+async def download_enhanced_slide_file(
+    exp_name: str,
+    chapter_name: str,
+    filename: str,
+    x_openai_api_key: Optional[str] = Header(None, alias="X-OpenAI-API-Key")
+):
+    """
+    下载生成的改进后的幻灯片文件
+    
+    Path parameters:
+    - exp_name: 实验名称
+    - chapter_name: 章节名称（如 chapter_3）
+    - filename: 文件名（如 enhanced_slides.tex）
+    """
+    get_api_key(x_openai_api_key)
+    
+    # 构建文件路径 - 文件存储在 exp/{exp_name}/enhanced_slides/{chapter_name}/ 目录下
+    file_path = Path(f"./exp/{exp_name}/enhanced_slides/{chapter_name}/{filename}")
+    
+    # 如果不存在，尝试其他可能的位置（向后兼容）
+    if not file_path.exists():
+        # 尝试旧的路径结构
+        alt_path = Path(f"./enhanced_slides/{chapter_name}/{filename}")
+        if alt_path.exists():
+            file_path = alt_path
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type='application/octet-stream'
+    )
 
 # Custom stdout wrapper to capture logs
 class LogCapture:
