@@ -501,7 +501,8 @@ python run.py "高级算法" --copilot --exp algo_course_v2
 
 ## ❓ 常见问题
 
-**如何配置 API Key？**
+<details>
+<summary><b>如何配置 API Key？</b></summary>
 
 **检查清单**
 - 从 https://platform.openai.com/api-keys 获取 OpenAI API Key
@@ -511,7 +512,10 @@ python run.py "高级算法" --copilot --exp algo_course_v2
 - **方式 1**：在 `.env` 文件中设置：`OPENAI_API_KEY=your_key_here`
 - **方式 2**：在 Web 界面中配置（仅保存在浏览器本地存储中）
 
-**端口 8000 已被占用？**
+</details>
+
+<details>
+<summary><b>端口 8000 已被占用？</b></summary>
 
 **问题**
 
@@ -528,7 +532,10 @@ kill -9 <PID>
 API_PORT=8001
 ```
 
-**如何使用 Catalog 文件？**
+</details>
+
+<details>
+<summary><b>如何使用 Catalog 文件？</b></summary>
 
 **检查清单**
 - Catalog 文件应为 JSON 格式
@@ -539,7 +546,10 @@ API_PORT=8001
 - **自定义 Catalog**：使用 `--catalog my_catalog` 将使用 `catalog/my_catalog.json`
 - **Web 界面**：直接在 Web 界面中上传 Catalog 文件
 
-**生成的文件保存在哪里？**
+</details>
+
+<details>
+<summary><b>生成的文件保存在哪里？</b></summary>
 
 **答案**
 
@@ -548,7 +558,10 @@ API_PORT=8001
 - 章节材料在 `chapter_1/`、`chapter_2/` 等目录中
 - 文件是增量生成的，文件一出现就可以下载
 
-**Web 界面无法连接到后端？**
+</details>
+
+<details>
+<summary><b>Web 界面无法连接到后端？</b></summary>
 
 **检查清单**
 - 确认后端正在运行（访问 http://localhost:8000/docs 或 http://localhost:8000/health）
@@ -561,7 +574,10 @@ API_PORT=8001
 - **本地**：确保 API 服务器正在运行：`python api_server.py`
 - 检查端口是否匹配（默认：8000）
 
-**支持哪些模型？**
+</details>
+
+<details>
+<summary><b>支持哪些模型？</b></summary>
 
 **答案**
 
@@ -572,10 +588,10 @@ API_PORT=8001
 
 通过 Web 界面中的模型选择或 CLI 中的 `--model` 参数进行配置。
 
+</details>
+
 ---
 
 ## 📜 许可证
-
-MIT License
 
 MIT License

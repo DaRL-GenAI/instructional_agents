@@ -501,7 +501,8 @@ python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 
 ## ❓ FAQ
 
-**How to configure API key?**
+<details>
+<summary><b>How to configure API key?</b></summary>
 
 **Checklist**
 - Get OpenAI API key from https://platform.openai.com/api-keys
@@ -511,7 +512,10 @@ python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 - **Option 1**: Set in `.env` file: `OPENAI_API_KEY=your_key_here`
 - **Option 2**: Configure in web interface (stored in browser local storage only)
 
-**Port 8000 already in use?**
+</details>
+
+<details>
+<summary><b>Port 8000 already in use?</b></summary>
 
 **Problem**
 
@@ -528,7 +532,10 @@ kill -9 <PID>
 API_PORT=8001
 ```
 
-**How to use catalog files?**
+</details>
+
+<details>
+<summary><b>How to use catalog files?</b></summary>
 
 **Checklist**
 - Catalog files should be in JSON format
@@ -539,7 +546,10 @@ API_PORT=8001
 - **Custom catalog**: Use `--catalog my_catalog` to use `catalog/my_catalog.json`
 - **Web interface**: Upload catalog file directly in the web interface
 
-**Where are generated files saved?**
+</details>
+
+<details>
+<summary><b>Where are generated files saved?</b></summary>
 
 **Answer**
 
@@ -548,7 +558,10 @@ Generated files are saved in `exp/{experiment_name}/` directory:
 - Chapter materials in `chapter_1/`, `chapter_2/`, etc.
 - Files are generated incrementally and can be downloaded as soon as they appear
 
-**Web interface cannot connect to backend?**
+</details>
+
+<details>
+<summary><b>Web interface cannot connect to backend?</b></summary>
 
 **Checklist**
 - Confirm backend is running (visit http://localhost:8000/docs or http://localhost:8000/health)
@@ -561,7 +574,10 @@ Generated files are saved in `exp/{experiment_name}/` directory:
 - **Local**: Ensure API server is running: `python api_server.py`
 - Check that the port matches (default: 8000)
 
-**What models are supported?**
+</details>
+
+<details>
+<summary><b>What models are supported?</b></summary>
 
 **Answer**
 
@@ -572,10 +588,10 @@ Currently supports OpenAI models:
 
 Configure via model selection in web interface or `--model` flag in CLI.
 
+</details>
+
 ---
 
 ## 📜 License
-
-MIT License
 
 MIT License
