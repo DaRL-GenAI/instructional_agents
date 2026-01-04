@@ -1,6 +1,6 @@
 # 开发文档
 
-**Language / 语言**: [English](README.md) | [中文](README.zh.md)
+**Language / 语言**: [English](../README.md) | [中文](../README.zh.md)
 
 本目录包含开发和调试相关的文档。
 

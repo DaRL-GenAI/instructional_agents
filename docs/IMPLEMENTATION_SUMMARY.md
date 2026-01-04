@@ -70,8 +70,6 @@
 
 - **API_DOCUMENTATION.md**: API 详细文档
 - **README_DOCKER.md**: Docker 部署指南
-- **QUICK_START.md**: 快速开始指南
-- **README.md**: 更新了主 README
 
 ### 6. 工具脚本 ✅
 
@@ -84,6 +82,8 @@
 ```
 instructional_agents/
 ├── api_server.py              # FastAPI 服务器
+├── run.py                     # 命令行入口脚本
+├── evaluate.py                # 评估脚本
 ├── Dockerfile                 # Docker 镜像定义
 ├── docker-compose.yml         # Docker Compose 配置
 ├── requirements.txt           # Python 依赖
@@ -91,6 +91,17 @@ instructional_agents/
 ├── .env.example               # 环境变量模板
 ├── start.sh                   # 启动脚本
 ├── stop.sh                    # 停止脚本
+│
+├── src/                       # 核心代码模块
+│   ├── ADDIE.py              # ADDIE 工作流
+│   ├── agents.py             # Agent 定义
+│   ├── slides.py             # 幻灯片生成
+│   ├── compile.py            # LaTeX 编译
+│   ├── pdf_processor.py      # PDF 处理
+│   ├── slide_optimizer.py    # 幻灯片优化
+│   ├── slide_analysis_agent.py
+│   ├── slide_enhancer.py
+│   └── slide_knowledge_base.py
 │
 ├── frontend/                  # Web 前端
 │   ├── index.html
@@ -216,8 +227,7 @@ python api_server.py
 ## 支持
 
 如有问题，请查看：
-- [快速开始指南](QUICK_START.md)
 - [API 文档](API_DOCUMENTATION.md)
 - [Docker 部署指南](README_DOCKER.md)
-- [主 README](README.md)
+- [主 README](../README.md)
 

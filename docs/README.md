@@ -1,6 +1,6 @@
 # Development Documentation
 
-**Language / 语言**: [English](README.md) | [中文](README.zh.md)
+**Language / 语言**: [English](../README.md) | [中文](../README.zh.md)
 
 This directory contains development and debugging related documentation.
 
