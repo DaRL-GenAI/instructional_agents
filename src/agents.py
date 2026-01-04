@@ -148,7 +148,7 @@ class Agent:
             
         messages = self.get_messages_with_system(full_prompt)
         
-        print(f"{"-"*50}\n{self.name} ({self.role}) is thinking...\n")
+        print(f"{'-'*50}\n{self.name} ({self.role}) is thinking...\n")
         response, elapsed_time, token_usage = self.llm.generate_response(messages, stream)
 
         if save_to_history:

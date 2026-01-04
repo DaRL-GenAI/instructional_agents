@@ -3,14 +3,14 @@ import json
 import re
 from typing import List, Dict
 
-from agents import (
+from src.agents import (
     LLM,
     Agent,
     Deliberation,
 )
 
-from slides import SlidesDeliberation
-from compile import LaTeXCompiler
+from src.slides import SlidesDeliberation
+from src.compile import LaTeXCompiler
 
 class SyllabusProcessor(Agent):
     """

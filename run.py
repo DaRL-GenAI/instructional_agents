@@ -3,7 +3,7 @@ import time
 import argparse
 import json
 
-from ADDIE import ADDIE
+from src.ADDIE import ADDIE
 
 
 def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catalog") -> dict:
