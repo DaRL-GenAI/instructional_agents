@@ -42,7 +42,8 @@ An AI-powered instructional design system based on the ADDIE model for automated
 
 This guide will walk you through the complete workflow from setup to viewing results.
 
-### Step 1: Environment Setup
+<details>
+<summary><b>Step 1: Environment Setup</b></summary>
 
 #### 1.1 Prerequisites
 
@@ -85,9 +86,12 @@ curl http://localhost:8000/health
 
 > **Tip**: If port 8000 is already in use, modify `API_PORT` in your `.env` file.
 
+</details>
+
 ---
 
-### Step 2: Access Web Interface
+<details>
+<summary><b>Step 2: Access Web Interface</b></summary>
 
 #### 2.1 Open the Frontend
 
@@ -134,9 +138,12 @@ python -m http.server 8080
    - Current stage information
    - Real-time logs stream
 
+</details>
+
 ---
 
-### Step 3: Monitor Progress and Logs via Docker Logs
+<details>
+<summary><b>Step 3: Monitor Progress and Logs</b></summary>
 
 If you need to view logs outside the web interface:
 
@@ -151,9 +158,12 @@ docker-compose logs --tail=100 api
 docker-compose logs --since 30m api
 ```
 
+</details>
+
 ---
 
-### Step 4: View Generated Results
+<details>
+<summary><b>Step 4: View Generated Results</b></summary>
 
 #### 4.1 Via Web Interface (Recommended)
 
@@ -231,11 +241,16 @@ exp/{experiment_name}/
 
 For detailed file descriptions, see [Generated Files Guide](docs/FILES_GENERATED.md).
 
+</details>
+
 ---
 
-### Step 5: Next Steps
+<details>
+<summary><b>Step 5: Next Steps</b></summary>
 
 See [Documentation](#-documentation) section below for detailed guides and references.
+
+</details>
 
 ---
 

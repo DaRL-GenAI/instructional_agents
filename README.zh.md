@@ -42,7 +42,8 @@ An AI-powered instructional design system based on the ADDIE model for automated
 
 本指南将带您完成从配置到查看结果的完整流程。
 
-### 第一步：环境配置
+<details>
+<summary><b>第一步：环境配置</b></summary>
 
 #### 1.1 前置要求
 
@@ -85,9 +86,12 @@ curl http://localhost:8000/health
 
 > **提示**：如果端口 8000 已被占用，请在 `.env` 文件中修改 `API_PORT`。
 
+</details>
+
 ---
 
-### 第二步：访问 Web 界面
+<details>
+<summary><b>第二步：访问 Web 界面</b></summary>
 
 #### 2.1 打开前端界面
 
@@ -134,9 +138,12 @@ python -m http.server 8080
    - 当前阶段信息
    - 实时日志流
 
+</details>
+
 ---
 
-### 第三步：监控进度和日志 通过 Docker
+<details>
+<summary><b>第三步：监控进度和日志</b></summary>
 
 如果您需要在 Web 界面外查看日志：
 
@@ -151,9 +158,12 @@ docker-compose logs --tail=100 api
 docker-compose logs --since 30m api
 ```
 
+</details>
+
 ---
 
-### 第四步：查看生成结果
+<details>
+<summary><b>第四步：查看生成结果</b></summary>
 
 #### 4.1 通过 Web 界面（推荐）
 
@@ -231,11 +241,16 @@ exp/{experiment_name}/
 
 详细文件说明请查看 [生成文件说明](docs/FILES_GENERATED.zh.md)。
 
+</details>
+
 ---
 
-### 第五步：后续步骤
+<details>
+<summary><b>第五步：后续步骤</b></summary>
 
 请查看下方的 [文档](#-文档) 部分获取详细指南和参考。
+
+</details>
 
 ---
 
