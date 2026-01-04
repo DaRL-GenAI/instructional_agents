@@ -4,7 +4,7 @@ from typing import List, Dict, Optional
 from openai import OpenAI
 from pathlib import Path
 import pandas as pd
-from agents import LLM
+from src.agents import LLM
 import argparse
 
 class ValidationAgent:

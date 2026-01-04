@@ -23,8 +23,8 @@ from typing import Optional as Opt
 import uvicorn
 
 from run import run_instructional_design
-from slide_optimizer import SlideOptimizer
-from pdf_processor import PDFSlideProcessor
+from src.slide_optimizer import SlideOptimizer
+from src.pdf_processor import PDFSlideProcessor
 import tempfile
 import shutil
 

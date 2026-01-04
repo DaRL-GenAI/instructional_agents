@@ -22,6 +22,22 @@ An AI-powered instructional design system based on the ADDIE model for automated
 
 ---
 
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| 🤖 **Multi-Agent Collaboration** | Multiple specialized LLM agents working together based on ADDIE instructional design model |
+| 📚 **Automated Course Generation** | Generate complete course materials including syllabus, slides, scripts, and assessments |
+| 🎯 **Catalog Mode** | Use structured catalog files to guide course generation with student profiles and institutional requirements |
+| 🤝 **Copilot Mode** | Interactive mode for providing feedback during generation at each ADDIE phase |
+| 📊 **Real-time Progress** | Monitor generation progress with real-time logs, progress bars, and file updates |
+| 🌐 **Web Interface** | User-friendly web interface for course generation, progress monitoring, and file management |
+| 📁 **Multiple Usage Methods** | Support for web interface, command-line, and RESTful API |
+| 📄 **LaTeX/PDF Output** | Generate professional LaTeX slides and compile to PDF format |
+| ✅ **Automatic Evaluation** | Built-in evaluation system for assessing generated course materials |
+
+---
+
 ## 🚀 Quick Start (Docker - Recommended)
 
 This guide will walk you through the complete workflow from setup to viewing results.
@@ -92,10 +108,10 @@ python -m http.server 8080
 
 #### 2.2 Configure API Key
 
-1. In the web interface, locate the **"API 配置"** section at the top
+1. In the web interface, locate the **"API Configuration"** section at the top
 2. Enter your OpenAI API Key in the input field
-3. Click **"保存 API Key"** to save it (stored locally in your browser)
-4. The status indicator will show "✅ API Key 已配置" when successful
+3. Click **"Save API Key"** to save it (stored locally in your browser)
+4. The status indicator will show "✅ API Key Configured" when successful
 
 > **Note**: Your API key is only stored in your browser's local storage and never sent to any server except OpenAI during course generation.
 
@@ -107,9 +123,9 @@ python -m http.server 8080
    - **Experiment Name**: Leave as "default" or specify a custom name
    - **Copilot Mode**: Enable for interactive feedback during generation (optional)
    - **Catalog Mode**: 
-     - Select "不使用" for basic generation
-     - Select "上传 Catalog 文件" to upload a custom catalog JSON
-     - Select "使用默认 Catalog" to use the default catalog
+     - Select "Not Use" for basic generation
+     - Select "Upload Catalog File" to upload a custom catalog JSON
+     - Select "Use Default Catalog" to use the default catalog
 
 2. **Click "Generate Course"** to start the task
 
@@ -120,31 +136,7 @@ python -m http.server 8080
 
 ---
 
-### Step 3: Monitor Progress and Logs
-
-#### 3.1 Via Web Interface (Recommended)
-
-After submitting a task, the progress section shows:
-
-- **📊 Progress Bar**: Visual indicator of overall completion (0-100%)
-- **📝 Current Stage**: Displays the current processing stage, such as:
-  - "Loading configuration"
-  - "Generating instructional goals"
-  - "Creating syllabus design"
-  - "Generating slides for chapter 1"
-  - etc.
-- **📋 Real-time Logs**: Automatically streams detailed logs including:
-  - Task initialization messages
-  - Agent deliberations and discussions
-  - File generation progress
-  - Completion status
-  - Error messages (if any)
-
-The logs update in real-time as the task progresses. You can:
-- Scroll through the log history
-- Use the **"🗑️ 清空日志"** button to clear the display (logs continue streaming)
-
-#### 3.2 Via Docker Logs (Alternative)
+### Step 3: Monitor Progress and Logs via Docker Logs
 
 If you need to view logs outside the web interface:
 
@@ -159,35 +151,28 @@ docker-compose logs --tail=100 api
 docker-compose logs --since 30m api
 ```
 
-#### 3.3 Check Task Status via API
-
-```bash
-# Replace {task_id} with your actual task ID from the web interface
-curl http://localhost:8000/api/course/status/{task_id}
-```
-
 ---
 
 ### Step 4: View Generated Results
 
 #### 4.1 Via Web Interface (Recommended)
 
-Once generation starts, the **"生成结果"** section will appear showing:
+Once generation starts, the **"Generation Results"** section will appear showing:
 
 1. **File Location**:
    - Displays the local path where files are saved
    - Example: `/Users/your_username/PycharmProjects/instructional_agents/exp/your_experiment_name/`
    - Quick actions:
-     - **📋 复制路径**: Copy the path to clipboard
-     - **📂 打开文件夹**: Open the directory in Finder/Explorer
+     - **📋 Copy Path**: Copy the path to clipboard
+     - **📂 Open Directory**: Open the directory in Finder/Explorer
 
 2. **File List** (updates incrementally):
    - Files appear as they are generated (no need to wait for completion)
    - Each file shows:
      - File icon based on type (📝 .md, 📄 .tex, 📕 .pdf, 📋 .json)
      - File name and size
-     - **🆕 新** badge for newly generated files
-     - **📥 下载** button for immediate download
+     - **🆕 New** badge for newly generated files
+     - **📥 Download** button for immediate download
 
 3. **File Organization**:
    - Files are grouped by directory
@@ -244,16 +229,13 @@ exp/{experiment_name}/
 
 > **Tip**: Files are generated incrementally. You can download or view them as soon as they appear, without waiting for the entire generation to complete.
 
-For detailed file descriptions, see [Generated Files Guide](FILES_GENERATED.md).
+For detailed file descriptions, see [Generated Files Guide](docs/FILES_GENERATED.md).
 
 ---
 
 ### Step 5: Next Steps
 
-- **Detailed Docker Setup**: [Docker Deployment Guide](README_DOCKER.md)
-- **API Reference**: [API Documentation](API_DOCUMENTATION.md)
-- **Understanding Generated Files**: [Generated Files Guide](FILES_GENERATED.md)
-- **Advanced Usage**: See sections below
+See [Documentation](#-documentation) section below for detailed guides and references.
 
 ---
 
@@ -390,7 +372,20 @@ curl http://localhost:8000/api/course/results/{task_id}/download/chapter_1/slide
   --output slides.pdf
 ```
 
-For complete API documentation, see [API Documentation](API_DOCUMENTATION.md).
+For complete API documentation, see [API Documentation](docs/API_DOCUMENTATION.md).
+
+---
+
+## 🔧 Core Modules
+
+| Module | Description | Usage |
+|--------|-------------|-------|
+| **Course Generation** | Generate complete course materials based on ADDIE model | Web interface, CLI (`run.py`), or RESTful API |
+| **Catalog Mode** | Use structured catalog files for guided generation | `--catalog` flag or upload in web interface |
+| **Copilot Mode** | Interactive feedback during generation | `--copilot` flag in CLI or enable in web interface |
+| **Evaluation** | Automatic assessment of generated materials | `python evaluate.py --exp <exp_name>` |
+| **Web Interface** | Visual interface for course generation | Open `frontend/index.html` in browser |
+| **API Server** | RESTful API for programmatic access | `python api_server.py` or Docker |
 
 ---
 
@@ -419,7 +414,7 @@ python run.py "AI Fundamentals" --catalog ai_catalog
 # In the web interface, select "上传 Catalog 文件" and upload your JSON file
 ```
 
-See [API Documentation](API_DOCUMENTATION.md#catalog-format) for catalog format details.
+See [API Documentation](docs/API_DOCUMENTATION.md#catalog-format) for catalog format details.
 
 ### Copilot Mode
 
@@ -492,15 +487,95 @@ python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 
 ---
 
-## 📌 Notes
+## 📖 Documentation
 
-* If you specify `--catalog` without a value, the system defaults to `default_catalog.json` inside the `catalog/` folder.
-* If you provide a name (e.g., `--catalog mydata`), the system expects `catalog/mydata.json`.
-* Generated files are saved incrementally. You can download them as soon as they appear without waiting for completion.
-* The web interface requires the API to be running (Docker or local). Make sure the API is accessible at the configured address.
+| [API Documentation](docs/API_DOCUMENTATION.md) | [Docker Deployment](docs/README_DOCKER.md) | [Generated Files Guide](docs/FILES_GENERATED.md) |
+|------------------------------------------------|---------------------------------------------|---------------------------------------------------|
+| Complete API reference and endpoints           | Docker setup and deployment guide           | Detailed description of generated files          |
+
+| [Workflow Documentation](docs/WORKFLOW_DOCUMENTATION.md) | [Development Guide](docs/README.md) | |
+|----------------------------------------------------------|--------------------------------------|--|
+| System workflow and agent collaboration details          | Development and debugging documentation | |
+
+---
+
+## ❓ FAQ
+
+**How to configure API key?**
+
+**Checklist**
+- Get OpenAI API key from https://platform.openai.com/api-keys
+- Configure in `.env` file or web interface
+
+**Solutions**
+- **Option 1**: Set in `.env` file: `OPENAI_API_KEY=your_key_here`
+- **Option 2**: Configure in web interface (stored in browser local storage only)
+
+**Port 8000 already in use?**
+
+**Problem**
+
+Starting the service shows "port already in use" error.
+
+**Solution**
+
+```bash
+# macOS/Linux: Find and kill the process
+lsof -i :8000
+kill -9 <PID>
+
+# Or change port in .env file
+API_PORT=8001
+```
+
+**How to use catalog files?**
+
+**Checklist**
+- Catalog files should be in JSON format
+- Place catalog files in `catalog/` directory
+
+**Solutions**
+- **Default catalog**: Use `--catalog` without value to use `catalog/default_catalog.json`
+- **Custom catalog**: Use `--catalog my_catalog` to use `catalog/my_catalog.json`
+- **Web interface**: Upload catalog file directly in the web interface
+
+**Where are generated files saved?**
+
+**Answer**
+
+Generated files are saved in `exp/{experiment_name}/` directory:
+- Foundation files (syllabus, goals, etc.) in the root
+- Chapter materials in `chapter_1/`, `chapter_2/`, etc.
+- Files are generated incrementally and can be downloaded as soon as they appear
+
+**Web interface cannot connect to backend?**
+
+**Checklist**
+- Confirm backend is running (visit http://localhost:8000/docs or http://localhost:8000/health)
+- Check browser console for error messages
+- Verify API address configuration
+
+**Solution**
+
+- **Docker**: Ensure Docker container is running: `docker-compose ps`
+- **Local**: Ensure API server is running: `python api_server.py`
+- Check that the port matches (default: 8000)
+
+**What models are supported?**
+
+**Answer**
+
+Currently supports OpenAI models:
+- GPT-4o Mini (recommended, cost-effective)
+- GPT-4o
+- GPT-4 Turbo
+
+Configure via model selection in web interface or `--model` flag in CLI.
 
 ---
 
 ## 📜 License
+
+MIT License
 
 MIT License

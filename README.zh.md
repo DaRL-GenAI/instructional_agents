@@ -22,6 +22,22 @@ An AI-powered instructional design system based on the ADDIE model for automated
 
 ---
 
+## ✨ 功能特性
+
+| 功能特性 | 描述 |
+|---------|------|
+| 🤖 **多智能体协作** | 基于 ADDIE 教学设计模型的多个专业 LLM 智能体协作工作 |
+| 📚 **自动化课程生成** | 生成完整的课程材料，包括教学大纲、幻灯片、脚本和评估材料 |
+| 🎯 **Catalog 模式** | 使用结构化 Catalog 文件指导课程生成，包含学生档案和机构要求 |
+| 🤝 **Copilot 模式** | 在生成的每个 ADDIE 阶段提供交互式反馈 |
+| 📊 **实时进度** | 通过实时日志、进度条和文件更新监控生成进度 |
+| 🌐 **Web 界面** | 用户友好的 Web 界面，用于课程生成、进度监控和文件管理 |
+| 📁 **多种使用方式** | 支持 Web 界面、命令行和 RESTful API |
+| 📄 **LaTeX/PDF 输出** | 生成专业的 LaTeX 幻灯片并编译为 PDF 格式 |
+| ✅ **自动评估** | 内置评估系统，用于评估生成的课程材料 |
+
+---
+
 ## 🚀 快速开始（Docker 方式 - 推荐）
 
 本指南将带您完成从配置到查看结果的完整流程。
@@ -120,31 +136,7 @@ python -m http.server 8080
 
 ---
 
-### 第三步：监控进度和日志
-
-#### 3.1 通过 Web 界面（推荐）
-
-提交任务后，进度区域会显示：
-
-- **📊 进度条**：整体完成情况的可视化指示器（0-100%）
-- **📝 当前阶段**：显示当前处理阶段，例如：
-  - "加载配置中"
-  - "生成学习目标"
-  - "创建课程大纲"
-  - "生成第1章幻灯片"
-  - 等等
-- **📋 实时日志**：自动流式传输详细日志，包括：
-  - 任务初始化消息
-  - 智能体审议和讨论
-  - 文件生成进度
-  - 完成状态
-  - 错误消息（如有）
-
-日志会随着任务进度实时更新。您可以：
-- 滚动查看日志历史
-- 使用 **"🗑️ 清空日志"** 按钮清空显示（日志会继续流式传输）
-
-#### 3.2 通过 Docker 日志（备选）
+### 第三步：监控进度和日志 通过 Docker
 
 如果您需要在 Web 界面外查看日志：
 
@@ -157,13 +149,6 @@ docker-compose logs --tail=100 api
 
 # 查看特定时间范围的日志
 docker-compose logs --since 30m api
-```
-
-#### 3.3 通过 API 检查任务状态
-
-```bash
-# 将 {task_id} 替换为 Web 界面中的实际任务 ID
-curl http://localhost:8000/api/course/status/{task_id}
 ```
 
 ---
@@ -244,16 +229,13 @@ exp/{experiment_name}/
 
 > **提示**：文件是增量生成的。文件一出现就可以下载或查看，无需等待整个生成完成。
 
-详细文件说明请查看 [生成文件说明](FILES_GENERATED.zh.md)。
+详细文件说明请查看 [生成文件说明](docs/FILES_GENERATED.zh.md)。
 
 ---
 
 ### 第五步：后续步骤
 
-- **详细 Docker 配置**：[Docker 部署指南](README_DOCKER.zh.md)
-- **API 参考**：[API 文档](API_DOCUMENTATION.zh.md)
-- **理解生成文件**：[生成文件说明](FILES_GENERATED.zh.md)
-- **高级用法**：见下方章节
+请查看下方的 [文档](#-文档) 部分获取详细指南和参考。
 
 ---
 
@@ -390,7 +372,20 @@ curl http://localhost:8000/api/course/results/{task_id}/download/chapter_1/slide
   --output slides.pdf
 ```
 
-完整 API 文档请查看 [API 文档](API_DOCUMENTATION.zh.md)。
+完整 API 文档请查看 [API 文档](docs/API_DOCUMENTATION.zh.md)。
+
+---
+
+## 🔧 核心模块
+
+| 模块 | 描述 | 使用方法 |
+|------|------|---------|
+| **课程生成** | 基于 ADDIE 模型生成完整的课程材料 | Web 界面、CLI（`run.py`）或 RESTful API |
+| **Catalog 模式** | 使用结构化 Catalog 文件进行指导生成 | `--catalog` 参数或在 Web 界面中上传 |
+| **Copilot 模式** | 生成过程中的交互式反馈 | CLI 中的 `--copilot` 参数或在 Web 界面中启用 |
+| **评估** | 自动评估生成的课程材料 | `python evaluate.py --exp <exp_name>` |
+| **Web 界面** | 课程生成的可视化界面 | 在浏览器中打开 `frontend/index.html` |
+| **API 服务器** | 用于编程访问的 RESTful API | `python api_server.py` 或 Docker |
 
 ---
 
@@ -419,7 +414,7 @@ python run.py "AI 基础" --catalog ai_catalog
 # 在 Web 界面中，选择"上传 Catalog 文件"并上传您的 JSON 文件
 ```
 
-Catalog 格式详情请查看 [API 文档](API_DOCUMENTATION.zh.md#catalog-格式)。
+Catalog 格式详情请查看 [API 文档](docs/API_DOCUMENTATION.zh.md#catalog-格式)。
 
 ### Copilot 模式
 
@@ -492,15 +487,95 @@ python run.py "高级算法" --copilot --exp algo_course_v2
 
 ---
 
-## 📌 注意事项
+## 📖 文档
 
-* 如果您指定 `--catalog` 但不提供值，系统默认使用 `catalog/` 文件夹中的 `default_catalog.json`。
-* 如果您提供名称（例如 `--catalog mydata`），系统期望找到 `catalog/mydata.json`。
-* 生成的文件是增量保存的。文件一出现就可以下载，无需等待完成。
-* Web 界面需要 API 正在运行（Docker 或本地）。确保 API 在配置的地址可访问。
+| [API 文档](docs/API_DOCUMENTATION.zh.md) | [Docker 部署指南](docs/README_DOCKER.zh.md) | [生成文件说明](docs/FILES_GENERATED.zh.md) |
+|-------------------------------------------|----------------------------------------------|---------------------------------------------|
+| 完整的 API 参考和端点说明                 | Docker 安装和部署指南                        | 生成文件的详细说明                           |
+
+| [工作流文档](docs/WORKFLOW_DOCUMENTATION.zh.md) | [开发指南](docs/README.zh.md) | |
+|------------------------------------------------|-------------------------------|--|
+| 系统工作流和智能体协作详情                    | 开发和调试文档                 | |
+
+---
+
+## ❓ 常见问题
+
+**如何配置 API Key？**
+
+**检查清单**
+- 从 https://platform.openai.com/api-keys 获取 OpenAI API Key
+- 在 `.env` 文件或 Web 界面中配置
+
+**解决方案**
+- **方式 1**：在 `.env` 文件中设置：`OPENAI_API_KEY=your_key_here`
+- **方式 2**：在 Web 界面中配置（仅保存在浏览器本地存储中）
+
+**端口 8000 已被占用？**
+
+**问题**
+
+启动服务时显示"端口已被占用"错误。
+
+**解决方案**
+
+```bash
+# macOS/Linux：查找并终止进程
+lsof -i :8000
+kill -9 <PID>
+
+# 或在 .env 文件中更改端口
+API_PORT=8001
+```
+
+**如何使用 Catalog 文件？**
+
+**检查清单**
+- Catalog 文件应为 JSON 格式
+- 将 Catalog 文件放置在 `catalog/` 目录中
+
+**解决方案**
+- **默认 Catalog**：使用 `--catalog` 但不提供值，将使用 `catalog/default_catalog.json`
+- **自定义 Catalog**：使用 `--catalog my_catalog` 将使用 `catalog/my_catalog.json`
+- **Web 界面**：直接在 Web 界面中上传 Catalog 文件
+
+**生成的文件保存在哪里？**
+
+**答案**
+
+生成的文件保存在 `exp/{experiment_name}/` 目录中：
+- 基础文件（教学大纲、目标等）在根目录
+- 章节材料在 `chapter_1/`、`chapter_2/` 等目录中
+- 文件是增量生成的，文件一出现就可以下载
+
+**Web 界面无法连接到后端？**
+
+**检查清单**
+- 确认后端正在运行（访问 http://localhost:8000/docs 或 http://localhost:8000/health）
+- 检查浏览器控制台中的错误消息
+- 验证 API 地址配置
+
+**解决方案**
+
+- **Docker**：确保 Docker 容器正在运行：`docker-compose ps`
+- **本地**：确保 API 服务器正在运行：`python api_server.py`
+- 检查端口是否匹配（默认：8000）
+
+**支持哪些模型？**
+
+**答案**
+
+目前支持 OpenAI 模型：
+- GPT-4o Mini（推荐，性价比高）
+- GPT-4o
+- GPT-4 Turbo
+
+通过 Web 界面中的模型选择或 CLI 中的 `--model` 参数进行配置。
 
 ---
 
 ## 📜 许可证
+
+MIT License
 
 MIT License
