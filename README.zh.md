@@ -16,7 +16,8 @@
 
 [🇬🇧 English](README.md) · [🇨🇳 中文](README.zh.md)
 
-![visitors](https://visitor-badge.laobi.icu/badge?page_id=wingsweihua.instructional_agents&style=flat)
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=DaRL-GenAI.instructional_agents&style=flat)
+
 
 </div>
 
