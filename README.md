@@ -38,9 +38,7 @@ An AI-powered instructional design system based on the ADDIE model for automated
 
 ### 📰 News
 
-> **[2026.1.6]** Instructional Agents is now live! ✨ Automated course material generation with AI-powered ADDIE model.
-
-> **[2026.1.4]** Added Docker deployment support and web interface for easy course generation.
+> **[2026.1.6]** Instructional Agents is accepted by EACL 2026 Main Conference!
 
 ### 📦 Releases
 
