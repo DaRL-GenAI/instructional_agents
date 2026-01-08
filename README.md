@@ -1,10 +1,24 @@
-# INSTRUCTIONAL AGENTS: LLM Agents on Automated Course Material Generation for Teaching Faculties
+<div align="center">
 
-**Language / 语言**: [English](README.md) | [中文](README.zh.md)
+# Instructional Agents: LLM Agents on Automated Course Material Generation for Teaching Faculties
+
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+
+<p align="center">
+  <a href="https://hyan-yao.github.io/instructional_agents_homepage/"><img src="https://img.shields.io/website?url=https%3A%2F%2Fhyan-yao.github.io%2Finstructional_agents_homepage%2F&up_message=Website&style=for-the-badge&logo=github&logoColor=white" alt="Website"></a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/Hyan-Yao/instructional_agents"><img src="https://img.shields.io/github/stars/Hyan-Yao/instructional_agents?style=for-the-badge&logo=github&logoColor=white&color=red" alt="GitHub Stars"></a>
+</p>
+
+[**Quick Start**](#-quick-start-docker---recommended) · [**Core Modules**](#-core-modules) · [**FAQ**](#-faq)
+
+[🇨🇳 中文](README.zh.md) · [🇬🇧 English](README.md)
 
 ![visitors](https://visitor-badge.laobi.icu/badge?page_id=wingsweihua.instructional_agents&style=flat)
-[![Website](https://img.shields.io/website?url=https%3A%2F%2Fhyan-yao.github.io%2Finstructional_agents_homepage%2F&up_message=Instructional%20Agents&style=flat)](https://hyan-yao.github.io/instructional_agents_homepage/)
-![GitHub Repo stars](https://img.shields.io/github/stars/Hyan-Yao/instructional_agents?style=flat&color=red)
+
+</div>
 
 An AI-powered instructional design system based on the ADDIE model for automated course creation and evaluation.
 
