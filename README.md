@@ -9,14 +9,14 @@
 <p align="center">
   <a href="https://hyan-yao.github.io/instructional_agents_homepage/"><img src="https://img.shields.io/website?url=https%3A%2F%2Fhyan-yao.github.io%2Finstructional_agents_homepage%2F&up_message=Website&style=for-the-badge&logo=github&logoColor=white" alt="Website"></a>
   &nbsp;&nbsp;
-  <a href="https://github.com/Hyan-Yao/instructional_agents"><img src="https://img.shields.io/github/stars/Hyan-Yao/instructional_agents?style=for-the-badge&logo=github&logoColor=white&color=red" alt="GitHub Stars"></a>
+  <a href="https://github.com/DaRL-GenAI/instructional_agents"><img src="https://img.shields.io/github/stars/DaRL-GenAI/instructional_agents?style=for-the-badge&logo=github&logoColor=white&color=red" alt="GitHub Stars"></a>
 </p>
 
 [**Quick Start**](#-quick-start-docker---recommended) · [**Core Modules**](#-core-modules) · [**FAQ**](#-faq)
 
 [🇨🇳 中文](README.zh.md) · [🇬🇧 English](README.md)
 
-![visitors](https://visitor-badge.laobi.icu/badge?page_id=wingsweihua.instructional_agents&style=flat)
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=DaRL-GenAI.instructional_agents&style=flat)
 
 </div>
 
@@ -33,6 +33,25 @@ An AI-powered instructional design system based on the ADDIE model for automated
   url={https://arxiv.org/abs/2508.19611},
 }
 ```
+
+---
+
+### 📰 News
+
+> **[2026.1.6]** Instructional Agents is now live! ✨ Automated course material generation with AI-powered ADDIE model.
+
+> **[2026.1.4]** Added Docker deployment support and web interface for easy course generation.
+
+### 📦 Releases
+
+> **[2026.1.6]** Release [v1.0.0](https://github.com/DaRL-GenAI/instructional_agents/releases) - Initial release with core features - Thanks to all the contributors! ❤️
+
+<details>
+<summary>History releases</summary>
+
+> **[2026.1.4]** [v0.1.0](https://github.com/DaRL-GenAI/instructional_agents/releases) - Docker deployment and web interface support
+
+</details>
 
 ---
 
