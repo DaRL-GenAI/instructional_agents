@@ -1,6 +1,6 @@
 <div align="center">
 
-# Instructional Agents: LLM Agents on Automated Course Material Generation for Teaching Faculties
+# Instructional Agents: Reducing Teaching Faculty Workload through Multi-Agent Instructional Design
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -24,7 +24,7 @@ An AI-powered instructional design system based on the ADDIE model for automated
 
 ```
 @misc{yao2025instructionalagentsllmagents,
-  title={Instructional Agents: LLM Agents on Automated Course Material Generation for Teaching Faculties},
+  title={Instructional Agents: Reducing Teaching Faculty Workload through Multi-Agent Instructional Design},
   author={Yao, Huaiyuan and Xu, Wanpeng and Turnau, Justin and Kellam, Nadia and Wei, Hua},
   year={2025},
   eprint={2508.19611},
