@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
 <p align="center">
-  <a href="https://hyan-yao.github.io/instructional_agents_homepage/"><img src="https://img.shields.io/website?url=https%3A%2F%2Fhyan-yao.github.io%2Finstructional_agents_homepage%2F&up_message=Website&style=for-the-badge&logo=github&logoColor=white" alt="Website"></a>
+  <a href="https://darl-genai.github.io/instructional_agents_homepage/"><img src="https://img.shields.io/website?url=https%3A%2F%2Fdarl-genai.github.io%2Finstructional_agents_homepage%2F&up_message=Website&style=for-the-badge&logo=github&logoColor=white" alt="Website"></a>
   &nbsp;&nbsp;
   <a href="https://github.com/DaRL-GenAI/instructional_agents"><img src="https://img.shields.io/github/stars/DaRL-GenAI/instructional_agents?style=for-the-badge&logo=github&logoColor=white&color=red" alt="GitHub Stars"></a>
 </p>
