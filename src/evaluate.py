@@ -169,8 +169,9 @@ class EvaluationAgent:
             try:
                 result = json.loads(response)
                 score = float(result.get("SCORE", 3.0))
+                thought = result.get("THOUGHT", "")
                 if 1.0 <= score <= 5.0:
-                    return score
+                    return score, thought
                 else:
                     print(f"Invalid score {score} for {metric} in {file_type}. Retrying...")
             except Exception as e:
@@ -180,7 +181,7 @@ class EvaluationAgent:
 
         # 如果重试后仍然失败，默认返回3.0
         print(f"Max retries reached. Defaulting to 3.0 for {metric} in {file_type}.")
-        return 3.0
+        return 3.0, ""
 
 
     def evaluate_files(self, file_data: Dict[str, List[Dict]]) -> Dict:
@@ -212,25 +213,30 @@ class EvaluationAgent:
 
                 file_scores = {}
                 for metric in metrics.keys():
-                    score = self.score_single_metric(file_type, filename, content, f"{metric}: {metrics[metric]}")
-                    file_scores[metric] = score
+                    score, thought = self.score_single_metric(
+                        file_type, filename, content, f"{metric}: {metrics[metric]}"
+                    )
+                    file_scores[metric] = {
+                        "score": score,
+                        "thought": thought
+                    }
                     print(f"Scored {filename} - {metric}: {score}")
 
                 type_results.append({
                     'filename': filename,
                     'scores': file_scores,
-                    'average': sum(file_scores.values()) / len(file_scores) if file_scores else 0
+                    'average': sum(v["score"] for v in file_scores.values()) / len(file_scores) if file_scores else 0
                 })
 
                 # Add scores to the overall list for summary
-                for score in file_scores.values():
-                    all_scores.append(score)
+                for v in file_scores.values():
+                    all_scores.append(v["score"])
 
             # Calculate summary statistics for each file type
             if type_results:
                 type_all_scores = []
                 for result in type_results:
-                    type_all_scores.extend(result['scores'].values())
+                    type_all_scores.extend(v["score"] for v in result['scores'].values())
 
                 results[file_type] = {
                     'files': type_results,
