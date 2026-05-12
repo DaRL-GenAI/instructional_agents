@@ -1,16 +1,18 @@
 import json
 import os
 import argparse
-
+from src.agents import LLM
+from src.refinement import RefinementEngine
 
 
 class RefinementRunner:
 
-    def __init__(self, model_name, exp_name, threshold=3.0, retries=3):
+    def __init__(self, model_name, exp_name, threshold=3.0, retries=3, refine=False):
         self.model_name = model_name
         self.exp_name = exp_name
         self.threshold = threshold
         self.retries = retries
+        self.refine = refine
 
         self.generated_course_path = f"exp/{exp_name}"
         self.evaluation_folder = f"eval/{model_name}-Evaluation_{exp_name}/evaluation_results"
@@ -20,7 +22,7 @@ class RefinementRunner:
         if not os.path.exists(self.evaluation_json):
             raise FileNotFoundError(f"Evaluation results not found: {self.evaluation_json}")
 
-        with open(self.evaluation_json, "r") as f:
+        with open(self.evaluation_json, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         return data
@@ -150,7 +152,7 @@ class RefinementRunner:
         if not queue_item.get("source_exists") or not source_path:
             raise FileNotFoundError(f"Source file not found: {source_path}")
         
-        with open(source_path, "r") as f:
+        with open(source_path, "r", encoding="utf-8") as f:
             content = f.read()
         return content
             
@@ -195,7 +197,7 @@ class RefinementRunner:
             raise ValueError("Refined path is required before writing output")
         self.ensure_output_directory(refined_path)
 
-        with open(refined_path, "w") as f:
+        with open(refined_path, "w", encoding="utf-8") as f:
             f.write(refined_content)
 
         print(f"Saved refined content to: {refined_path}")
@@ -204,23 +206,77 @@ class RefinementRunner:
 
     
     def run(self):
+
         queue = self.build_repair_queue()
+        self.print_repair_queue(queue)
+
         if not queue:
             return queue
-        self.print_repair_queue(queue)
-        
-        packet = self.build_refinement_packet(queue[0])
 
-        print(f"Packet Keys: {packet.keys()}")
-        print(f"Content Length: {len(packet['content'])}")
-        output_dir = self.ensure_output_directory(
-            packet["refined_path"]
+        if not self.refine:
+            print("\nPreview only. Use --refine to run refinement.")
+            return queue
+
+        llm = LLM(self.model_name)
+        engine = RefinementEngine(llm)
+        refinement_results = []
+
+        for item in queue:
+            if item["route"] != "assessment":
+                print(
+                    f"Skipping {item['eval_filename']}: "
+                    f"route '{item['route']}' not implemented yet"
+                )
+                continue
+            try:
+                print(f"\nRefining {item['eval_filename']}...")
+
+                packet = self.build_refinement_packet(item)
+
+                result = engine.refine_packet(packet, self.retries)
+
+                saved_path = self.save_refined_content(
+                    packet,
+                    result["refined_content"]
+                )
+
+                report_entry = {
+                    "eval_filename": packet.get("eval_filename"),
+                    "source_path": packet.get("source_path"),
+                    "refined_path": saved_path,
+                    "route": packet.get("route"),
+                    "average": packet.get("average"),
+                    "metrics": packet.get("metrics"),
+                    "constraints": result.get("constraints"),
+                    "max_attempts": self.retries,
+                    "status": "success"
+                }
+
+                refinement_results.append(report_entry)
+            except Exception as e:
+                report_entry = {
+                    "eval_filename": item.get("eval_filename"),
+                    "source_path": item.get("source_path"),
+                    "refined_path": item.get("refined_path"),
+                    "route": item.get("route"),
+                    "average": item.get("average"),
+                    "metrics": item.get("metrics"),
+                    "status": "failed",
+                    "error": str(e)
+                }
+                refinement_results.append(report_entry)
+                continue
+        report_path = (
+            f"{self.generated_course_path}/refined/refinement_report.json"
         )
-        print(f"Output directory ready: {output_dir}")
-        saved_path = self.save_refined_content(
-            packet,
-            packet["content"]
-        )
+
+        self.ensure_output_directory(report_path)
+
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(refinement_results, f, indent=4)
+
+        print(f"\nSaved refinement report to: {report_path}")
+
         return queue
             
 
@@ -252,13 +308,19 @@ def main():
         default=3,
         help="Maximum refinement attempts"
     )
+    parser.add_argument(
+        "--refine",
+        action="store_true",
+        help="Run refinement pipeline"
+    )
     args = parser.parse_args()
 
     runner = RefinementRunner(
         model_name=args.model,
         exp_name=args.exp,
         threshold=args.threshold,
-        retries=args.retries
+        retries=args.retries,
+        refine=args.refine
     )
 
     runner.run()
