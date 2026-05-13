@@ -336,6 +336,8 @@ class CourseEvaluationSystem:
             f.write(f"**Evaluation Date:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
             
             for file_type, data in results.items():
+                if file_type == "overall_summary":
+                    continue
                 f.write(f"## {file_type}\n\n")
                 f.write(f"- **Total Files:** {data['summary']['total_files']}\n")
                 f.write(f"- **Average Score:** {data['summary']['average_score']:.2f}\n")
@@ -344,8 +346,12 @@ class CourseEvaluationSystem:
                 f.write("### Individual File Scores\n\n")
                 for file_result in data['files']:
                     f.write(f"**{file_result['filename']}** (Avg: {file_result['average']:.2f})\n")
-                    for metric, score in file_result['scores'].items():
+                    for metric, metric_data in file_result['scores'].items():
+                        score = metric_data["score"]
+                        thought = metric_data["thought"]
+
                         f.write(f"- {metric}: {score}\n")
+                        f.write(f"  Thought: {thought}\n")
                     f.write("\n")
         
         print(f"Saved evaluation results: {json_path}")
@@ -437,6 +443,9 @@ def main(model_name, exp_name):
     print("EVALUATION SUMMARY")
     print("="*50)
     for file_type, data in evaluation_results.items():
+        if file_type == "overall_summary":
+            continue
+
         print(f"\n{file_type}:")
         print(f"  Files: {data['summary']['total_files']}")
         print(f"  Average Score: {data['summary']['average_score']:.2f}")
