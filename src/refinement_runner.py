@@ -26,7 +26,7 @@ class RefinementRunner:
             data = json.load(f)
 
         return data
-        
+
 
     def build_repair_queue(self):
         results = self.load_evaluation_results()
@@ -37,7 +37,7 @@ class RefinementRunner:
                 continue
             route = self.get_route_for_file_type(section_name)
             files = section_data.get("files", [])
-            
+
             for file_data in files:
                 eval_filename = file_data.get("filename")
                 average = file_data.get("average")
@@ -48,6 +48,10 @@ class RefinementRunner:
                 source_path = self.map_eval_filename_to_source_path(eval_filename)
                 source_exists = os.path.exists(source_path) if source_path else False
                 refined_path = self.map_source_path_to_refined_path(source_path)
+                validation_reports = self.map_eval_filename_to_validation_reports(
+                    section_name,
+                    eval_filename
+                )
 
                 if average < self.threshold:
                     metrics = file_data.get("scores", {})
@@ -60,15 +64,15 @@ class RefinementRunner:
                         "route": route,
                         "source_path": source_path,
                         "source_exists": source_exists,
+                        "validation_reports": validation_reports,
                         "refined_path": refined_path
                     }
 
                     repair_queue.append(queue_item)
 
         return repair_queue
-    
-    def print_repair_queue(self, queue):
 
+    def print_repair_queue(self, queue):
         print("REFINEMENT QUEUE")
         print("================")
         print(f"Experiment: {self.exp_name}")
@@ -85,31 +89,37 @@ class RefinementRunner:
             print(f"   Source: {item['source_path']}")
             print(f"   Refined Path: {item['refined_path']}")
             print(f"   Exists: {item['source_exists']}")
-            print("   Metrics:")
 
+            reports = item.get("validation_reports", [])
+            found_reports = sum(
+                1 for report in reports
+                if report.get("exists")
+            )
+            total_reports = len(reports)
+            print(f"   Validation Reports Found: "
+                f"{found_reports}/{total_reports}"
+            )
+
+            print("   Metrics:")
             for metric_name, metric_data in item["metrics"].items():
                 score = metric_data.get("score")
                 print(f"   - {metric_name}: {score}")
 
-        
+
     def map_eval_filename_to_source_path(self, eval_filename):
-        
         if eval_filename == "result_instructional_goals.md":
             return f"{self.generated_course_path}/result_instructional_goals.md"
-        
         if eval_filename == "result_syllabus_design.md":
             return f"{self.generated_course_path}/result_syllabus_design.md"
-        
+
         parts = eval_filename.split("_")
         if len(parts) < 3:
             return None
-
         if parts[0] != "chapter":
             return None
 
         chapter = parts[1]
         file_part = parts[2]
-
 
         if "." not in file_part:
             return None
@@ -117,47 +127,105 @@ class RefinementRunner:
         name = file_part.split(".")[0]
         if name == "assessment":
             return f"{self.generated_course_path}/chapter_{chapter}/assessment.md"
-
         if name == "script":
             return f"{self.generated_course_path}/chapter_{chapter}/script.md"
-
         if name == "slides":
             return f"{self.generated_course_path}/chapter_{chapter}/slides.tex"
-
         return None
-    
-    def get_route_for_file_type(self, file_type):
 
+    def map_eval_filename_to_validation_reports(self, file_type, eval_filename):
+        if file_type != "assessment":
+            return []
+
+        validation_dir = ( f"eval/{self.model_name}-Evaluation_{self.exp_name}/validation_reports" )
+        roles = ["Program_Chair", "Test_Student"]
+
+        reports = []
+
+        for role in roles:
+            report_filename = f"{role}_{file_type}_{eval_filename.replace('.md', '_validation.md')}"
+            report_path = f"{validation_dir}/{report_filename}"
+
+            reports.append({
+                "role": role,
+                "path": report_path,
+                "exists": os.path.exists(report_path)
+           })
+
+        return reports
+
+    def load_validation_reports(self, queue_item):
+        reports = queue_item.get("validation_reports", [])
+
+        combined_feedback = []
+
+        for report in reports:
+            if not report.get("exists"):
+                continue
+
+            path = report.get("path")
+            role = report.get("role")
+
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+                compact_content = self.compact_validation_report(content)
+
+
+            combined_feedback.append(
+                f"VALIDATION REPORT: {role}\n\n{compact_content}"
+            )
+
+
+        return "\n\n".join(combined_feedback)
+
+    def compact_validation_report(self, content):
+        lower_content = content.lower()
+
+        lines = content.splitlines()
+
+        strengths_idx = None
+        rating_idx = None
+
+        for i, line in enumerate(lines):
+            stripped = line.strip().lower()
+            if strengths_idx is None and stripped.startswith("#") and "strengths" in stripped:
+                strengths_idx = i
+            if rating_idx is None and stripped.startswith("#") and "rating" in stripped:
+                rating_idx = i
+
+        if strengths_idx is None or rating_idx is None:
+            return content[:3000]
+        if rating_idx <= strengths_idx:
+            return content[:3000]
+
+        return "\n".join(lines[strengths_idx:rating_idx]).strip()
+
+    def get_route_for_file_type(self, file_type):
         if file_type == "assessment":
             return "assessment"
-
         if file_type == "slide_scripts":
             return "script"
-
         if file_type == "slide_content":
             return "slides"
-
         if file_type == "syllabus":
             return "syllabus"
-
         if file_type == "learning_objectives":
             return "objectives"
-
         return "general"
-            
+
 
     def load_source_content(self, queue_item):
-
         source_path = queue_item.get("source_path")
         if not queue_item.get("source_exists") or not source_path:
             raise FileNotFoundError(f"Source file not found: {source_path}")
-        
+
         with open(source_path, "r", encoding="utf-8") as f:
             content = f.read()
         return content
-            
+
     def build_refinement_packet(self, queue_item):
         content = self.load_source_content(queue_item)
+        validation_feedback = self.load_validation_reports(queue_item)
 
         packet = {
             "file_type": queue_item.get("file_type"),
@@ -167,20 +235,22 @@ class RefinementRunner:
             "average": queue_item.get("average"),
             "metrics": queue_item.get("metrics"),
             "refined_path": queue_item.get("refined_path"),
-            "content": content
+            "content": content,
+            "validation_feedback": validation_feedback,
+            "validation_reports": queue_item.get("validation_reports"),
         }
 
         return packet
-    
+
     def map_source_path_to_refined_path(self, source_path):
         if not source_path:
             return None
-        
+
         refined_root = f"{self.generated_course_path}/refined"
         refined_path = source_path.replace(self.generated_course_path, refined_root, 1)
 
         return refined_path
-        
+
     def ensure_output_directory(self, refined_path):
         if not refined_path:
             raise ValueError("Refined path is required before creating output directory")
@@ -204,9 +274,8 @@ class RefinementRunner:
 
         return refined_path
 
-    
-    def run(self):
 
+    def run(self):
         queue = self.build_repair_queue()
         self.print_repair_queue(queue)
 
@@ -248,8 +317,21 @@ class RefinementRunner:
                     "average": packet.get("average"),
                     "metrics": packet.get("metrics"),
                     "constraints": result.get("constraints"),
-                    "max_attempts": self.retries,
-                    "status": "success"
+                    "repair_plan": result.get("repair_plan"),
+                    "structure_facts": result.get("structure_facts"),
+                    "original_structure_facts": result.get(
+                        "original_structure_facts"
+                    ),
+                    "validation_reports": packet.get("validation_reports"),
+                    "validation_feedback_included": bool(
+                        packet.get("validation_feedback")
+                    ),
+                    "max_retries": self.retries,
+                    "retries_used": result.get("retries_used"),
+                    "pipeline_status": "success",
+                    "validation_status": result.get("validation_status"),
+                    "final_validation": result.get("final_validation"),
+                    "validation_history": result.get("validation_history")
                 }
 
                 refinement_results.append(report_entry)
@@ -261,7 +343,8 @@ class RefinementRunner:
                     "route": item.get("route"),
                     "average": item.get("average"),
                     "metrics": item.get("metrics"),
-                    "status": "failed",
+                    "pipeline_status": "failed",
+                    "validation_status": "NOT_RUN",
                     "error": str(e)
                 }
                 refinement_results.append(report_entry)
@@ -278,32 +361,32 @@ class RefinementRunner:
         print(f"\nSaved refinement report to: {report_path}")
 
         return queue
-            
+
 
 
 def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--model", 
+        "--model",
         type=str,
         default="gpt-4o-mini",
         help="Model name to use for evaluation"
     )
     parser.add_argument(
-        "--exp", 
+        "--exp",
         type=str,
         default="default",
         help="Experiment name to refine"
     )
     parser.add_argument(
-        "--threshold", 
+        "--threshold",
         type=float,
         default=3.0,
         help="Score threshold for selecting files to refine."
     )
     parser.add_argument(
-        "--retries", 
+        "--retries",
         type=int,
         default=3,
         help="Maximum refinement attempts"

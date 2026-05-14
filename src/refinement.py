@@ -685,17 +685,35 @@ Return ONLY the validation result.
 
     def run_refinement_loop(self, content, constraints, content_type, max_retries=3):
         response = self.generate(content, constraints, content_type)
+        validations = []
+        retries_used = 0
 
-        for i in range(max_retries):
+        for i in range(max_retries + 1):
             validation = self.validate(
                 original_content=content,
                 response=response,
                 constraints=constraints,
                 content_type=content_type
             )
+            validations.append(validation)
 
             if validation["status"] == "PASS":
-                return response
+                return {
+                    "refined_content": response,
+                    "validation_status": "PASS",
+                    "retries_used": retries_used,
+                    "final_validation": validation["raw"],
+                    "validation_history": validations
+                }
+
+            if i == max_retries:
+                return {
+                    "refined_content": response,
+                    "validation_status": "FAIL",
+                    "retries_used": retries_used,
+                    "final_validation": validation["raw"],
+                    "validation_history": validations
+                }
 
             response = self.generate_with_retry(
                 original_content=content,
@@ -704,8 +722,15 @@ Return ONLY the validation result.
                 constraints=constraints,
                 content_type=content_type
             )
+            retries_used += 1
 
-        return response
+        return {
+            "refined_content": response,
+            "validation_status": "FAIL",
+            "retries_used": retries_used,
+            "final_validation": "",
+            "validation_history": validations
+        }
 
 
 
@@ -735,6 +760,11 @@ class RefinementEngine:
             Feedback: {thought}
             """
 
+        validation_feedback = packet.get("validation_feedback")
+        if validation_feedback:
+            feedback_text += "\n\nVALIDATION FEEDBACK:\n\n"
+            feedback_text += validation_feedback
+
         return feedback_text
 
     def get_content_type(self, route):
@@ -762,7 +792,7 @@ class RefinementEngine:
         content_type = self.get_content_type(packet["route"])
         constraints = self.refiner.translate_feedback(feedback_text, content_type)
 
-        refined_content = self.refiner.run_refinement_loop(
+        refinement_result = self.refiner.run_refinement_loop(
             content=packet["content"],
             constraints=constraints,
             content_type=content_type,
@@ -773,6 +803,13 @@ class RefinementEngine:
             "eval_filename": packet["eval_filename"],
             "route": packet["route"],
             "constraints": constraints,
-            "refined_content": refined_content,
-            "max_attempts": retries
+            "repair_plan": None,
+            "structure_facts": None,
+            "original_structure_facts": None,
+            "refined_content": refinement_result["refined_content"],
+            "validation_status": refinement_result["validation_status"],
+            "retries_used": refinement_result["retries_used"],
+            "final_validation": refinement_result["final_validation"],
+            "validation_history": refinement_result["validation_history"],
+            "max_retries": retries
         }
