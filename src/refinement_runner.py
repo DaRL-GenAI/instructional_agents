@@ -3,16 +3,18 @@ import os
 import argparse
 from src.agents import LLM
 from src.refinement import RefinementEngine
-
+from pathlib import Path
+from src.compile import LaTeXCompiler
 
 class RefinementRunner:
 
-    def __init__(self, model_name, exp_name, threshold=3.0, retries=3, refine=False):
+    def __init__(self, model_name, exp_name, route="all", threshold=3.0, retries=3, refine=False):
         self.model_name = model_name
         self.exp_name = exp_name
         self.threshold = threshold
         self.retries = retries
         self.refine = refine
+        self.route = route
 
         self.generated_course_path = f"exp/{exp_name}"
         self.evaluation_folder = f"eval/{model_name}-Evaluation_{exp_name}/evaluation_results"
@@ -36,6 +38,8 @@ class RefinementRunner:
             if section_name == "overall_summary":
                 continue
             route = self.get_route_for_file_type(section_name)
+            if self.route != "all" and route != self.route:
+                continue
             files = section_data.get("files", [])
 
             for file_data in files:
@@ -274,6 +278,103 @@ class RefinementRunner:
 
         return refined_path
 
+    def extract_latex_errors(self, cache_dir):
+
+        error_lines = []
+        unique_errors = set()
+
+        log_files = [
+            "slides_compilation.log",
+            "slides_pdflatex.log"
+        ]
+
+        keywords = [
+            "LaTeX Error",
+            "Undefined control sequence",
+            "Emergency stop",
+            "Fatal error",
+            "Missing $",
+            "Missing }",
+            "! "
+        ]
+
+        for log_name in log_files:
+
+            log_path = Path(cache_dir) / log_name
+
+            if not log_path.exists():
+                continue
+
+            try:
+
+                with open(log_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+
+                for line in lines:
+
+                    stripped = line.strip()
+
+                    if any(keyword in stripped for keyword in keywords):
+                        if stripped not in unique_errors:
+                            error_lines.append(stripped)
+                            unique_errors.add(stripped)
+
+            except Exception:
+                continue
+
+        if not error_lines:
+            error_lines.append(
+                "PDF compilation failed with no specific LaTeX errors found"
+            )
+
+        return error_lines[:10]
+
+    def compile_refined_slides(self, saved_path):
+
+        tex_path = Path(saved_path)
+        compiler = LaTeXCompiler(f"{self.generated_course_path}/refined")
+        latex_available = compiler.validate_latex_environment()
+
+        if not latex_available:
+            return {
+                "compile_status": "NOT_RUN",
+                "compile_errors": ["pdflatex not available"],
+                "pdf_path": None
+            }
+
+        try:
+            cache_dir = compiler.create_cache_directory(tex_path)
+
+            pdf_file = compiler.compile_latex(tex_path, cache_dir)
+
+            if pdf_file and pdf_file.exists():
+                compiler.move_pdf_to_source_location(pdf_file, tex_path)
+                final_pdf_path = tex_path.with_suffix(".pdf")
+
+                return {
+                    "compile_status": "PASS",
+                    "compile_errors": [],
+                    "pdf_path": str(final_pdf_path)
+                }
+
+            compile_errors = self.extract_latex_errors(
+                cache_dir
+            )
+
+            return {
+                "compile_status": "FAIL",
+                "compile_errors": compile_errors,
+                "pdf_path": None
+            }
+
+        except Exception as e:
+            return {
+                "compile_status": "FAIL",
+                "compile_errors": [str(e)],
+                "pdf_path": None
+            }
+
+
 
     def run(self):
         queue = self.build_repair_queue()
@@ -291,7 +392,7 @@ class RefinementRunner:
         refinement_results = []
 
         for item in queue:
-            if item["route"] != "assessment":
+            if item["route"] not in ["assessment", "slides"]:
                 print(
                     f"Skipping {item['eval_filename']}: "
                     f"route '{item['route']}' not implemented yet"
@@ -308,6 +409,18 @@ class RefinementRunner:
                     packet,
                     result["refined_content"]
                 )
+
+                compile_result = {
+                    "compile_status": "NOT_RUN",
+                    "compile_errors": [],
+                    "pdf_path": None
+                }
+
+                if packet["route"] == "slides":
+
+                    compile_result = self.compile_refined_slides(
+                        saved_path
+                    )
 
                 report_entry = {
                     "eval_filename": packet.get("eval_filename"),
@@ -331,7 +444,10 @@ class RefinementRunner:
                     "pipeline_status": "success",
                     "validation_status": result.get("validation_status"),
                     "final_validation": result.get("final_validation"),
-                    "validation_history": result.get("validation_history")
+                    "validation_history": result.get("validation_history"),
+                    "compile_status": compile_result["compile_status"],
+                    "compile_errors": compile_result["compile_errors"],
+                    "pdf_path": compile_result["pdf_path"]
                 }
 
                 refinement_results.append(report_entry)
@@ -396,6 +512,14 @@ def main():
         action="store_true",
         help="Run refinement pipeline"
     )
+    parser.add_argument(
+    "--route",
+    type=str,
+    default="all",
+    choices=["all", "assessment", "slides", "script", "syllabus", "objectives"],
+    help="Only refine files for this route"
+)
+
     args = parser.parse_args()
 
     runner = RefinementRunner(
@@ -403,7 +527,8 @@ def main():
         exp_name=args.exp,
         threshold=args.threshold,
         retries=args.retries,
-        refine=args.refine
+        refine=args.refine,
+        route=args.route
     )
 
     runner.run()
