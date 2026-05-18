@@ -244,6 +244,28 @@ class RefinementRunner:
             "validation_reports": queue_item.get("validation_reports"),
         }
 
+        if queue_item.get("route") == "script":
+            source_path = queue_item.get("source_path")
+            slides_path = source_path.replace("script.md", "slides.tex")
+            refined_slides_path = slides_path.replace(
+                self.generated_course_path,
+                f"{self.generated_course_path}/refined",
+                1
+            )
+
+            if os.path.exists(refined_slides_path):
+                slides_path = refined_slides_path
+
+            if not os.path.exists(slides_path):
+                raise FileNotFoundError(
+                    f"Matching slides file not found for script: {slides_path}"
+                )
+
+            with open(slides_path, "r", encoding="utf-8") as f:
+                packet["slides_content"] = f.read()
+
+            packet["slides_path"] = slides_path
+
         return packet
 
     def map_source_path_to_refined_path(self, source_path):
@@ -392,7 +414,7 @@ class RefinementRunner:
         refinement_results = []
 
         for item in queue:
-            if item["route"] not in ["assessment", "slides"]:
+            if item["route"] not in ["assessment", "slides", "script"]:
                 print(
                     f"Skipping {item['eval_filename']}: "
                     f"route '{item['route']}' not implemented yet"

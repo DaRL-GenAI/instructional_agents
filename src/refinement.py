@@ -11,45 +11,33 @@ class SlideRefiner:
     def refine_slides(self, content, feedback_text, max_retries=1):
 
         frames = self.parse_frames(content)
-
         frame_summary = self.build_frame_summary(frames)
-
         locator_response = self.locate_frames(feedback_text, frame_summary)
-
         target_indexes = self.parse_target_frame_indexes(locator_response)
-
         target_frames = self.get_target_frames(frames, target_indexes)
 
         edited_frames = []
-
         validation_history = []
-
         refined_content = content
 
         for attempt in range(max_retries + 1):
-
             working_frames = self.parse_frames(refined_content)
 
             for target_frame in target_frames:
-
                 frame_index = target_frame["index"]
-
                 current_target_frame = working_frames[frame_index]
-
                 frame_context = self.build_target_frame_context(
                     working_frames,
                     current_target_frame
                 )
 
                 if attempt == 0:
-
                     revised_body = self.refine_frame_body(
                         frame_context,
                         feedback_text
                     )
 
                 else:
-
                     previous_validation = validation_history[-1]
 
                     validation_errors = "\n".join(
@@ -546,8 +534,9 @@ Return ONLY the output.
     NEXT FRAME:
     Frame {next_frame.get("index")}: {next_frame.get("title")}
     """
-
         return context_text.strip()
+
+
 
     def refine_frame_body(self, frame_context, feedback_text):
 
@@ -657,6 +646,383 @@ Return ONLY the output.
             )
         return updated_latex
 
+
+
+class ScriptRefiner:
+
+    def __init__(self, llm):
+        self.llm = llm
+        self.slide_refiner = SlideRefiner(llm)
+
+    def refine_scripts(self, script_md, slides_tex, feedback_text):
+        script_sections = self.parse_sections(script_md)
+        slide_frames = self.slide_refiner.parse_frames(slides_tex)
+
+        sections_to_frames = self.map_sections_to_frames(script_sections, slide_frames)
+        locator_response = self.locate_sections(feedback_text, sections_to_frames)
+        target_indexes = self.parse_target_section_indexes(locator_response)
+        target_sections = self.get_target_sections(script_sections, target_indexes)
+
+        for section in target_sections:
+            mapped_section = next(
+                (
+                    mapped for mapped in sections_to_frames
+                    if mapped["section_index"] == section["index"]
+                ),
+                None
+            )
+            if mapped_section is None:
+                continue
+
+            slide_context = self.build_section_slide_content(mapped_section, slide_frames)
+
+            revised_body = self.refine_section_body(section, slide_context, feedback_text)
+            rebuilt_section = self.rebuild_section(section, revised_body)
+            section["new_content"] = rebuilt_section
+        refined_script = self.replace_sections(script_md, script_sections)
+
+        edited_sections = [
+            {
+                "index": section["index"],
+                "title": section["title"]
+            }
+            for section in target_sections
+        ]
+
+        return {
+            "refined_content": refined_script,
+            "locator_response": locator_response,
+            "target_indexes": target_indexes,
+            "edited_sections": edited_sections,
+            "mapped_sections": sections_to_frames,
+            "validation_status": "NOT_VALIDATED",
+            "validation_errors": [],
+            "validation_history": [],
+            "retries_used": 0
+        }
+
+
+
+    def parse_sections(self, script_md):
+
+        pattern = r"""
+        (
+            \#\#\sSection\s(\d+):\s(.+?)\n
+            (?:\*\((\d+)\sframes?\)\*\n)?
+            (.*?)
+        )
+        (?=\n\#\#\sSection|\Z)
+        """
+
+        matches = re.finditer(
+            pattern,
+            script_md,
+            re.DOTALL | re.VERBOSE
+        )
+
+        parsed_sections = []
+
+        for match in matches:
+            full_content = match.group(1).strip()
+            section_index = int(match.group(2))
+            section_title = match.group(3).strip()
+            frame_count_text = match.group(4)
+            frame_count = int(frame_count_text) if frame_count_text else 1
+            body = match.group(5).strip()
+
+            if body.endswith("---"):
+                body = body[:-3].strip()
+
+            parsed_sections.append({
+                "index": section_index,
+                "title": section_title,
+                "frame_count": frame_count,
+                "original_content": full_content,
+                "content": full_content,
+                "body": body
+            })
+
+        return parsed_sections
+    def normalize_title(self, text):
+
+        text = text.lower()
+        text = re.sub(r"[^\w\s]", "", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
+
+    def map_sections_to_frames(self, script_sections, slide_frames):
+
+        section_start_indexes = []
+
+        for section in script_sections:
+            normalized_section = self.normalize_title(
+                section["title"]
+            )
+            matched_frame_index = None
+            for frame in slide_frames:
+                normalized_frame = self.normalize_title(
+                    frame["title"]
+                )
+                if (
+                    normalized_section in normalized_frame
+                    or
+                    normalized_frame in normalized_section
+                ):
+                    matched_frame_index = frame["index"]
+                    break
+            section_start_indexes.append(matched_frame_index)
+
+        mapped_sections = []
+
+        for i, section in enumerate(script_sections):
+            current_start = section_start_indexes[i]
+
+            if current_start is None:
+                continue
+            if i < len(script_sections) - 1:
+                next_start = section_start_indexes[i + 1]
+                if next_start is None:
+                    end_index = len(slide_frames) - 1
+                else:
+                    end_index = next_start - 1
+
+            else:
+                end_index = len(slide_frames) - 1
+
+            owned_frames = []
+
+            for frame in slide_frames:
+                idx = frame["index"]
+                if current_start <= idx <= end_index:
+                    owned_frames.append({
+                        "index": idx,
+                        "title": frame["title"]
+                    })
+
+            mapped_sections.append({
+                "section_index": section["index"],
+                "section_title": section["title"],
+                "frames": owned_frames
+            })
+
+        return mapped_sections
+
+    def build_section_slide_content(self, mapped_section, slide_frames):
+        context_text = ""
+        context_text += f"""
+
+SCRIPT SECTION:
+Section {mapped_section["section_index"]}: {mapped_section["section_title"]}
+RELATED SLIDE FRAMES:
+
+"""
+        owned_index = {frame["index"] for frame in mapped_section["frames"]}
+
+        for frame in slide_frames:
+            if frame["index"] not in owned_index:
+                continue
+            context_text += f"""
+Frame {frame["index"]}: {frame["title"]}
+{frame["content"]}
+"""
+        return context_text.strip()
+
+    def locate_sections(self, feedback_text, mapped_sections):
+        section_summary = ""
+
+        for mapped in mapped_sections:
+            section_summary += f"""
+Section {mapped["section_index"]}: {mapped["section_title"]}
+Related frames:
+"""
+            frame_parts = []
+            for frame in mapped["frames"]:
+                frame_parts.append(
+                    f'{frame["index"]} {frame["title"]}'
+                )
+            section_summary += ", ".join(frame_parts)
+            section_summary += "\n\n"
+
+        prompt = f"""
+You are a script refinement locator.
+
+Your job is to identify which script sections are MOST LIKELY responsible
+for the evaluator feedback.
+
+You are NOT rewriting the script.
+You are NOT evaluating every section.
+You are ONLY locating likely problem regions.
+
+---
+
+EVALUATOR FEEDBACK:
+{feedback_text}
+
+---
+
+SCRIPT SECTION SUMMARY:
+{section_summary}
+
+---
+
+RULES:
+
+- Use section titles and related slide frame titles to infer relevance.
+- Select only sections that are clearly connected to the feedback.
+- Prefer precision over recall.
+- Keep the list compact.
+- Return a maximum of 4 sections.
+- If feedback is broad, choose the sections where the issue is most likely visible.
+- Ignore attribution/citation complaints unless they are tied to a concrete non-citation script problem.
+- Use short reason phrases, not long explanations.
+
+---
+
+OUTPUT FORMAT (STRICT):
+
+TARGET_SECTIONS:
+- Section <index>: <short reason>
+- Section <index>: <short reason>
+
+If no strong match exists:
+TARGET_SECTIONS:
+- None confidently identified
+
+---
+
+Return ONLY the output.
+"""
+        messages = [{"role": "user", "content": prompt}]
+        responses = self.llm.generate_response(messages)[0]
+
+        return responses
+
+
+    def parse_target_section_indexes(self, locator_response):
+        if not locator_response:
+            return []
+        index_pattern = r"Section\s+(\d+)"
+        indexes = re.findall(index_pattern, locator_response)
+        return sorted(set(int(idx) for idx in indexes))
+
+
+    def get_target_sections(self, script_sections, target_indexes):
+        target_sections = []
+
+        for section in script_sections:
+            if section["index"] in target_indexes:
+                target_sections.append(section)
+
+        return target_sections
+
+
+    def refine_section_body(self, section, slide_context, feedback_text):
+        prompt = f"""
+You are a careful instructional script editor.
+
+Your job is to refine ONE script section using evaluator feedback and the
+matching slide frames.
+
+You are NOT rewriting the whole script.
+You are NOT changing the section heading.
+You are ONLY editing the spoken narration/body for this section.
+
+---
+
+SCRIPT SECTION:
+Section {section["index"]}: {section["title"]}
+
+ORIGINAL SECTION BODY:
+{section["body"]}
+
+---
+
+MATCHING SLIDE CONTEXT:
+{slide_context}
+
+---
+
+EVALUATOR FEEDBACK:
+{feedback_text}
+
+---
+
+RULES:
+
+- Keep the script aligned with the matching slide frames.
+- Preserve useful explanations, transitions, examples, and presenter cues.
+- Make the smallest useful changes needed to address the feedback.
+- Improve clarity, pacing, engagement, accessibility, and slide alignment where relevant.
+- Add interactive prompts only when feedback asks for engagement or active learning.
+- If adding an interactive prompt, keep it brief and presenter-friendly.
+- Do not add assessment questions, rubrics, grading criteria, or syllabus-style policy text.
+- Do not add citations, references, source notes, bibliography entries, footnotes, or attribution text.
+- Do not invent sources, authors, years, URLs, papers, books, organizations, or citation keys.
+- If evaluator feedback asks for attribution or citations, do not repair that issue in script text.
+- Do not add generic meta commentary such as "Certainly", "Here is", or "This script is designed to".
+- Do not over-expand the section.
+- Do not mention slide/frame content that is not present in the matching slide context.
+- Preserve markdown readability.
+
+---
+
+OUTPUT RULES:
+
+- Return ONLY the revised body text for this script section.
+- Do NOT return the section heading.
+- Do NOT return the frame-count line.
+- Do NOT return the trailing --- separator.
+- Do NOT include markdown code fences.
+"""
+
+
+        messages = [{"role": "user", "content": prompt}]
+        response = self.llm.generate_response(messages)[0]
+        return response
+
+
+    def rebuild_section(self, section, new_body):
+        title = section.get("title")
+        index = section.get("index")
+        frame_count = section.get("frame_count")
+
+        frame_word = "frame" if frame_count == 1 else "frames"
+
+
+        new_body = new_body.strip()
+
+        if title is None or index is None or frame_count is None:
+            return section.get("content")
+
+        header = f"## Section {index}: {title}"
+        frame_line = f"*({frame_count} {frame_word})*"
+
+        rebuilt_section = f"""{header}
+{frame_line}
+
+{new_body}
+
+---"""
+        return rebuilt_section
+
+
+    def replace_sections(self, script_md, script_sections):
+        updated_script = script_md
+
+        for section in script_sections:
+            if "new_content" not in section:
+                continue
+
+            updated_script = updated_script.replace(
+                section["content"],
+                section["new_content"],
+                1
+            )
+
+        return updated_script
+
+
+
 class Refiner():
 
     def __init__(self, llm):
@@ -676,12 +1042,15 @@ ASSESSMENT CONSTRAINT POLICY:
 - If feedback asks for feedback mechanisms, prefer reusable peer/self/instructor feedback directions tied to task types rather than repeated generic feedback after every question.
 """
 
-        if content_type == "slides":
+        if content_type == "script":
             return """
-SLIDES CONSTRAINT POLICY:
+SCRIPT CONSTRAINT POLICY:
+- constraints may refer to narration clarity, explanation depth, transitions, engagement, examples, pacing, accessibility, and slide alignment
+- preserve the script's instructional purpose
+- do not convert the script into slides, assessment questions, or a syllabus
+- do not invent citations or attribution
+- prefer local edits over full rewrites
 
-- Slide refinement is not implemented yet.
-- Do not generate detailed slide repair constraints until the slide refinement architecture is designed.
 """
 
         return """
@@ -711,12 +1080,17 @@ ASSESSMENT GENERATION POLICY:
 - Limit added material. If one rubric can cover a task type, do not repeat it many times.
 """
 
-        if content_type == "slides":
+        if content_type == "script":
             return """
-SLIDES GENERATION POLICY:
+SCRIPT GENERATION POLICY:
 
-- Slide refinement is not implemented yet.
-- Do not attempt slide generation with this prompt policy.
+- preserve existing section/chapter structure
+- keep it readable as spoken instructional narration
+- improve clarity, transitions, examples, engagement, and alignment
+- keep technical explanations accurate and beginner-friendly
+- do not add fake citations
+- do not add quiz/rubric/assessment sections unless feedback explicitly asks
+- avoid bloating the script
 """
 
         return """
@@ -740,12 +1114,17 @@ ASSESSMENT VALIDATION POLICY:
 - Check distribution constraints across the whole assessment, not by assuming each section must look identical.
 """
 
-        if content_type == "slides":
+        if content_type == "script":
             return """
-SLIDES VALIDATION POLICY:
+SCRIPT VALIDATION POLICY:
 
-- Slide refinement is not implemented yet.
-- Mark slide validation as unsupported if this route is reached before implementation.
+- script should remain a teaching script
+- feedback-targeted weaknesses should be repaired
+- narration should be coherent and speakable
+- added examples should be relevant
+- no fake citations or source placeholders
+- no unnecessary expansion
+- no conversion into an assessment/syllabus/outline
 """
 
         return """
@@ -1419,7 +1798,7 @@ class RefinementEngine:
         elif route == "slides":
             return route
         elif route == "script":
-            return "general"
+            return route
         elif route == "syllabus":
             return "general"
         elif route == "objectives":
@@ -1491,6 +1870,37 @@ class RefinementEngine:
                 "slide_validation_errors": slide_result["slide_validation_errors"],
                 "compile_status": "NOT_RUN",
                 "compile_errors": [],
+                "max_retries": retries
+            }
+
+        elif packet["route"] == "script":
+
+            feedback_text = self.format_metrics_feedback(packet, excluded_metrics=["attribution"])
+
+            script_result = ScriptRefiner(self.llm).refine_scripts(
+                script_md=packet["content"],
+                slides_tex=packet["slides_content"],
+                feedback_text=feedback_text
+            )
+
+            return {
+                "eval_filename": packet["eval_filename"],
+                "route": packet["route"],
+                "constraints": feedback_text,
+                "repair_plan": script_result["locator_response"],
+                "structure_facts": {
+                    "target_indexes": script_result["target_indexes"],
+                    "edited_sections": script_result["edited_sections"]
+                },
+                "original_structure_facts": {
+                    "mapped_sections": script_result["mapped_sections"]
+                },
+                "refined_content": script_result["refined_content"],
+                "validation_status": script_result["validation_status"],
+                "retries_used": script_result["retries_used"],
+                "final_validation": "",
+                "validation_history": script_result["validation_history"],
+                "script_validation_errors": script_result["validation_errors"],
                 "max_retries": retries
             }
 
