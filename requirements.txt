@@ -23,6 +23,9 @@ numpy>=1.24.0
 # PPTX generation (pptxgenjs via Node.js) + content QA
 markitdown[pptx]>=0.1.0
 
+# Markdown textbook ingestion (PR #1, W2)
+markdown-it-py>=3.0.0
+
 # Note: pdflatex is installed via system package manager in Docker
 #
 # Node.js dependencies (install via npm, not pip):

@@ -1,7 +1,9 @@
 """Pydantic data models for textbook-grounded material generation.
 
-Canonical definitions live in §2 of SUMMER_PLAN.md (the design doc). This
-module scaffolds them verbatim; refinements go through PR review.
+Defines the textbook intermediate representation (Paragraph -> Section ->
+Chapter -> Textbook) plus the retrieval and grounding artifacts
+(EvidenceChunk, GeneratedClaim, GroundingReport) used by downstream
+agents to ingest sources, retrieve evidence, and verify generated claims.
 """
 
 from typing import List, Literal, Optional, Tuple
