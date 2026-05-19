@@ -414,7 +414,7 @@ class RefinementRunner:
         refinement_results = []
 
         for item in queue:
-            if item["route"] not in ["assessment", "slides", "script"]:
+            if item["route"] not in ["assessment", "slides", "script", "syllabus", "objectives"]:
                 print(
                     f"Skipping {item['eval_filename']}: "
                     f"route '{item['route']}' not implemented yet"

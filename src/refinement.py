@@ -373,8 +373,8 @@ RULES:
 - Preserve valid existing edits whenever possible.
 - Fix ONLY the reported validation failures.
 - Preserve valid Beamer LaTeX syntax.
-- Do NOT add citations, references, source notes, bibliography entries, footnotes, or attribution text.
-- Do NOT invent sources, authors, years, URLs, papers, books, organizations, or citation keys.
+- Do NOT add unverifiable external-evidence claims or footnotes.
+- Do NOT invent outside materials, authors, dates, organizations, or locator keys.
 - Do NOT return frame wrappers.
 - Do NOT include markdown fences.
 - Return ONLY valid Beamer body content.
@@ -570,10 +570,10 @@ Return ONLY the output.
     - Keep the slide concise and presentation-friendly.
     - Preserve valid Beamer LaTeX syntax.
     - Preserve existing formatting structure when possible.
-    - Do NOT add citations, references, source notes, bibliography entries, footnotes, or attribution text.
-    - Do NOT invent sources, authors, years, URLs, papers, books, organizations, or citation keys.
-    - If evaluator feedback asks for attribution or citations, do NOT repair that issue in slide text.
-    - Focus on non-attribution issues such as clarity, alignment, examples, depth, structure, and learner accessibility.
+    - Do NOT add unverifiable external-evidence claims or footnotes.
+    - Do NOT invent outside materials, authors, dates, organizations, or locator keys.
+    - Ignore feedback that requires unavailable outside evidence.
+    - Focus on clarity, alignment, examples, depth, structure, and learner accessibility.
     - If reducing density, simplify or condense content instead of expanding it.
     - Do not add unnecessary sections or filler content.
 
@@ -873,7 +873,7 @@ RULES:
 - Keep the list compact.
 - Return a maximum of 4 sections.
 - If feedback is broad, choose the sections where the issue is most likely visible.
-- Ignore attribution/citation complaints unless they are tied to a concrete non-citation script problem.
+- Ignore feedback that requires unavailable outside evidence unless it is tied to a concrete script problem.
 - Use short reason phrases, not long explanations.
 
 ---
@@ -956,9 +956,9 @@ RULES:
 - Add interactive prompts only when feedback asks for engagement or active learning.
 - If adding an interactive prompt, keep it brief and presenter-friendly.
 - Do not add assessment questions, rubrics, grading criteria, or syllabus-style policy text.
-- Do not add citations, references, source notes, bibliography entries, footnotes, or attribution text.
-- Do not invent sources, authors, years, URLs, papers, books, organizations, or citation keys.
-- If evaluator feedback asks for attribution or citations, do not repair that issue in script text.
+- Do not add unverifiable external-evidence claims or footnotes.
+- Do not invent outside materials, authors, dates, organizations, or locator keys.
+- Ignore feedback that requires unavailable outside evidence.
 - Do not add generic meta commentary such as "Certainly", "Here is", or "This script is designed to".
 - Do not over-expand the section.
 - Do not mention slide/frame content that is not present in the matching slide context.
@@ -1036,20 +1036,62 @@ ASSESSMENT CONSTRAINT POLICY:
 - Constraints may refer to assessment items, activities, rubrics, scoring guides, feedback, question formats, and learning-objective alignment.
 - If feedback asks for higher-order thinking, define it as learner-produced reasoning, application, analysis, synthesis, evaluation, design, or justification.
 - Do not let selected-response items count as higher-order unless learners must also write or explain reasoning and that reasoning has evaluation guidance.
-- Prefer assessment-type-level rubrics over repeated scoring blocks after every question.
-- If feedback asks for more rubrics or scoring criteria, scope them to major task types unless feedback explicitly requires item-level rubrics.
+- Prefer major-assessment-type rubrics over repeated scoring blocks after every question.
+- If feedback asks for more rubrics or scoring criteria, require one compact rubric for each major assessment type present or added: selected-response/quiz, constructed-response, activity/project/presentation, and discussion/reflection when present.
+- Do not create constraints requiring rubrics for a fixed percentage of individual items unless feedback explicitly asks for item-level rubrics.
 - If feedback asks for more variety, require a balanced mix across the whole assessment, not the same mix in every section.
-- If feedback asks for feedback mechanisms, prefer reusable peer/self/instructor feedback directions tied to task types rather than repeated generic feedback after every question.
+- If feedback asks for clearer instructions, require learner-facing instructions for major activity/project types or the overall assessment, not step-by-step directions for every question.
+- If feedback asks for feedback mechanisms, prefer reusable self/peer/instructor feedback directions tied to major task types rather than repeated generic feedback after every question.
+- If feedback says MCQs or selected-response items dominate, constrain selected-response balance across the whole assessment; do not force every section to contain the same mix.
+- Avoid exact percentages unless the evaluator feedback gives exact numbers. If a threshold is needed, prefer "no more than 60% selected-response" unless the feedback clearly demands a stricter threshold.
+- Convert only enough low-depth selected-response items into constructed-response, applied, reflective, project, peer-review, or presentation tasks to satisfy variety and rigor constraints.
 """
 
-        if content_type == "script":
+        elif content_type == "syllabus":
             return """
-SCRIPT CONSTRAINT POLICY:
-- constraints may refer to narration clarity, explanation depth, transitions, engagement, examples, pacing, accessibility, and slide alignment
-- preserve the script's instructional purpose
-- do not convert the script into slides, assessment questions, or a syllabus
-- do not invent citations or attribution
-- prefer local edits over full rewrites
+SYLLABUS CONSTRAINT POLICY:
+
+- Constraints may refer to course overview, weekly schedule, learning objectives, assessment methods, grading policies, course policies, accessibility, learner support, and transparency.
+- Preserve the syllabus as a course-level planning document.
+- Do not convert the syllabus into lecture notes, slide content, assessments, or a script.
+- Prefer targeted policy, schedule, objective, or assessment-method repairs over rewriting the whole syllabus.
+- If feedback asks for clearer policies, require concrete learner-facing policy language.
+- If feedback asks for alignment, connect course objectives, weekly topics, and assessment methods without expanding unnecessarily.
+- If feedback asks for accessibility or learner support, add concise support mechanisms such as office hours placeholders, accommodations language, feedback channels, LMS/resource-page guidance, or support descriptions.
+- If feedback asks for due dates, scope the repair to major graded deliverables already present in the syllabus unless the original document clearly contains weekly assignments.
+- For recurring assignments that are mentioned but not individually listed, require a recurring due rule rather than invented dates for every assignment.
+- Treat recurring assignment categories in the assessment section, such as weekly assignments or quizzes, as major graded work that should receive a recurring due rule.
+- Do not require every week to have a due date unless every week in the original schedule already contains a named graded deliverable.
+- Do not create "each week" constraints from vague feedback about schedule clarity.
+- A good due-date constraint names the specific deliverable types: recurring weekly assignments, midterm project, final project, quizzes, participation, or presentations.
+- Do not create "100% of assignments" constraints unless every assignment is explicitly listed in the original schedule.
+- If feedback asks for access details, require placeholder access procedures that explain where/when students will receive access, not real external artifacts.
+- If feedback mentions access to resources, create constraints for only the concrete resources named in the feedback or original syllabus.
+- Do not require three access procedures unless three distinct required resources are named.
+- Do not create constraints requiring real course logistics, institutional details, instructor details, or external materials.
+- If access details are unknown, require learner-facing procedures such as "setup instructions will be posted in the LMS Course Resources area during Week 1."
+- If feedback asks for more engaging narrative, constrain concrete connection language between course goals, practice work, assessments, ethics, or learner expectations. Do not require subjective "compelling" prose.
+
+"""
+        elif content_type == "objectives":
+            return """
+LEARNING OBJECTIVES CONSTRAINT POLICY:
+
+- Constraints may refer to objective clarity, measurability, coverage, alignment, scope, Bloom-style action verbs, and learner outcomes.
+- Preserve the artifact as a concise list of course-level learning objectives.
+- Do not convert objectives into a syllabus, schedule, assessment plan, lesson script, or slide outline.
+- Prefer revising weak objectives over adding many new objectives.
+- If feedback asks for measurability, require observable learner actions such as define, apply, analyze, evaluate, design, implement, compare, or communicate.
+- If feedback asks for coverage, repair missing topic areas with the smallest useful number of objectives.
+- If feedback asks for alignment, ensure objectives can plausibly connect to course assessments and chapter topics.
+- Preserve strong measurable verbs from the original when they are already appropriate.
+- Do not weaken objectives by replacing analyze, evaluate, assess, apply, demonstrate, implement, design, or master with weaker verbs such as understand, learn, know, recognize, identify, outline, explore, discuss, or appreciate.
+- If an original objective already uses a strong measurable verb, the repaired objective must keep that verb or replace it with an equally strong verb.
+- If feedback says objectives are too technical for beginners, require simple wording or parenthetical definitions only for the specific technical terms that may confuse beginners.
+- Do not require a fixed percentage of objectives to be foundational unless the feedback explicitly says there are too few foundational objectives.
+- Do not create constraints that weaken advanced but appropriate introductory objectives; preserve rigor while clarifying language.
+- Do not create constraints requiring materials outside the learning-objectives artifact.
+- Ignore feedback about unavailable external evidence or access artifacts; those belong to a separate resource-curation pass.
 
 """
 
@@ -1075,22 +1117,60 @@ ASSESSMENT GENERATION POLICY:
   2. provide a brief justification
   Then include concise criteria for the justification.
 - If a task is truly open-ended, remove A/B/C/D choices and provide expected-response guidance or a rubric.
-- Prefer compact rubrics for major task types, activities, or sections. Do not add near-identical scoring criteria after every question unless the constraint explicitly requires item-level scoring.
+- If overall instructions are needed, add one "Overall Instructions" block near the beginning. Make it clear, learner-facing, and at least 100 words when the constraints request comprehensive instructions.
+- Add one compact "Assessment Rubrics" section near the end when rubrics or scoring criteria are required.
+- In "Assessment Rubrics", provide separate rubrics only for major assessment types present or added: selected-response/quiz items, constructed-response questions, activities/projects/presentations, and discussions/reflections when present.
+- Each rubric should use exactly three performance levels: Exceeds Expectations, Meets Expectations, Needs Revision.
+- Do not repeat rubrics after every question unless the constraint explicitly requires item-level scoring.
+- Add one "Feedback Guidance" section near the end when feedback mechanisms are required.
+- In "Feedback Guidance", include concrete guidance for self-reflection, peer feedback, and instructor/revision feedback when applicable.
 - Feedback mechanisms should be reusable and specific: peer review, self-reflection, revision guidance, instructor checkpoints, or answer-improvement prompts tied to task types.
+- Convert selected low-depth MCQs into open-ended/application/analysis questions when variety or higher-order thinking is required.
+- When converting an MCQ, convert the answer key into expected-response guidance or concise scoring criteria.
+- Keep support sections compact. A task-type rubric or feedback section should cover repeated task types instead of bloating every item.
 - Limit added material. If one rubric can cover a task type, do not repeat it many times.
 """
 
-        if content_type == "script":
+        if content_type == "syllabus":
             return """
-SCRIPT GENERATION POLICY:
+SYLLABUS GENERATION POLICY:
 
-- preserve existing section/chapter structure
-- keep it readable as spoken instructional narration
-- improve clarity, transitions, examples, engagement, and alignment
-- keep technical explanations accurate and beginner-friendly
-- do not add fake citations
-- do not add quiz/rubric/assessment sections unless feedback explicitly asks
-- avoid bloating the script
+- Preserve the existing syllabus heading structure and course-level purpose.
+- Keep the syllabus readable as a learner-facing course document.
+- Repair only the sections implicated by the constraints.
+- Improve clarity, organization, policy transparency, accessibility, alignment, and assessment descriptions where needed.
+- Keep weekly topics, grading categories, and course policies internally consistent.
+- Do not invent instructor names, emails, office hours, institutions, textbooks, legal policy text, or concrete course logistics.
+- If due dates are needed, add clear timing only for major graded deliverables already present in the syllabus unless weekly assignments are explicitly listed.
+- If recurring weekly assignments are mentioned but not individually listed, add a concise recurring due rule instead of inventing separate due dates.
+- Recurring due rule example: "Weekly programming assignments are due at the end of their assigned week unless otherwise noted in the LMS."
+- Put recurring due rules once in Assessment Methods or as one short note below the schedule.
+- Do not repeat the same recurring due rule across multiple weekly schedule rows.
+- Keep schedule rows compact; use the schedule for named deliverables like midterm and final projects.
+- If access details are needed, write procedural placeholders that tell students where/when to find access instructions.
+- Good access guidance examples: "Cloud setup instructions will be posted in the LMS Course Resources area during Week 1" or "The discussion forum will appear in the LMS navigation menu before the first discussion activity."
+- Avoid bare bracket placeholders when a sentence-level access procedure would be clearer.
+- Do not add unavailable external evidence or access artifacts.
+- Do not add lecture scripts, quiz questions, rubrics, or slide content.
+- Avoid bloating the syllabus with long explanations.
+"""
+
+        if content_type == "objectives":
+            return """
+LEARNING OBJECTIVES GENERATION POLICY:
+
+- Preserve the concise learning-objectives format.
+- Improve objectives by making them measurable, specific, and aligned with course topics.
+- Use observable action verbs and clear learner outcomes.
+- Preserve strong original verbs such as apply, analyze, evaluate, demonstrate, implement, design, and communicate when they fit the objective.
+- Do not downgrade strong verbs to weaker verbs such as identify, outline, explore, recognize, understand, learn, discuss, or appreciate.
+- If the original says evaluate, analyze, assess, apply, demonstrate, implement, design, or master, keep that level of cognitive demand.
+- Prefer strengthening vague objectives over simplifying strong ones.
+- Revise weak objectives before adding new ones.
+- Add objectives only when a meaningful course topic or competency is missing.
+- Avoid duplicative objectives that say the same thing in different words.
+- Do not add schedules, grading policies, lecture content, assessment questions, course materials, or unavailable external evidence.
+- Keep the final artifact compact and easy to scan.
 """
 
         return """
@@ -1109,22 +1189,66 @@ ASSESSMENT VALIDATION POLICY:
 - A question with higher-order verbs such as analyze, justify, evaluate, reflect, discuss, compare, design, or explain in depth must require learner-produced reasoning. If it only has A/B/C/D choices and a letter answer, mark Format consistency as FAIL.
 - If a selected-response item includes a written justification part, check that the justification has expected-response guidance or scoring criteria.
 - Do not count repeated generic scoring blocks as high-quality rubrics.
-- Prefer reusable task-type rubrics when they cover the relevant tasks clearly.
+- Treat reusable task-type rubrics as valid when constraints ask generally for rubrics, scoring guides, or scoring criteria.
+- Do not require item-level rubrics unless constraints explicitly require item-level rubrics.
+- A valid task-type rubric should match the relevant task type and include clear criteria plus three performance levels.
 - Check whether required feedback mechanisms are actionable and tied to learner improvement, not just named.
 - Check distribution constraints across the whole assessment, not by assuming each section must look identical.
+- Treat selected-response plus written justification as a mixed item only when the justification has scoring criteria or expected-response guidance.
+- Do not hard-fail tiny numeric artifacts such as a 99-word instruction block for a 100-word requirement when the instructions are otherwise clear and complete; note it as minor.
+- Fail fake higher-order tasks when they use verbs like analyze or evaluate but only require selecting A/B/C/D.
 """
 
-        if content_type == "script":
-            return """
-SCRIPT VALIDATION POLICY:
 
-- script should remain a teaching script
-- feedback-targeted weaknesses should be repaired
-- narration should be coherent and speakable
-- added examples should be relevant
-- no fake citations or source placeholders
-- no unnecessary expansion
-- no conversion into an assessment/syllabus/outline
+        if content_type == "syllabus":
+            return """
+SYLLABUS VALIDATION POLICY:
+
+- The response must remain a syllabus, not a lesson script, assessment file, or slide outline.
+- Required course-level sections should remain clear and internally consistent.
+- Weekly topics, learning objectives, assessment methods, grading policies, and course policies should not contradict each other.
+- Feedback-targeted weaknesses must be repaired with concrete syllabus language, not vague promises.
+- Policy language should be learner-facing and usable.
+- Added material must be traceable to the constraints.
+- Do not fail the response for missing real course logistics or external materials.
+- Invented course logistics, fake instructor details, or fake institutional policies are invalid repairs.
+- Procedural access placeholders are acceptable when real course details are unknown.
+- Do not require due dates for every weekly topic unless the original syllabus contains weekly graded assignments.
+- Recurring due rules are acceptable for recurring assignments that are mentioned but not individually listed.
+- Recurring graded categories from the assessment section, such as assignments or quizzes, can satisfy due-date clarity with a clear recurring due rule.
+- For major deliverables, due timing should be visible in the schedule or assessment section.
+- Bare bracket placeholders alone are weak; sentence-level access procedures are stronger and should pass when they tell students where/when access information will be provided.
+- Missing unavailable external evidence or access artifacts is not a validation failure.
+- If a constraint says "minimum of N" and the response provides exactly N, treat that count as satisfied.
+- Do not fail due-date clarity when named major deliverables have due timing and recurring graded categories have a recurring due rule.
+- Do not fail resource access if the response tells students where and when access instructions will be available.
+- Do not fail collaboration policy clarity if the response provides three concrete learner-facing guidelines or limits.
+- Do not fail narrative/coherence constraints for subjective style reasons if the introduction meaningfully connects course goals, activities, assessments, and expectations.
+- Minor prose quality concerns should be reported as suggestions, not hard failures, when concrete constraints are satisfied.
+- Passing requires targeted improvement without unnecessary expansion.
+"""
+
+        if content_type == "objectives":
+            return """
+LEARNING OBJECTIVES VALIDATION POLICY:
+
+- The response must remain a concise learning-objectives artifact.
+- Objectives should be measurable, specific, and learner-centered.
+- Objectives should use observable action verbs where possible.
+- Strong measurable verbs from the original should be preserved or strengthened, not replaced with vague verbs.
+- Mark validation as FAIL if a strong original objective is weakened from evaluate/analyze/assess/apply/demonstrate/implement/design/master to identify/outline/explore/recognize/understand/learn/discuss/appreciate without a clear reason.
+- Objectives should cover the course scope without becoming a full syllabus or assessment plan.
+- New objectives should be necessary, non-duplicative, and aligned with the course topic.
+- Do not treat vague verbs such as understand, know, or learn as strong measurable outcomes unless paired with observable evidence.
+- Treat define, explain, apply, analyze, assess, evaluate, demonstrate, implement, compare, communicate, select, and master as measurable verbs for learning-objective validation.
+- Do not fail strong verbs like analyze or evaluate merely because they could be more detailed; fail only if the learner action is unclear or not assessable.
+- Parenthetical beginner explanations are acceptable when they clarify technical terms without changing the objective's meaning.
+- If at least two objectives explicitly support beginner access or foundational knowledge, treat a 20% foundational requirement as satisfied for a 9-objective list.
+- Do not fail the response for missing external materials.
+- Missing unavailable external evidence or access artifacts is not a validation failure.
+- Do not accept invented schedules, policies, or non-objective content as valid repairs.
+- Minor wording awkwardness should be reported as a suggestion, not a hard failure, when the objectives are measurable and preserve the original intent.
+- Passing requires targeted improvement without unnecessary expansion.
 """
 
         return """
@@ -1161,6 +1285,9 @@ ENFORCEMENT RULES (CRITICAL):
 - Translate only substantive problems into constraints.
 - Preserve good existing structure wherever possible.
 - Prefer patching weak regions over replacing the whole document.
+- Do not make feedback more demanding than it is.
+- Do not convert vague evaluator criticism into universal "all/every/each" constraints unless the feedback explicitly says all/every/each.
+- Do not invent missing requirements that are not supported by the feedback or the original artifact type.
 - If feedback implies removal/reduction, define MAX limits.
 - If feedback implies addition/increase, define MIN thresholds.
 - If feedback implies balance, define BOTH MIN and MAX ranges.
@@ -1178,6 +1305,8 @@ SCOPE CONTROL RULES:
 - Do not create constraints that force large document expansion unless unavoidable.
 - Preserve the document's existing content type and purpose.
 - Do not require a full rewrite when a local repair can satisfy the feedback.
+- Prefer constraints on named/visible artifact elements over broad document-wide rules.
+- If the artifact does not list individual instances, require a reusable rule or procedure instead of inventing instance-level details.
 
 ---
 
@@ -1188,6 +1317,9 @@ ANTI-WEAKNESS RULES:
 - DO NOT use vague words like "improve", "enhance", "better"
 - DO NOT output soft suggestions
 - DO NOT overfit by requiring the same repair everywhere
+- DO NOT require every week/section/item to change because one area was unclear
+- DO NOT require arbitrary counts such as three procedures/examples unless the feedback or artifact clearly supports that count
+- DO NOT require exact dates, links, sources, institutional details, or platform details that are unavailable
 
 ---
 
@@ -1195,11 +1327,12 @@ CONSTRAINT QUALITY RULES:
 
 Every CONSTRAINT must be:
 
-- measurable (counts, %, required sections, or required wording)
+- checkable (counts, %, required sections, required wording, or clear yes/no presence)
 - enforceable (LLM cannot ignore it)
 - scoped (states WHERE the change should happen)
 - conservative (minimizes unnecessary rewriting)
 - format-aware (does not create invalid structures for the content type)
+- realistic (does not require unavailable facts, invented logistics, or unsupported details)
 
 ---
 
@@ -1228,6 +1361,12 @@ If feedback says:
 
 - weak feedback or guidance → enforce:
   - Actionable and concise guidance tied to major tasks or weak regions
+
+- unclear dates, logistics, or access → enforce:
+  - Named deliverables get visible timing
+  - Recurring categories get a recurring rule
+  - Unknown systems get procedural placeholders
+  - Do NOT require exact dates, links, or unavailable external details
 
 - unclear assessment expectations → enforce:
   - Clear learner-facing directions for major task types
@@ -1374,6 +1513,21 @@ If constraints require:
 - higher-order thinking → selectively transform low-depth content into reasoning/application-based content
 - support structures → add compact rubrics, guidance, examples, or feedback where needed
 - feedback/guidance → add concise actionable guidance tied to weak regions
+- recurring rule → state it once in the most relevant section, not repeatedly across similar rows/items
+
+---
+
+ASSESSMENT REPAIR EXECUTION:
+
+When CONTENT TYPE is assessment:
+
+- Put reusable instructions, rubrics, and feedback guidance in compact shared sections when they can cover repeated task types.
+- Do not add the same rubric or feedback block after every item unless item-level support is explicitly required.
+- If higher-order thinking is too low, convert the smallest useful number of recall items into constructed-response, scenario, justification, analysis, or application tasks.
+- If selected-response items are retained, keep answer choices and answer keys valid.
+- If selected-response items are converted, remove A/B/C/D choices and replace letter answers with expected-response guidance.
+- If rubrics are needed, create task-type rubrics with three levels: Exceeds Expectations, Meets Expectations, Needs Revision.
+- If feedback mechanisms are needed, create self, peer, and instructor/revision guidance tied to task types.
 
 ---
 
@@ -1534,6 +1688,20 @@ If constraints require:
 - higher-order thinking → selectively transform low-depth content into reasoning/application-based content
 - support structures → add compact rubrics, guidance, examples, or feedback where needed
 - feedback/guidance → add concise actionable guidance tied to weak regions
+- recurring rule → state it once in the most relevant section, not repeatedly across similar rows/items
+
+---
+
+ASSESSMENT RETRY EXECUTION:
+
+When CONTENT TYPE is assessment:
+
+- If validation says higher-order percentage/count is too low, convert only the minimum needed number of recall MCQs into application, analysis, justification, scenario, or constructed-response tasks.
+- If validation says instructions are slightly too short or incomplete, expand only the Overall Instructions block.
+- If validation says rubrics are generic, replace the Assessment Rubrics section with task-type-specific rubrics instead of rewriting the whole document.
+- If validation says feedback guidance is thin, expand only the Feedback Guidance section with concrete self, peer, and instructor/revision steps.
+- If validation says format variety is weak, convert selected low-depth items or add one compact alternative task type; do not redesign every section.
+- Preserve sections and items that validation already treats as successful.
 
 ---
 
@@ -1603,14 +1771,21 @@ VALIDATION RULES:
 
 - Check every constraint separately.
 - Enforce numeric thresholds exactly. If a constraint uses a count, percentage, maximum, minimum, or "all/every", verify it from the generated response.
+- If a requirement says "at least" or "minimum", exactly meeting that number is PASS.
+- If your own evidence shows the count or percentage meets or exceeds a minimum threshold, that constraint must be PASS unless you identify a separate concrete format defect.
+- If your own evidence shows the count or percentage is below a maximum threshold, that constraint must be PASS unless you identify a separate concrete format defect.
+- Do not write contradictory judgments such as "36% is above the 30% requirement" and then mark that same threshold as FAIL.
+- Do not invent stricter requirements than the constraint states.
 - Enforce structural requirements exactly. A required rubric, feedback mechanism, example, instruction, answer guide, or activity type must actually exist and be specific enough to use.
-- Partial compliance is NOT acceptable.
-- If even one constraint is violated, STATUS must be FAIL.
+- Partial compliance is NOT acceptable for concrete missing requirements.
+- Subjective style concerns are not concrete missing requirements unless the response is clearly unchanged, incoherent, or unusable.
+- If even one concrete constraint is violated, STATUS must be FAIL.
 - If the response satisfies constraints by bloating the document unnecessarily, STATUS must be FAIL.
 - If the response applies repetitive repair patterns mechanically across most of the document, STATUS must be FAIL.
 - Preserve useful original structure and content unless constraints explicitly require major restructuring.
 - Large rewrites of already-correct sections should be treated as unnecessary overgeneration.
 - Do not infer compliance. Cite direct evidence from the generated response.
+- Do not fail because the response could be better. Fail only when it clearly violates a stated constraint, creates an internal inconsistency, or damages the artifact.
 
 ---
 
@@ -1652,6 +1827,7 @@ PRESERVATION AND SIZE CHECKS:
 - Added material must be traceable to a constraint.
 - Removed material must either be unnecessary duplication or conflict with a constraint.
 - Size changes are acceptable only when justified by the constraints.
+- Minor style awkwardness, imperfect elegance, or less-than-ideal prose should be noted in REASON but should not force FAIL when concrete constraints are satisfied.
 
 ---
 
@@ -1665,6 +1841,7 @@ STATUS may be PASS only if:
 - required support structures are usable, not just named
 - the original artifact's useful structure is preserved
 - no major unnecessary expansion, deletion, or repetitive pattern was introduced
+- any remaining weaknesses are minor style issues rather than concrete constraint violations
 
 ---
 
@@ -1761,7 +1938,48 @@ class RefinementEngine:
         self.refiner = Refiner(llm)
         self.slide_refiner = SlideRefiner(llm)
 
-    def format_metrics_feedback(self, packet, excluded_metrics=None):
+    def remove_external_resource_feedback(self, text):
+        if not text:
+            return text
+
+        blocked_patterns = [
+            r"\battribution\b",
+            r"\battributed\b",
+            r"\battributing\b",
+            r"\bbibliograph(?:y|ies)\b",
+            r"\bcitation(?:s)?\b",
+            r"\bcite(?:s|d)?\b",
+            r"\bciting\b",
+            r"\bdirect link(?:s)?\b",
+            r"\bexternal reference(?:s)?\b",
+            r"\bexternal source(?:s)?\b",
+            r"\bhyperlink(?:s)?\b",
+            r"\bsource reference(?:s)?\b",
+            r"\burl(?:s)?\b",
+        ]
+
+        chunks = re.split(r"(?<=[.!?])\s+|\n+", text.strip())
+        kept_chunks = []
+
+        for chunk in chunks:
+            clean_chunk = chunk.strip()
+            if not clean_chunk:
+                continue
+
+            lower_chunk = clean_chunk.lower()
+            if any(re.search(pattern, lower_chunk) for pattern in blocked_patterns):
+                continue
+
+            kept_chunks.append(clean_chunk)
+
+        return " ".join(kept_chunks)
+
+    def format_metrics_feedback(
+        self,
+        packet,
+        excluded_metrics=None,
+        remove_external_resource_feedback=False
+    ):
         excluded_metrics = excluded_metrics or []
 
         feedback_text = f"""
@@ -1778,6 +1996,11 @@ class RefinementEngine:
 
             score = metric_data.get("score")
             thought = metric_data.get("thought")
+            if remove_external_resource_feedback:
+                thought = self.remove_external_resource_feedback(thought)
+
+            if not thought:
+                continue
 
             feedback_text += f"""
             Metric: {metric_name}
@@ -1786,6 +2009,12 @@ class RefinementEngine:
             """
 
         validation_feedback = packet.get("validation_feedback")
+        if validation_feedback:
+            if remove_external_resource_feedback:
+                validation_feedback = self.remove_external_resource_feedback(
+                    validation_feedback
+                )
+
         if validation_feedback:
             feedback_text += "\n\nVALIDATION FEEDBACK:\n\n"
             feedback_text += validation_feedback
@@ -1800,9 +2029,9 @@ class RefinementEngine:
         elif route == "script":
             return route
         elif route == "syllabus":
-            return "general"
+            return route
         elif route == "objectives":
-            return "general"
+            return route
         else:
             return "general"
 
@@ -1810,9 +2039,16 @@ class RefinementEngine:
 
 
     def refine_packet(self, packet, retries):
-        if packet["route"] == "assessment":
+        if packet["route"] in ["assessment", "objectives", "syllabus"]:
 
-            feedback_text = self.format_metrics_feedback(packet)
+            feedback_text = self.format_metrics_feedback(
+                packet,
+                excluded_metrics=["attribution"],
+                remove_external_resource_feedback=packet["route"] in [
+                    "objectives",
+                    "syllabus"
+                ]
+            )
             content_type = self.get_content_type(packet["route"])
             constraints = self.refiner.translate_feedback(feedback_text, content_type)
 
@@ -1903,6 +2139,7 @@ class RefinementEngine:
                 "script_validation_errors": script_result["validation_errors"],
                 "max_retries": retries
             }
+
 
         else:
             raise NotImplementedError("Current directory not implemented")
