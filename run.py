@@ -148,6 +148,53 @@ def run_optimization(storage_id: str, user_requirements: str, model_name: str = 
         chapter_name=chapter_name,
     )
 
+def evaluation_results_exist(model_name, exp_name):
+    path = f"eval/{model_name}-Evaluation_{exp_name}/evaluation_results/evaluation_scores.json"
+    return os.path.exists(path)
+
+def run_evaluation(model_name, exp_name):
+    from src.evaluate import main as evaluate_main
+
+    print("\n" + "=" * 80)
+    print("RUNNING COURSE EVALUATION")
+    print("=" * 80 + "\n")
+
+    evaluate_main(model_name=model_name, exp_name=exp_name)
+
+
+def run_refinement(model_name, exp_name, threshold=3.0, retries=3, route="all"):
+    from src.refinement_runner import RefinementRunner
+
+    print("\n" + "=" * 80)
+    print("RUNNING COURSE REFINEMENT")
+    print("=" * 80 + "\n")
+
+    runner = RefinementRunner(
+        model_name=model_name,
+        exp_name=exp_name,
+        threshold=threshold,
+        retries=retries,
+        refine=True,
+        route=route,
+    )
+    runner.run()
+
+
+def run_refinement_with_eval_guard(model_name, exp_name, threshold=3.0, retries=3, route="all"):
+    if not evaluation_results_exist(model_name, exp_name):
+        print("Evaluation results not found. Running evaluation before refinement.")
+        run_evaluation(model_name, exp_name)
+
+    run_refinement(
+        model_name=model_name,
+        exp_name=exp_name,
+        threshold=threshold,
+        retries=retries,
+        route=route,
+    )
+
+
+
 
 def main():
     """CLI entry point for instructional-agents."""
@@ -191,7 +238,7 @@ def main():
         "--exp",
         type=str,
         default="test",
-        help="Experiment name for logging"
+        help="Experiment name for logging" 
     )
 
     parser.add_argument(
@@ -254,6 +301,52 @@ def main():
         metavar="DIR",
         help="Convert existing .tex files to .pptx. Provide exp directory path (e.g., ./exp/my_course/)"
     )
+    parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="Run evaluation after course generation."
+    )
+
+    parser.add_argument(
+        "--refine",
+        action="store_true",
+        help="Run evaluation and refinement after course generation."
+    )
+
+    parser.add_argument(
+        "--evaluate-only",
+        action="store_true",
+        help="Evaluate an existing experiment without generating a new course."
+    )
+
+    parser.add_argument(
+        "--refine-only",
+        action="store_true",
+        help="Refine an existing experiment. Runs evaluation first if results are missing."
+    )
+
+    parser.add_argument(
+        "--refine-threshold",
+        type=float,
+        default=3.0,
+        help="Average score threshold below which files are selected for refinement."
+    )
+
+    parser.add_argument(
+        "--refine-retries",
+        type=int,
+        default=3,
+        help="Maximum refinement retries per selected file."
+    )
+
+    parser.add_argument(
+        "--refine-route",
+        type=str,
+        default="all",
+        choices=["all", "assessment", "slides", "script", "syllabus", "objectives"],
+        help="Restrict refinement to one route."
+    )
+
 
     args = parser.parse_args()
 
@@ -268,6 +361,19 @@ def main():
                 print(f"  {r}")
         else:
             print("No .tex files found to convert.")
+        return
+    if args.evaluate_only:
+        run_evaluation(args.model, args.exp)
+        return
+    
+    if args.refine_only:
+        run_refinement_with_eval_guard(
+            model_name=args.model,
+            exp_name=args.exp,
+            threshold=args.refine_threshold,
+            retries=args.refine_retries,
+            route=args.refine_route,
+        )
         return
 
     # course_name is required for generate/optimize modes
@@ -300,6 +406,19 @@ def main():
             temperature=args.temperature,
             resume=args.resume,
         )
+
+    if args.evaluate or args.refine:
+        run_evaluation(args.model, args.exp)
+
+    if args.refine:
+        run_refinement(
+            model_name=args.model,
+            exp_name=args.exp,
+            threshold=args.refine_threshold,
+            retries=args.refine_retries,
+            route=args.refine_route,
+        )
+
 
 
 if __name__ == "__main__":

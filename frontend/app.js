@@ -96,6 +96,20 @@ const translations = {
         modeGenerate: '生成新课程',
         modeOptimize: '优化已有材料',
         pptxLabel: '同时生成 PPTX 幻灯片',
+        postProcessTitle: '评估与优化',
+        evaluationLabel: '生成后运行评估',
+        refinementLabel: '评估后优化低分文件',
+        refinementThresholdLabel: '优化阈值',
+        refinementThresholdTip: '平均分低于该值的文件会被优化',
+        refinementRetriesLabel: '最大重试次数',
+        refinementRetriesTip: '每个文件最多运行的优化重试次数',
+        refinementRouteLabel: '优化文件类型',
+        refinementRouteAll: '全部',
+        refinementRouteAssessment: 'Assessment',
+        refinementRouteSlides: 'Slides',
+        refinementRouteScript: 'Scripts',
+        refinementRouteSyllabus: 'Syllabus',
+        refinementRouteObjectives: 'Learning Objectives',
         optimizeSectionTitle: '优化配置',
         optimizeSubmitButton: '<span>🔧</span><span>开始优化</span>',
         optimizeProgressTitle: '优化进度',
@@ -237,6 +251,20 @@ const translations = {
         modeGenerate: 'Generate Course',
         modeOptimize: 'Optimize Materials',
         pptxLabel: 'Also generate PPTX slides',
+        postProcessTitle: 'Evaluation & Refinement',
+        evaluationLabel: 'Run evaluation after generation',
+        refinementLabel: 'Refine low-scoring files after evaluation',
+        refinementThresholdLabel: 'Refinement Threshold',
+        refinementThresholdTip: 'Files below this average score are selected for refinement',
+        refinementRetriesLabel: 'Max Retries',
+        refinementRetriesTip: 'Maximum refinement retries per selected file',
+        refinementRouteLabel: 'File Types to Refine',
+        refinementRouteAll: 'All',
+        refinementRouteAssessment: 'Assessment',
+        refinementRouteSlides: 'Slides',
+        refinementRouteScript: 'Scripts',
+        refinementRouteSyllabus: 'Syllabus',
+        refinementRouteObjectives: 'Learning Objectives',
         optimizeSectionTitle: 'Optimization Settings',
         optimizeSubmitButton: '<span>🔧</span><span>Start Optimization</span>',
         optimizeProgressTitle: 'Optimization Progress',
@@ -503,6 +531,12 @@ function setupEventListeners() {
     const catalogMode = document.getElementById('catalog-mode');
     catalogMode.addEventListener('change', handleCatalogModeChange);
 
+    const refinementMode = document.getElementById('refinement-mode');
+    if (refinementMode) {
+        refinementMode.addEventListener('change', handleRefinementModeChange);
+        handleRefinementModeChange();
+    }
+
     // API Key management
     document.getElementById('save-api-key').addEventListener('click', saveApiKey);
     document.getElementById('toggle-api-key').addEventListener('click', toggleApiKeyVisibility);
@@ -648,6 +682,23 @@ function handleCatalogModeChange(e) {
     }
 }
 
+function handleRefinementModeChange() {
+    const refinementMode = document.getElementById('refinement-mode');
+    const evaluationMode = document.getElementById('evaluation-mode');
+    const settings = document.getElementById('refinement-settings');
+
+    if (!refinementMode || !settings) {
+        return;
+    }
+
+    const enabled = refinementMode.checked;
+    settings.style.display = enabled ? 'block' : 'none';
+
+    if (enabled && evaluationMode) {
+        evaluationMode.checked = true;
+    }
+}
+
 async function handleFormSubmit(e) {
     e.preventDefault();
     
@@ -672,7 +723,12 @@ async function handleFormSubmit(e) {
             model_name: document.getElementById('model-name').value,
             exp_name: document.getElementById('exp-name').value || 'default',
             copilot: document.getElementById('copilot-mode').checked,
-            generate_pptx: document.getElementById('pptx-mode').checked
+            generate_pptx: document.getElementById('pptx-mode').checked,
+            run_evaluation: document.getElementById('evaluation-mode').checked,
+            run_refinement: document.getElementById('refinement-mode').checked,
+            refinement_threshold: parseFloat(document.getElementById('refinement-threshold').value || '3.0'),
+            refinement_retries: parseInt(document.getElementById('refinement-retries').value || '3', 10),
+            refinement_route: document.getElementById('refinement-route').value
         };
 
         // Handle catalog
@@ -1606,4 +1662,3 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
-

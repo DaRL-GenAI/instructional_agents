@@ -169,8 +169,9 @@ class EvaluationAgent:
             try:
                 result = json.loads(response)
                 score = float(result.get("SCORE", 3.0))
+                thought = result.get("THOUGHT", "")
                 if 1.0 <= score <= 5.0:
-                    return score
+                    return score, thought
                 else:
                     print(f"Invalid score {score} for {metric} in {file_type}. Retrying...")
             except Exception as e:
@@ -180,7 +181,7 @@ class EvaluationAgent:
 
         # 如果重试后仍然失败，默认返回3.0
         print(f"Max retries reached. Defaulting to 3.0 for {metric} in {file_type}.")
-        return 3.0
+        return 3.0, ""
 
 
     def evaluate_files(self, file_data: Dict[str, List[Dict]]) -> Dict:
@@ -212,25 +213,30 @@ class EvaluationAgent:
 
                 file_scores = {}
                 for metric in metrics.keys():
-                    score = self.score_single_metric(file_type, filename, content, f"{metric}: {metrics[metric]}")
-                    file_scores[metric] = score
+                    score, thought = self.score_single_metric(
+                        file_type, filename, content, f"{metric}: {metrics[metric]}"
+                    )
+                    file_scores[metric] = {
+                        "score": score,
+                        "thought": thought
+                    }
                     print(f"Scored {filename} - {metric}: {score}")
 
                 type_results.append({
                     'filename': filename,
                     'scores': file_scores,
-                    'average': sum(file_scores.values()) / len(file_scores) if file_scores else 0
+                    'average': sum(v["score"] for v in file_scores.values()) / len(file_scores) if file_scores else 0
                 })
 
                 # Add scores to the overall list for summary
-                for score in file_scores.values():
-                    all_scores.append(score)
+                for v in file_scores.values():
+                    all_scores.append(v["score"])
 
             # Calculate summary statistics for each file type
             if type_results:
                 type_all_scores = []
                 for result in type_results:
-                    type_all_scores.extend(result['scores'].values())
+                    type_all_scores.extend(v["score"] for v in result['scores'].values())
 
                 results[file_type] = {
                     'files': type_results,
@@ -330,6 +336,8 @@ class CourseEvaluationSystem:
             f.write(f"**Evaluation Date:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
             
             for file_type, data in results.items():
+                if file_type == "overall_summary":
+                    continue
                 f.write(f"## {file_type}\n\n")
                 f.write(f"- **Total Files:** {data['summary']['total_files']}\n")
                 f.write(f"- **Average Score:** {data['summary']['average_score']:.2f}\n")
@@ -338,8 +346,12 @@ class CourseEvaluationSystem:
                 f.write("### Individual File Scores\n\n")
                 for file_result in data['files']:
                     f.write(f"**{file_result['filename']}** (Avg: {file_result['average']:.2f})\n")
-                    for metric, score in file_result['scores'].items():
+                    for metric, metric_data in file_result['scores'].items():
+                        score = metric_data["score"]
+                        thought = metric_data["thought"]
+
                         f.write(f"- {metric}: {score}\n")
+                        f.write(f"  Thought: {thought}\n")
                     f.write("\n")
         
         print(f"Saved evaluation results: {json_path}")
@@ -431,6 +443,9 @@ def main(model_name, exp_name):
     print("EVALUATION SUMMARY")
     print("="*50)
     for file_type, data in evaluation_results.items():
+        if file_type == "overall_summary":
+            continue
+
         print(f"\n{file_type}:")
         print(f"  Files: {data['summary']['total_files']}")
         print(f"  Average Score: {data['summary']['average_score']:.2f}")
