@@ -93,6 +93,54 @@
                         </label>
                     </div>
 
+                    <div class="refinement-options">
+                        <h3 data-i18n="postProcessTitle">评估与优化</h3>
+
+                        <div class="form-group checkbox-group">
+                            <label>
+                                <input type="checkbox" id="evaluation-mode" name="run_evaluation">
+                                <span data-i18n="evaluationLabel">生成后运行评估</span>
+                            </label>
+                        </div>
+
+                        <div class="form-group checkbox-group">
+                            <label>
+                                <input type="checkbox" id="refinement-mode" name="run_refinement">
+                                <span data-i18n="refinementLabel">评估后优化低分文件</span>
+                            </label>
+                        </div>
+
+                        <div id="refinement-settings" class="refinement-settings" style="display: none;">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="refinement-threshold" data-i18n="refinementThresholdLabel">优化阈值</label>
+                                    <input type="number" id="refinement-threshold" name="refinement_threshold"
+                                           min="0" max="5" step="0.1" value="3.0">
+                                    <small data-i18n="refinementThresholdTip">平均分低于该值的文件会被优化</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="refinement-retries" data-i18n="refinementRetriesLabel">最大重试次数</label>
+                                    <input type="number" id="refinement-retries" name="refinement_retries"
+                                           min="0" max="5" step="1" value="3">
+                                    <small data-i18n="refinementRetriesTip">每个文件最多运行的优化重试次数</small>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="refinement-route" data-i18n="refinementRouteLabel">优化文件类型</label>
+                                <select id="refinement-route" name="refinement_route">
+                                    <option value="all" data-i18n="refinementRouteAll">全部</option>
+                                    <option value="assessment" data-i18n="refinementRouteAssessment">Assessment</option>
+                                    <option value="slides" data-i18n="refinementRouteSlides">Slides</option>
+                                    <option value="script" data-i18n="refinementRouteScript">Scripts</option>
+                                    <option value="syllabus" data-i18n="refinementRouteSyllabus">Syllabus</option>
+                                    <option value="objectives" data-i18n="refinementRouteObjectives">Learning Objectives</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="form-group">
                         <label for="catalog-mode" data-i18n="catalogModeLabel">Catalog 模式</label>
                         <select id="catalog-mode" name="catalog_mode">
@@ -256,4 +304,3 @@
     <script src="app.js?v=2"></script>
 </body>
 </html>
-

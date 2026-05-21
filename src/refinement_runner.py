@@ -30,9 +30,12 @@ class RefinementRunner:
         return data
 
 
-    def build_repair_queue(self):
+    def build_repair_queue(self, slide_compile_status=None):
         results = self.load_evaluation_results()
         repair_queue = []
+        
+        if slide_compile_status is None:
+            slide_compile_status = {}
 
         for section_name, section_data in results.items():
             if section_name == "overall_summary":
@@ -57,6 +60,16 @@ class RefinementRunner:
                     eval_filename
                 )
 
+                original_compile_result = slide_compile_status.get(source_path, {
+                    "compile_status": "NOT_RUN",
+                    "compile_errors": [],
+                    "pdf_path": None
+                })
+                
+                original_compile_status = original_compile_result.get("compile_status")
+                original_compile_errors = original_compile_result.get("compile_errors")
+                original_pdf_path = original_compile_result.get("pdf_path")
+
                 if average < self.threshold:
                     metrics = file_data.get("scores", {})
 
@@ -69,7 +82,10 @@ class RefinementRunner:
                         "source_path": source_path,
                         "source_exists": source_exists,
                         "validation_reports": validation_reports,
-                        "refined_path": refined_path
+                        "refined_path": refined_path,
+                        "original_compile_status": original_compile_status,
+                        "original_compile_errors": original_compile_errors,
+                        "original_pdf_path": original_pdf_path
                     }
 
                     repair_queue.append(queue_item)
@@ -108,6 +124,9 @@ class RefinementRunner:
             for metric_name, metric_data in item["metrics"].items():
                 score = metric_data.get("score")
                 print(f"   - {metric_name}: {score}")
+            if item["route"] == "slides":
+                print(f"   Original PDF Compile: {item['original_compile_status']}")
+
 
 
     def map_eval_filename_to_source_path(self, eval_filename):
@@ -242,6 +261,10 @@ class RefinementRunner:
             "content": content,
             "validation_feedback": validation_feedback,
             "validation_reports": queue_item.get("validation_reports"),
+            "original_compile_status": queue_item.get("original_compile_status"),
+            "original_compile_errors": queue_item.get("original_compile_errors"),
+            "original_pdf_path": queue_item.get("original_pdf_path"),
+
         }
 
         if queue_item.get("route") == "script":
@@ -351,10 +374,11 @@ class RefinementRunner:
 
         return error_lines[:10]
 
-    def compile_refined_slides(self, saved_path):
+    def compile_slides(self, tex_path, compiler_root=None):
 
-        tex_path = Path(saved_path)
-        compiler = LaTeXCompiler(f"{self.generated_course_path}/refined")
+        tex_path = Path(tex_path)
+        compiler_root = tex_path.parent.parent
+        compiler = LaTeXCompiler(str(compiler_root))
         latex_available = compiler.validate_latex_environment()
 
         if not latex_available:
@@ -397,9 +421,52 @@ class RefinementRunner:
             }
 
 
+    def scan_slide_compile_status(self):
+        slides_files = Path(self.generated_course_path).glob(
+    "chapter_*/slides.tex"
+)
+        compile_results = {}
+        pass_count = 0
+        fail_count = 0
+        not_run_count = 0
+        failed_files = []
+
+        for tex_path in slides_files:
+
+            result = self.compile_slides(tex_path)
+            compile_results[str(tex_path)] = result
+            status = result.get("compile_status")
+
+            if status == "PASS":
+                pass_count += 1
+            elif status == "FAIL":
+                fail_count += 1
+                failed_files.append(str(tex_path))
+
+            else:
+                not_run_count += 1
+        print("\nSlide PDF compile scan:")
+        print(f"PASS: {pass_count}")
+        print(f"FAIL: {fail_count}")
+        print(f"NOT_RUN: {not_run_count}")
+
+        if failed_files:
+            print("Failed slide files:")
+            for f in failed_files:
+                print(f" - {f}")
+
+        return compile_results
+
+
+
 
     def run(self):
-        queue = self.build_repair_queue()
+        slide_compile_status = {}
+
+        if self.route in ["all", "slides"]:
+            slide_compile_status = self.scan_slide_compile_status()
+
+        queue = self.build_repair_queue(slide_compile_status)
         self.print_repair_queue(queue)
 
         if not queue:
@@ -424,9 +491,7 @@ class RefinementRunner:
                 print(f"\nRefining {item['eval_filename']}...")
 
                 packet = self.build_refinement_packet(item)
-
                 result = engine.refine_packet(packet, self.retries)
-
                 saved_path = self.save_refined_content(
                     packet,
                     result["refined_content"]
@@ -440,7 +505,7 @@ class RefinementRunner:
 
                 if packet["route"] == "slides":
 
-                    compile_result = self.compile_refined_slides(
+                    compile_result = self.compile_slides(
                         saved_path
                     )
 
@@ -469,7 +534,11 @@ class RefinementRunner:
                     "validation_history": result.get("validation_history"),
                     "compile_status": compile_result["compile_status"],
                     "compile_errors": compile_result["compile_errors"],
-                    "pdf_path": compile_result["pdf_path"]
+                    "pdf_path": compile_result["pdf_path"],
+                    "original_compile_status": packet.get("original_compile_status"),
+                    "original_compile_errors": packet.get("original_compile_errors"),
+                    "original_pdf_path": packet.get("original_pdf_path"),
+
                 }
 
                 refinement_results.append(report_entry)
@@ -503,6 +572,10 @@ class RefinementRunner:
 
 
 def main():
+    with open("config.json", "r") as f:
+        config = json.load(f)
+    os.environ["OPENAI_API_KEY"] = config.get("OPENAI_API_KEY", "")
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
