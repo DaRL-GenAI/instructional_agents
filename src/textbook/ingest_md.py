@@ -202,7 +202,7 @@ def _blocks_to_chapters(blocks: List[dict]) -> List[Chapter]:
                 current_section.paragraphs.append(Paragraph(
                     para_id=f"ch{chapter_idx}.s{section_idx}.p{para_idx:02d}",
                     text=title,
-                    page=0,
+                    page=blk.get("page", 0),
                     kind="prose",
                 ))
         else:  # paragraph
@@ -211,7 +211,7 @@ def _blocks_to_chapters(blocks: List[dict]) -> List[Chapter]:
             current_section.paragraphs.append(Paragraph(
                 para_id=f"ch{chapter_idx}.s{section_idx}.p{para_idx:02d}",
                 text=blk["text"],
-                page=0,
+                page=blk.get("page", 0),
                 kind=blk["kind"],
             ))
 
