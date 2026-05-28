@@ -220,6 +220,10 @@ class ADDIERunner:
             self._load_chapters()
             if self.chapters:
                 print(f"[resume] Loaded {len(self.chapters)} chapters from {chapters_path}")
+                # Contract still needs to be built — it lives in memory on
+                # the ADDIE instance, not on disk — so a --resume grounded
+                # run needs the contract rebuilt against the loaded chapters.
+                self._maybe_build_contract()
                 return
 
         # Get the syllabus design result
@@ -228,19 +232,55 @@ class ADDIERunner:
 
         if len(self.results) > syllabus_index:
             syllabus_content = self.results[syllabus_index]
-            
+
             # Create and use the SyllabusProcessor agent
             processor = SyllabusProcessor(llm=self.addie.llm)
             self.chapters = processor.process_syllabus(syllabus_content)
-            
+
             # Save the processed chapters
             self._save_chapters()
-            
+
             print(f"\nSyllabus processed into {len(self.chapters)} chapters:")
             for i, chapter in enumerate(self.chapters):
                 print(f"{i+1}. {chapter['title']}")
+
+            # If textbook grounding is active, build the course contract
+            # binding each chapter to a handful of textbook sections. Retrieval
+            # in the slide / script / assessment prompts will be constrained
+            # to those sections.
+            self._maybe_build_contract()
         else:
             print("Error: Syllabus not found in results. Cannot process chapters.")
+
+    def _maybe_build_contract(self):
+        """Build the course contract iff textbook grounding is active.
+
+        No-op when ``--use-textbook`` wasn't passed (retriever / KB are
+        ``None``). Called from both the fresh syllabus-processing path
+        and the ``--resume`` chapter-loading path so a resumed grounded
+        run gets the same contract-bound retrieval as a fresh one.
+        """
+        if self.addie.retriever is None or self.addie.knowledge_base is None:
+            return
+        from src.grounding import build_course_contract
+        print(
+            "\n[grounding] Building course contract from chapters "
+            "(with HyDE + subtopic multi-query)..."
+        )
+        self.addie.contract = build_course_contract(
+            course_id=self.addie.course_name or "course",
+            chapters=self.chapters,
+            kb=self.addie.knowledge_base,
+            retriever=self.addie.retriever,
+            # Enable the retrieval-quality boosts when an LLM is on hand.
+            # They degrade gracefully on per-call errors (logged + skipped).
+            llm=self.addie.llm,
+        )
+        for i, m in enumerate(self.addie.contract.topic_to_textbook):
+            print(
+                f"  ch{i+1} {m.topic[:50]!r:55s} -> "
+                f"sections {m.section_ids}"
+            )
     
     def _save_chapters(self):
         """Save the processed chapters to a file"""
@@ -356,8 +396,13 @@ class ADDIERunner:
             slides_context['overall'] += self.addie.copilot_catalog.get("overall", "")
             print(f"User suggestions loaded: {slides_context['slides']}, {slides_context['script']}, {slides_context['assessment']}, {slides_context['overall']}")
 
-        # Create a SlidesDeliberation instance for this chapter
-        slides_deliberation = self._create_slides_deliberation(chapter, f"chapter_{chapter_idx+1}")
+        # Create a SlidesDeliberation instance for this chapter.
+        # When textbook grounding is active, hand the deliberation a
+        # reference to the retriever and the section IDs the contract has
+        # bound to this chapter — used to scope evidence retrieval.
+        slides_deliberation = self._create_slides_deliberation(
+            chapter, f"chapter_{chapter_idx+1}", chapter_idx=chapter_idx,
+        )
         
         # Store original context for retries
         original_context = slides_context.copy()
@@ -412,7 +457,7 @@ class ADDIERunner:
                 if satisfaction == "1":
                     retry_loop = False
     
-    def _create_slides_deliberation(self, chapter, chapter_dir_name):
+    def _create_slides_deliberation(self, chapter, chapter_dir_name, chapter_idx: int = 0):
         """
         Create a SlidesDeliberation instance for a chapter
         
@@ -445,6 +490,12 @@ class ADDIERunner:
             )
         }
         
+        # Per-chapter grounding scope: look up the section IDs the contract
+        # bound to this chapter, if any. ``None`` means "no contract — let
+        # the retriever search the whole textbook".
+        from src.grounding import sections_for_chapter
+        section_ids = sections_for_chapter(self.addie.contract, chapter_idx)
+
         # Create and return the slides deliberation
         return SlidesDeliberation(
             id=f"slides_{chapter_dir_name}",
@@ -455,6 +506,12 @@ class ADDIERunner:
             catalog=self.addie.catalog,
             catalog_dict=self.addie.catalog_dict,
             resume=self.resume,
+            retriever=self.addie.retriever,
+            section_ids=section_ids,
+            textbook_id=(
+                self.addie.knowledge_base.textbook_id
+                if self.addie.knowledge_base else None
+            ),
         )
     
     def _save_result(self, deliberation, result):
@@ -587,7 +644,7 @@ class ADDIE:
     ADDIE (Analyze, Design, Develop, Implement, Evaluate) class for instructional design
     This class coordinates a series of deliberations to create a complete course design
     """
-    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False):
+    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None):
         """
         Initialize ADDIE workflow
 
@@ -599,6 +656,10 @@ class ADDIE:
             resume: If True, skip deliberations whose outputs already exist in
                 output_dir and resume chapter generation from the last
                 incomplete chapter (or a mid-chapter checkpoint).
+            textbook_path: Optional path to a textbook (PDF, markdown, or a
+                directory of either) used to ground course generation. When
+                ``None`` (the default) generation runs exactly as in the
+                vanilla pipeline.
         """
         self.course_name = course_name
         self.model_name = model_name
@@ -608,7 +669,43 @@ class ADDIE:
         self.llm = LLM(model_name=model_name, seed=seed, temperature=temperature)
         self.deliberations = []
         self.results = []
-        
+
+        # Textbook grounding (opt-in). When the path is absent, the knowledge
+        # base, retriever, and contract stay ``None`` and downstream code
+        # paths take the vanilla branch — vanilla behavior is byte-identical
+        # to a run without the flag.
+        self.knowledge_base = None
+        self.retriever = None
+        self.contract = None  # populated by ADDIERunner once chapters exist
+        if textbook_path:
+            from src.grounding import HybridRetriever, TextbookKnowledgeBase
+            print(f"[grounding] Loading textbook from: {textbook_path}")
+            self.knowledge_base = TextbookKnowledgeBase.from_path(textbook_path)
+            print(
+                f"[grounding] Loaded '{self.knowledge_base.textbook.title}': "
+                f"{len(self.knowledge_base.textbook.chapters)} chapters, "
+                f"{len(self.knowledge_base)} chunks."
+            )
+            # Retriever is constructed eagerly (cheap — BM25 is in-memory)
+            # but the dense-embedding API call is deferred to first search.
+            # Cache embeddings on disk so repeat runs skip the API call.
+            cache_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                ".grounding_cache",
+            )
+            # NOTE: An LLM-based second-stage reranker (LLMReranker in
+            # src.grounding.reranker) was prototyped to address the
+            # ``retrieval_bad`` failure-mode bucket. Side-by-side eval
+            # showed no improvement (precision 89.3 % with vs 90.2 %
+            # without; ``retrieval_bad`` slice held at ~5 % either way)
+            # while adding ~9–12 min and ~500 extra LLM calls per
+            # chapter. We removed it from the runtime path but kept the
+            # `reranker.py` module + tests as documentation of the
+            # experiment and as a hook for future, stronger rerankers.
+            self.retriever = HybridRetriever(
+                self.knowledge_base, cache_dir=cache_dir,
+            )
+
         # Create all deliberations in the workflow
         self.set_catalog(data_catalog)
         self.set_copilot(data_copilot)

@@ -412,3 +412,184 @@ def ingest_pdf_directory(
     )
     _finalize_real_pages(textbook)
     return textbook
+
+
+# --------------------------------------------------------------------- #
+# Alternative ingestion path — pymupdf4llm + markdown ingester
+# --------------------------------------------------------------------- #
+#
+# The font-size / pattern-detection ingester above works on plain text
+# pulled from PyMuPDF's `page.get_text()`. Plain text mangles equations
+# (math glyphs collapse to noise), garbles tables (cell boundaries are
+# lost), and drops list structure — all of which hurt downstream
+# retrieval. The verifier's `retrieval_bad` slice was 20 % on Han's
+# math-heavy textbook largely because of this.
+#
+# pymupdf4llm.to_markdown() does a much better job: equations come out
+# as LaTeX-ish inline math, tables come out as markdown tables, headings
+# come out as explicit `##` markers. We pass that output through the
+# existing markdown ingester (`ingest_md._extract_blocks` +
+# `_blocks_to_chapters`) so chapters / sections / paragraphs all land
+# in the same `Textbook` IR shape as before.
+#
+# pymupdf4llm emits every heading at `##` level regardless of nesting.
+# We normalise the markdown first: promote the first non-numbered
+# heading to `#` (chapter title) and demote `N.N.N` patterns to `###`
+# (treated as prose paragraphs by the IR builder). Numbered `N.N`
+# headings stay at `##` (sections).
+
+
+_PDF_MD_HEADING_RE = re.compile(r"^(#+)\s+(.*)$")
+_PDF_MD_NUMBER_PREFIX_RE = re.compile(r"^[\*_\[\s]*(\d+\.\d+(?:\.\d+)?)\s")
+# Explicit chapter markers: "Chapter 12", "**Chapter 12**", "Chapter 12: Title",
+# "Appendix A", "Part II" — detected after stripping leading markdown decoration.
+_PDF_MD_CHAPTER_PATTERN_RE = re.compile(
+    r"^[\*_\s]*(?:Chapter|Appendix|Part|Section|Unit)\s+(?:\d+|[A-Z]|[IVX]+)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_pdf_markdown_headings(md_text: str) -> str:
+    """Convert pymupdf4llm's uniform `##` headings into the level
+    hierarchy that the markdown ingester expects.
+
+    Heuristics (applied in order; first match wins):
+      * ``## Chapter N ...`` / ``## Appendix X ...`` / ``## Part I`` /
+        ``## Unit 3`` -> ``#`` (explicit chapter — handles multi-chapter
+        PDFs like Agentic Design Patterns).
+      * ``## N.N ...`` -> ``##`` (top-level numbered section, kept).
+      * ``## N.N.N ...`` -> ``###`` (subsection — emitted as prose
+        paragraph by the IR builder).
+      * First otherwise-unnumbered ``##`` -> ``#`` (handles single-chapter
+        PDFs like Han's per-chapter files where the chapter title isn't
+        prefixed with "Chapter N").
+      * Subsequent unnumbered ``##`` -> ``###`` (sub-section labels like
+        "Method:", "Figure 10.15", "Key takeaways", etc. that pymupdf4llm
+        emits as headings but aren't structural breaks).
+      * Other levels (already ``#``, ``###+``, or non-heading lines) are
+        left alone.
+
+    Operates line-by-line on the raw markdown text.
+    """
+    lines = md_text.split("\n")
+    seen_chapter = False
+    out_lines: List[str] = []
+    for line in lines:
+        m = _PDF_MD_HEADING_RE.match(line)
+        if not m:
+            out_lines.append(line)
+            continue
+        hashes, content = m.group(1), m.group(2)
+        if len(hashes) != 2:
+            out_lines.append(line)
+            continue
+        # Explicit "Chapter N" / "Appendix X" / "Part I" / "Unit 3" — always a chapter.
+        if _PDF_MD_CHAPTER_PATTERN_RE.match(content):
+            out_lines.append(f"# {content}")
+            seen_chapter = True
+            continue
+        # Numbered "N.N" or "N.N.N" — section vs subsection.
+        num = _PDF_MD_NUMBER_PREFIX_RE.match(content)
+        if num is not None:
+            dot_count = num.group(1).count(".")
+            if dot_count == 1:
+                out_lines.append(f"## {content}")
+            else:
+                out_lines.append(f"### {content}")
+            continue
+        # Unnumbered heading.
+        if not seen_chapter:
+            out_lines.append(f"# {content}")
+            seen_chapter = True
+        else:
+            out_lines.append(f"### {content}")
+    return "\n".join(out_lines)
+
+
+def ingest_pdf_file_via_markdown(
+    path,
+    textbook_id: str = "tb1",
+    title: str = "Untitled",
+    authors: Optional[List[str]] = None,
+    edition: Optional[str] = None,
+) -> Textbook:
+    """Ingest a single PDF via pymupdf4llm.to_markdown() + markdown ingester.
+
+    Cleaner extraction for math-heavy / table-heavy PDFs: equations
+    become LaTeX, tables become markdown, headings come through
+    explicitly. Falls back to plain-text `ingest_pdf_file` if
+    pymupdf4llm is unavailable or the markdown output yields no
+    chapters (rare; we have not seen it on real input).
+    """
+    try:
+        import pymupdf4llm
+    except ImportError:
+        # Graceful degradation: no pymupdf4llm in the env -> use the
+        # original plain-text ingester so the project still runs.
+        return ingest_pdf_file(
+            path, textbook_id=textbook_id, title=title,
+            authors=authors, edition=edition,
+        )
+    from .ingest_md import _extract_blocks, _assign_pages
+    path = Path(path)
+    md_text = pymupdf4llm.to_markdown(str(path), page_chunks=False, show_progress=False)
+    md_text = _normalize_pdf_markdown_headings(md_text)
+    blocks = _extract_blocks(md_text)
+    chapters = _blocks_to_chapters(blocks)
+    if not chapters:
+        # No chapter structure detected — fall back to plain-text path
+        # so we at least get *something* rather than an empty IR.
+        return ingest_pdf_file(
+            path, textbook_id=textbook_id, title=title,
+            authors=authors, edition=edition,
+        )
+    textbook = Textbook(
+        textbook_id=textbook_id, title=title,
+        authors=authors or [], edition=edition,
+        source_format="pdf",
+        parser_quality=1.0,  # pymupdf4llm doesn't expose a quality score
+        chapters=chapters,
+    )
+    _assign_pages(textbook)
+    return textbook
+
+
+def ingest_pdf_directory_via_markdown(
+    path,
+    textbook_id: str = "tb1",
+    title: str = "Untitled",
+    authors: Optional[List[str]] = None,
+    edition: Optional[str] = None,
+) -> Textbook:
+    """Ingest a folder of per-chapter PDFs via pymupdf4llm.
+
+    Each ``*.pdf`` is run through `ingest_pdf_file_via_markdown` and the
+    resulting chapters concatenated + renumbered. Mirrors the layout of
+    `ingest_pdf_directory` (the plain-text variant).
+    """
+    path = Path(path)
+    pdf_files = sorted(
+        (p for p in path.iterdir() if p.suffix.lower() == ".pdf"),
+        key=_file_sort_key,
+    )
+    all_chapters: List[Chapter] = []
+    for pf in pdf_files:
+        sub = ingest_pdf_file_via_markdown(
+            pf, textbook_id=textbook_id, title=title,
+        )
+        all_chapters.extend(sub.chapters)
+    for idx, chapter in enumerate(all_chapters, start=1):
+        _renumber_chapter(chapter, idx)
+    textbook = Textbook(
+        textbook_id=textbook_id, title=title,
+        authors=authors or [], edition=edition,
+        source_format="pdf",
+        parser_quality=1.0,
+        chapters=all_chapters,
+    )
+    # The per-PDF ingester already assigned synthetic pages within each
+    # source PDF; re-assign at the top-level so page numbers are
+    # consistent across the concatenated book.
+    from .ingest_md import _assign_pages
+    _assign_pages(textbook)
+    return textbook

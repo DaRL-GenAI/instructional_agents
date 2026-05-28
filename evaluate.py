@@ -1,6 +1,7 @@
 import os
 import json
-from typing import List, Dict, Optional
+import re
+from typing import List, Dict, Optional, Any
 from openai import OpenAI
 from pathlib import Path
 import pandas as pd
@@ -256,11 +257,262 @@ class EvaluationAgent:
         return results
 
 
+# Citation tokens emitted by the grounded generation pipeline look like
+# `[textbook_id:section_id:p<page>]`, e.g. `[han_data_mining_3e:ch6.s3:p15]`.
+# textbook_id and section_id are restricted to [A-Za-z0-9._] by the IR builders,
+# so the regex below matches everything well-formed and nothing else.
+CITATION_TOKEN_RE = re.compile(r"\[([A-Za-z0-9_]+):([A-Za-z0-9._]+):p(\d+)\]")
+
+
+# Failure-mode buckets the judge picks from when a citation is < 4 / 5.
+# Telling the buckets apart matters: each one points at a different
+# lever (retrieval, prompting, generation discipline).
+FAILURE_MODE_VALUES = (
+    "retrieval_bad",      # The chunk isn't on the same topic as the claim → fix retrieval.
+    "hallucination",      # Chunk is on-topic but claim adds specifics it doesn't contain → fix prompting + rejection sampling.
+    "loose_paraphrase",   # Chunk supports the gist, claim drifts in wording → fix wording-anchor rule.
+    "wrong_chunk_cited",  # A different excerpt in the same retrieval would have supported the claim → fix attribution discipline.
+    "good",               # No failure — supported (score ≥ 4).
+    "judge_uncertain",    # Judge couldn't pick; counted but not blamed on any lever.
+)
+
+
+class GroundingAgent:
+    """Score citation faithfulness against an ingested textbook.
+
+    For each citation token found in a piece of generated content, look
+    up the chunk it references in the textbook KB, then ask the LLM
+    whether that chunk supports the claim sitting around the citation.
+    Aggregate to:
+
+      * **citation_precision** — fraction of citations whose chunk
+        actually supports the cited claim (score ≥ 4 / 5).
+      * **faithfulness** — average 1-5 RAGAS-style score across all
+        resolved citations.
+      * **malformed_citations** — count of tokens that don't resolve to
+        any chunk in the KB (typo, model hallucination of a section ID,
+        truncated output, etc.).
+      * **unsupported_citations** — citations scoring < 3.
+      * **failure_mode_counts** — for each unsupported / loosely-supported
+        citation, the judge categorises *why* it failed (retrieval-bad,
+        hallucination, loose paraphrase, wrong chunk cited). Pinpoints
+        which lever to pull next when faithfulness is below target.
+
+    Citation recall (did the model cite every factual claim?) would
+    require atomic-claim extraction, which is a bigger LLM-heavy step;
+    out of scope for this first version.
+    """
+
+    # Window of characters around each citation token to use as the
+    # "claim" sent to the judge LLM. Best-effort trims to sentence
+    # boundaries where possible. Wider window = more context but also
+    # more tokens per scoring call.
+    CLAIM_WINDOW_CHARS = 220
+
+    def __init__(self, llm: LLM, knowledge_base: Any):
+        self.llm = llm
+        self.kb = knowledge_base
+        # Pre-index every chunk by its citation token so the per-citation
+        # lookup is O(1). Token format matches Chunk.citation_token().
+        self._chunk_by_token: Dict[str, Any] = {
+            c.citation_token(): c for c in knowledge_base.chunks
+        }
+
+    # ----- public API ----------------------------------------------------
+
+    def score_text(self, filename: str, text: str) -> Dict[str, Any]:
+        """Score every citation in `text`. Returns a summary dict.
+
+        When `text` has no citations, the summary's aggregate fields are
+        ``None`` (not 0.0) so a downstream report can distinguish
+        "nothing to verify" from "everything failed verification."
+        """
+        citations = self._extract_citations(text)
+        if not citations:
+            return {
+                "filename": filename,
+                "n_citations": 0,
+                "n_supported": 0,
+                "n_unsupported": 0,
+                "n_malformed": 0,
+                "faithfulness": None,
+                "citation_precision": None,
+                "per_citation": [],
+            }
+
+        per: List[Dict[str, Any]] = []
+        for cite in citations:
+            per.append(self._score_one(cite, text))
+
+        resolved = [s for s in per if not s["malformed"]]
+        n_malformed = sum(1 for s in per if s["malformed"])
+        n_supported = sum(1 for s in resolved if (s["score"] or 0.0) >= 4.0)
+        n_unsupported = sum(1 for s in resolved if (s["score"] or 0.0) < 3.0)
+        avg = (
+            sum(s["score"] for s in resolved) / len(resolved)
+            if resolved else None
+        )
+
+        # Bucket failure modes across the resolved (non-malformed) citations.
+        # Useful for diagnosing which lever to pull next when the precision
+        # number is below target.
+        failure_mode_counts: Dict[str, int] = {m: 0 for m in FAILURE_MODE_VALUES}
+        for s in resolved:
+            mode = (s.get("failure_mode") or "judge_uncertain")
+            if mode not in failure_mode_counts:
+                mode = "judge_uncertain"
+            failure_mode_counts[mode] += 1
+
+        return {
+            "filename": filename,
+            "n_citations": len(per),
+            "n_supported": n_supported,
+            "n_unsupported": n_unsupported,
+            "n_malformed": n_malformed,
+            "faithfulness": avg,
+            "citation_precision": (
+                n_supported / len(resolved) if resolved else None
+            ),
+            "failure_mode_counts": failure_mode_counts,
+            "per_citation": per,
+        }
+
+    # ----- internals -----------------------------------------------------
+
+    def _extract_citations(self, text: str) -> List[Dict[str, Any]]:
+        """Find every `[textbook_id:section_id:p<page>]` token in `text`."""
+        out = []
+        for m in CITATION_TOKEN_RE.finditer(text):
+            out.append({
+                "token": m.group(0),
+                "textbook_id": m.group(1),
+                "section_id": m.group(2),
+                "page": int(m.group(3)),
+                "start": m.start(),
+                "end": m.end(),
+            })
+        return out
+
+    def _score_one(self, cite: Dict[str, Any], text: str) -> Dict[str, Any]:
+        """Look up the cited chunk, ask the LLM to rate 1-5 + categorise failure."""
+        chunk = self._chunk_by_token.get(cite["token"])
+        claim = self._claim_window(text, cite)
+
+        if chunk is None:
+            # Token doesn't resolve. Could be a typo, hallucinated section
+            # ID, or a truncated token (we saw `[han_data_mining_3e:c]`
+            # in real B1 output). Flag but don't score.
+            return {
+                **cite,
+                "malformed": True,
+                "score": None,
+                "claim": claim,
+                "rationale": "Citation token does not resolve to any chunk in the textbook.",
+                "failure_mode": None,
+                "chunk_section_id": None,
+                "chunk_section_title": None,
+            }
+
+        score, rationale, failure_mode = self._llm_score(claim, chunk.text)
+        return {
+            **cite,
+            "malformed": False,
+            "score": score,
+            "claim": claim,
+            "rationale": rationale,
+            "failure_mode": failure_mode,
+            "chunk_section_id": chunk.section_id,
+            "chunk_section_title": chunk.section_title,
+        }
+
+    def _claim_window(self, text: str, cite: Dict[str, Any]) -> str:
+        """Pull a CLAIM_WINDOW_CHARS-sized window around the citation."""
+        w = self.CLAIM_WINDOW_CHARS
+        start = max(0, cite["start"] - w)
+        end = min(len(text), cite["end"] + w)
+        ctx = text[start:end]
+        # Best-effort trim to sentence boundaries on each side. Looking
+        # for ". " (or similar) inside the leading/trailing margins.
+        head = ctx[: w // 2]
+        if ". " in head:
+            ctx = ctx[head.rindex(". ") + 2 :]
+        tail = ctx[-(w // 2) :]
+        if ". " in tail:
+            ctx = ctx[: -(len(tail) - tail.rindex(". ") - 1)]
+        return ctx.strip()
+
+    def _llm_score(self, claim: str, chunk_text: str) -> tuple:
+        """Ask the LLM for a 1-5 faithfulness score + rationale + failure mode.
+
+        Returns ``(score, rationale, failure_mode)``. ``failure_mode`` is
+        one of the strings in :data:`FAILURE_MODE_VALUES`; ``"good"`` for
+        scores ≥ 4, otherwise the judge's chosen category.
+        """
+        # Truncate the chunk to a reasonable cap so the scoring prompt
+        # stays small. 1500 chars is comfortable for one paragraph or two.
+        chunk_excerpt = chunk_text[:1500]
+        prompt = f"""You are evaluating whether a textbook excerpt supports a claim drawn from generated course material.
+
+CLAIM (with [...] citation token, drawn from a generated slide / script / assessment):
+{claim}
+
+CITED TEXTBOOK EXCERPT:
+{chunk_excerpt}
+
+Rate how faithfully the excerpt supports the claim on a 1.0-5.0 scale:
+- 5.0: Claim is directly supported by the excerpt — same facts, same emphasis.
+- 4.0: Claim is mostly supported; minor paraphrasing only.
+- 3.0: Claim is loosely supported; the writer added some interpretation beyond what the excerpt says.
+- 2.0: Claim has only tenuous connection to the excerpt.
+- 1.0: Claim is not supported by the excerpt at all.
+
+ALSO categorise the primary failure mode (use exactly one of these strings):
+- "good"               — claim is well supported (use this when SCORE ≥ 4).
+- "retrieval_bad"      — the excerpt isn't on the same topic as the claim; a different excerpt would be needed.
+- "hallucination"      — excerpt is on-topic but the claim adds specifics, numbers, or facts the excerpt does NOT state.
+- "loose_paraphrase"   — excerpt supports the gist but the claim drifts in wording or emphasis.
+- "wrong_chunk_cited"  — excerpt is from the wrong section; the claim looks like it came from a NEARBY section instead.
+- "judge_uncertain"    — you cannot confidently pick one of the above.
+
+Respond with STRICT JSON only:
+{{"SCORE": <float between 1.0 and 5.0>, "RATIONALE": "<one short sentence>", "FAILURE_MODE": "<one of the strings above>"}}
+"""
+        messages = [
+            {
+                "role": "system",
+                "content": "You evaluate citation faithfulness. Output only the JSON object.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+        max_retries = 3
+        for _ in range(max_retries):
+            try:
+                response, _, _ = self.llm.generate_response(messages, stream=False)
+                # Be permissive about leading/trailing text around the JSON.
+                m = re.search(r"\{.*?\"SCORE\".*?\}", response, re.DOTALL)
+                if not m:
+                    continue
+                result = json.loads(m.group(0))
+                score = float(result.get("SCORE", 3.0))
+                if not (1.0 <= score <= 5.0):
+                    continue
+                rationale = str(result.get("RATIONALE", "")).strip()
+                mode_raw = str(result.get("FAILURE_MODE", "")).strip().lower()
+                # Normalise to the allowed vocabulary; default a good
+                # score to "good" and an unknown mode to "judge_uncertain".
+                if mode_raw not in FAILURE_MODE_VALUES:
+                    mode_raw = "good" if score >= 4.0 else "judge_uncertain"
+                return score, rationale, mode_raw
+            except Exception:
+                continue
+        return 3.0, "LLM scoring failed after retries; defaulted to 3.0.", "judge_uncertain"
+
+
 class CourseEvaluationSystem:
     """
     Main system for evaluating course materials
     """
-    def __init__(self, model_name: str, exp_name: str):
+    def __init__(self, model_name: str, exp_name: str, textbook_path: Optional[str] = None):
         self.llm = LLM(model_name=model_name)
         self.program_chair = ValidationAgent("Program Chair", self.llm)
         self.test_student = ValidationAgent("Test Student", self.llm)
@@ -271,6 +523,25 @@ class CourseEvaluationSystem:
         self.eval_dir.mkdir(parents=True, exist_ok=True)
         self.valid_dir = Path(f"eval/{model_name}-Evaluation_{self.exp_name}/validation_reports")
         self.valid_dir.mkdir(parents=True, exist_ok=True)
+
+        # Textbook grounding (opt-in). When `textbook_path` is None the
+        # grounding agent stays None and `score_grounding` is a no-op.
+        self.grounding_agent: Optional[GroundingAgent] = None
+        self.grounding_dir = Path(
+            f"eval/{model_name}-Evaluation_{self.exp_name}/grounding_results"
+        )
+        if textbook_path:
+            # Lazy import so `python evaluate.py` with no textbook flag
+            # doesn't pay the import cost.
+            from src.grounding import TextbookKnowledgeBase
+            print(f"[grounding] Loading textbook for verification: {textbook_path}")
+            kb = TextbookKnowledgeBase.from_path(textbook_path)
+            self.grounding_agent = GroundingAgent(self.llm, kb)
+            self.grounding_dir.mkdir(parents=True, exist_ok=True)
+            print(
+                f"[grounding] Indexed {len(kb)} chunks from "
+                f"'{kb.textbook.title}' for citation verification."
+            )
 
     def read_file_content(self, filepath: str) -> str:
         """Read content from file"""
@@ -309,6 +580,166 @@ class CourseEvaluationSystem:
         
         print(f"Saved validation report: {report_path}")
     
+    def score_grounding(self, file_data: Dict[str, List[Dict]]) -> Dict[str, Any]:
+        """Run citation verification across every generated file.
+
+        No-op when `grounding_agent is None` — i.e. when `evaluate.py`
+        was invoked without `--use-textbook`. The returned dict has the
+        same shape regardless of file count, so the caller can always
+        write it out.
+        """
+        if self.grounding_agent is None:
+            return {}
+
+        per_file: List[Dict[str, Any]] = []
+        # Citations only appear in chapter-generated files (slide_content,
+        # slide_scripts, assessment) — the foundation deliberations don't
+        # carry citations. Scoring the foundation files would mostly find
+        # zero citations, but it's cheap to include them and surfaces any
+        # surprise tokens that leak in.
+        for file_type, files in file_data.items():
+            for info in files:
+                if not info.get("content"):
+                    continue
+                summary = self.grounding_agent.score_text(
+                    info["filename"], info["content"]
+                )
+                summary["file_type"] = file_type
+                summary["filepath"] = info.get("filepath")
+                per_file.append(summary)
+                if summary["n_citations"]:
+                    print(
+                        f"[grounding] {info['filename']}: "
+                        f"{summary['n_citations']} citations, "
+                        f"precision={summary['citation_precision']:.2f} "
+                        if summary['citation_precision'] is not None else
+                        f"[grounding] {info['filename']}: "
+                        f"{summary['n_citations']} citations (all malformed)"
+                    )
+
+        # Aggregate across every resolved citation in every file.
+        all_resolved = []
+        for s in per_file:
+            for c in s["per_citation"]:
+                if not c["malformed"] and c["score"] is not None:
+                    all_resolved.append(c)
+        n_total = sum(s["n_citations"] for s in per_file)
+        n_malformed = sum(s["n_malformed"] for s in per_file)
+        n_supported = sum(s["n_supported"] for s in per_file)
+        n_unsupported = sum(s["n_unsupported"] for s in per_file)
+        avg = (
+            sum(c["score"] for c in all_resolved) / len(all_resolved)
+            if all_resolved else None
+        )
+
+        # Distinct sections cited — useful for coverage metric in the
+        # eventual comparison report.
+        cited_sections = sorted({
+            c["section_id"] for s in per_file for c in s["per_citation"]
+            if not c["malformed"]
+        })
+
+        # Aggregate failure-mode buckets across every resolved citation.
+        # Points at which lever to pull when precision is below target.
+        overall_failure_modes: Dict[str, int] = {m: 0 for m in FAILURE_MODE_VALUES}
+        for s in per_file:
+            for mode, count in (s.get("failure_mode_counts") or {}).items():
+                if mode in overall_failure_modes:
+                    overall_failure_modes[mode] += count
+
+        return {
+            "exp_name": self.exp_name,
+            "textbook_id": (
+                self.grounding_agent.kb.textbook_id
+                if self.grounding_agent else None
+            ),
+            "overall": {
+                "n_files_with_citations": sum(
+                    1 for s in per_file if s["n_citations"] > 0
+                ),
+                "n_citations_total": n_total,
+                "n_malformed_total": n_malformed,
+                "n_supported_total": n_supported,
+                "n_unsupported_total": n_unsupported,
+                "faithfulness_mean": avg,
+                "citation_precision": (
+                    n_supported / len(all_resolved) if all_resolved else None
+                ),
+                "distinct_sections_cited": cited_sections,
+                "n_distinct_sections_cited": len(cited_sections),
+                "failure_mode_counts": overall_failure_modes,
+            },
+            "files": per_file,
+        }
+
+    def save_grounding_results(self, results: Dict[str, Any]):
+        """Write the grounding scores to disk alongside the other reports."""
+        if not results:
+            return
+        out_dir = self.grounding_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Full per-citation JSON (useful for the comparison report).
+        json_path = out_dir / "grounding_scores.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+
+        # Human-readable markdown summary.
+        md_path = out_dir / "grounding_summary.md"
+        with open(md_path, "w", encoding="utf-8") as f:
+            ov = results["overall"]
+            f.write("# Grounding Verification Summary\n\n")
+            f.write(f"**Experiment:** {results['exp_name']}\n\n")
+            f.write(f"**Textbook:** {results.get('textbook_id', '?')}\n\n")
+            f.write(f"**Date:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            f.write("---\n\n## Overall\n\n")
+            f.write(f"- Files with citations: **{ov['n_files_with_citations']}**\n")
+            f.write(f"- Total citations: **{ov['n_citations_total']}**\n")
+            f.write(f"- Malformed (didn't resolve): **{ov['n_malformed_total']}**\n")
+            f.write(f"- Supported (score ≥ 4): **{ov['n_supported_total']}**\n")
+            f.write(f"- Unsupported (score < 3): **{ov['n_unsupported_total']}**\n")
+            if ov["faithfulness_mean"] is not None:
+                f.write(f"- Faithfulness (mean 1–5): **{ov['faithfulness_mean']:.2f}**\n")
+                f.write(f"- Citation precision: **{ov['citation_precision']:.2%}**\n")
+            f.write(f"- Distinct sections cited: **{ov['n_distinct_sections_cited']}**"
+                    f" — {', '.join(ov['distinct_sections_cited'][:20])}"
+                    f"{'...' if len(ov['distinct_sections_cited']) > 20 else ''}\n\n")
+
+            # Failure-mode breakdown — surfaces which lever to pull next.
+            fmc = ov.get("failure_mode_counts") or {}
+            if any(fmc.values()):
+                f.write("## Failure-mode breakdown (resolved citations)\n\n")
+                f.write("How each resolved citation was categorised by the judge. "
+                        "Pinpoints whether the precision loss comes from retrieval "
+                        "(retrieval_bad), generation (hallucination / loose_paraphrase), "
+                        "or attribution (wrong_chunk_cited).\n\n")
+                total_resolved = sum(fmc.values()) or 1
+                # Render in a fixed order so reports across runs are comparable.
+                order = [
+                    "good", "loose_paraphrase", "hallucination",
+                    "retrieval_bad", "wrong_chunk_cited", "judge_uncertain",
+                ]
+                for mode in order:
+                    count = fmc.get(mode, 0)
+                    pct = (count / total_resolved) * 100.0
+                    f.write(f"- **{mode}**: {count} ({pct:.1f}%)\n")
+                f.write("\n")
+            f.write("## Per file\n\n")
+            for s in results["files"]:
+                if not s["n_citations"]:
+                    continue
+                f.write(f"### {s['filename']}\n\n")
+                f.write(f"- Citations: {s['n_citations']}")
+                if s["faithfulness"] is not None:
+                    f.write(f" | faithfulness {s['faithfulness']:.2f}")
+                    f.write(f" | precision {s['citation_precision']:.0%}")
+                if s["n_malformed"]:
+                    f.write(f" | **{s['n_malformed']} malformed**")
+                f.write("\n\n")
+
+        print(f"\n[grounding] Saved grounding report: {md_path}")
+        print(f"[grounding] Saved grounding scores:  {json_path}")
+
     def save_evaluation_results(self, results: Dict):
         """Save evaluation results to JSON and markdown"""
         output_dir = self.eval_dir
@@ -330,11 +761,17 @@ class CourseEvaluationSystem:
             f.write(f"**Evaluation Date:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
             
             for file_type, data in results.items():
+                # `results` includes an `overall_summary` aggregate entry
+                # whose shape is `{'summary': {...}}` — no `'files'` key.
+                # Skip those non-per-file entries so the writer doesn't
+                # KeyError on the per-file iteration below.
+                if 'files' not in data:
+                    continue
                 f.write(f"## {file_type}\n\n")
                 f.write(f"- **Total Files:** {data['summary']['total_files']}\n")
                 f.write(f"- **Average Score:** {data['summary']['average_score']:.2f}\n")
                 f.write(f"- **Score Range:** {data['summary']['min_score']} - {data['summary']['max_score']}\n\n")
-                
+
                 f.write("### Individual File Scores\n\n")
                 for file_result in data['files']:
                     f.write(f"**{file_result['filename']}** (Avg: {file_result['average']:.2f})\n")
@@ -344,13 +781,18 @@ class CourseEvaluationSystem:
         
         print(f"Saved evaluation results: {json_path}")
 
-def main(model_name, exp_name):
+def main(model_name, exp_name, textbook_path: Optional[str] = None):
     """
-    Main function to process course materials
+    Main function to process course materials.
+
+    When `textbook_path` is set, additionally runs the citation-verification
+    pass (the `GroundingAgent`) on top of the existing rubric-scoring and
+    validation flow, and writes a `grounding_results/` directory alongside
+    the standard `evaluation_results/` and `validation_reports/` outputs.
     """
     print("Starting Course Material Evaluation System...")
 
-    system = CourseEvaluationSystem(model_name, exp_name)
+    system = CourseEvaluationSystem(model_name, exp_name, textbook_path=textbook_path)
     root_dir = Path(f"exp/{exp_name}")
 
     # Collect all files to process
@@ -425,7 +867,41 @@ def main(model_name, exp_name):
                 )
     
     print("Validation complete.")
-    
+
+    # Grounding verification — runs only when --use-textbook was set.
+    # Walks the same file_data and scores every citation token in-place.
+    if system.grounding_agent is not None:
+        print("\n" + "="*50)
+        print("CITATION VERIFICATION (GROUNDING)")
+        print("="*50)
+        grounding_results = system.score_grounding(file_data)
+        system.save_grounding_results(grounding_results)
+
+        ov = grounding_results.get("overall", {})
+        if ov.get("n_citations_total"):
+            print(f"\n  Total citations: {ov['n_citations_total']}")
+            print(f"  Supported (≥4):  {ov['n_supported_total']}")
+            print(f"  Unsupported (<3): {ov['n_unsupported_total']}")
+            print(f"  Malformed:        {ov['n_malformed_total']}")
+            if ov["faithfulness_mean"] is not None:
+                print(f"  Faithfulness:     {ov['faithfulness_mean']:.2f} / 5.0")
+                print(f"  Precision:        {ov['citation_precision']:.1%}")
+            fmc = ov.get("failure_mode_counts") or {}
+            if any(fmc.values()):
+                total_resolved = sum(fmc.values()) or 1
+                print(f"\n  Failure-mode breakdown (resolved citations):")
+                for mode in (
+                    "good", "loose_paraphrase", "hallucination",
+                    "retrieval_bad", "wrong_chunk_cited", "judge_uncertain",
+                ):
+                    count = fmc.get(mode, 0)
+                    if count:
+                        pct = (count / total_resolved) * 100.0
+                        print(f"    {mode:20s} {count:4d}  ({pct:.1f}%)")
+        else:
+            print("\n  No citation tokens found in the generated content.")
+            print("  (Was --use-textbook set on the original `python run.py` invocation?)")
+
     # Print summary
     print("\n" + "="*50)
     print("EVALUATION SUMMARY")
@@ -451,11 +927,28 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--exp", 
+        "--exp",
         type=str,
         default="test",
         help="Experiment name for logging"
     )
-    
+
+    parser.add_argument(
+        "--use-textbook",
+        dest="textbook_path",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Run citation verification against this textbook (PDF / markdown "
+            "file or directory). When omitted, only the existing rubric scoring "
+            "and validation reports are produced."
+        ),
+    )
+
     args = parser.parse_args()
-    main(model_name=args.model, exp_name=args.exp)
+    main(
+        model_name=args.model,
+        exp_name=args.exp,
+        textbook_path=args.textbook_path,
+    )

@@ -24,8 +24,16 @@ numpy>=1.24.0
 # PPTX generation (pptxgenjs via Node.js) + content QA
 markitdown[pptx]>=0.1.0
 
-# Markdown textbook ingestion (PR #1, W2)
+# Textbook ingestion + grounded retrieval
 markdown-it-py>=3.0.0
+rank-bm25>=0.2.2
+
+# Cross-encoder reranker (optional — opt-in via the `reranker=` kwarg on
+# HybridRetriever; the dense + sparse + RRF stack works without it). CPU
+# inference is fine; the default `cross-encoder/ms-marco-MiniLM-L-6-v2`
+# model is ~90 MB and is fetched from HuggingFace on first use, then
+# cached locally at ~/.cache/huggingface/.
+sentence-transformers>=2.7.0
 
 # Note: pdflatex is installed via system package manager in Docker
 #

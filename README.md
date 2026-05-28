@@ -74,6 +74,7 @@ An AI-powered instructional design system based on the ADDIE model for automated
 | 📄 **LaTeX/PDF Output** | Generate professional LaTeX slides and compile to PDF format |
 | 🎨 **PowerPoint (PPTX) Export** | Convert LaTeX Beamer slides to visually rich PPTX using pptxgenjs with icons, shadows, and Slide Masters |
 | ✅ **Automatic Evaluation** | Built-in evaluation system for assessing generated course materials |
+| 📖 **Textbook Grounding** | *(opt-in)* Ground course content in a PDF or markdown textbook; inline citation tokens are inserted in slides, scripts, and assessments. Built-in verifier checks each citation's faithfulness. Available on CLI, API, and Web UI. |
 
 ### 🎬 How It Works
 
@@ -190,6 +191,7 @@ python -m http.server 8080
      - Select "Not Use" for basic generation
      - Select "Upload Catalog File" to upload a custom catalog JSON
      - Select "Use Default Catalog" to use the default catalog
+   - **Textbook grounding** *(optional)*: upload one or more PDF/markdown files via the picker labelled "Textbook grounding (optional)". Leave empty to skip.
 
 2. **Click "Generate Course"** to start the task
 
@@ -436,6 +438,10 @@ python run.py "AI Fundamentals" --catalog ai_catalog
 
 # Combine catalog and copilot
 python run.py "Educational Psychology" --copilot --catalog edu_psy
+
+# Ground the course in a textbook (PDF/markdown file or directory)
+python run.py "Data Mining" --catalog mwe_catalog \
+    --use-textbook data/textbooks/han_data_mining_3e
 ```
 
 **Minimal Working Example** (generates a small 3-week course in ~5 min):
@@ -458,6 +464,10 @@ Options:
   --exp EXP_NAME           Experiment name for saving output (default: exp1)
   --seed SEED              Random seed for reproducibility
   --temperature TEMP       Sampling temperature for LLM
+  --use-textbook PATH      Ground course generation in a textbook (PDF or
+                           markdown file, or a directory of either). When
+                           omitted, generation runs identically to a vanilla
+                           run — no citations are emitted.
   --optimize STORAGE_ID    Optimize mode: provide storage_id of uploaded PDFs
   --requirements TEXT      User requirements for optimization (with --optimize)
   --chapter NAME           Specific chapter to optimize (with --optimize)
@@ -490,6 +500,12 @@ curl http://localhost:8000/api/course/results/{task_id}/files
 # Download a file
 curl http://localhost:8000/api/course/results/{task_id}/download/chapter_1/slides.pdf \
   --output slides.pdf
+
+# Textbook grounding (optional) — upload a textbook, then pass its
+# returned `path` as `textbook_path` in /api/course/generate above
+curl -X POST http://localhost:8000/api/textbooks/upload \
+  -F "files=@chapter_1.pdf" -F "files=@chapter_2.pdf"
+curl http://localhost:8000/api/textbooks/list
 ```
 
 For complete API documentation, see [API Documentation](docs/API_DOCUMENTATION.md).
@@ -503,7 +519,8 @@ For complete API documentation, see [API Documentation](docs/API_DOCUMENTATION.m
 | **Course Generation** | Generate complete course materials based on ADDIE model | Web interface, CLI (`run.py`), or RESTful API |
 | **Catalog Mode** | Use structured catalog files for guided generation | `--catalog` flag or upload in web interface |
 | **Copilot Mode** | Interactive feedback during generation | `--copilot` flag in CLI or enable in web interface |
-| **Evaluation** | Automatic assessment of generated materials | `python evaluate.py --exp <exp_name>` |
+| **Textbook Grounding** | Ground content in a PDF/markdown textbook with inline citations | `--use-textbook PATH` flag in CLI, `textbook_path` in API, file picker in web interface |
+| **Evaluation** | Automatic assessment of generated materials, with optional citation verification | `python evaluate.py --exp <exp_name> [--use-textbook PATH]` |
 | **Web Interface** | Visual interface for course generation | Open `frontend/index.html` in browser |
 | **API Server** | RESTful API for programmatic access | `python api_server.py` or Docker |
 
@@ -547,16 +564,36 @@ Interactive mode that prompts for feedback after each phase of the ADDIE workflo
 python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 ```
 
+### Textbook Grounding
+
+Opt-in. Pass `--use-textbook PATH` (a PDF, markdown file, or directory of either) and the system retrieves relevant textbook passages per chapter and inserts inline citation tokens like `[han_data_mining_3e:ch6.s3:p15]` (textbook id, section, page) in slides, scripts, and assessments. Without the flag, vanilla output is unchanged.
+
+```bash
+python run.py "Data Mining" --catalog mwe_catalog --exp dm_grounded \
+    --use-textbook data/textbooks/han_data_mining_3e
+```
+
+Embeddings are cached on disk after the first ingest (`~5-10s` one-time per textbook). Per-chapter generation is ~10-25% slower than vanilla because prompts carry retrieved excerpts. Verify each emitted citation with the evaluation step below.
+
+**How the grounding works under the hood:**
+- Each chapter is decomposed into 3 subtopics by the LLM; each subtopic is HyDE-expanded into a hypothetical textbook paragraph and used as a retrieval query (multi-query retrieval).
+- Per-section rankings across queries are fused via Reciprocal Rank Fusion (RRF, k=60). The contract binds each chapter to the top sections.
+- Coverage gating: if no textbook section scores above a threshold for a chapter, that chapter is marked "off-textbook" and writes without citations (rather than fabricate them against weak retrieval).
+- Writing prompts carry a five-rule mandatory grounding directive: cite-every-sourced-claim, anchor-to-source-wording, abstain-if-unsupported, exact-tokens-only, cite-correct-excerpt. Scripts (spoken narration) get a softer variant that allows natural paraphrase and once-per-concept citation. A worked example uses a real snippet from the top retrieved chunk so the model has a literal pattern to imitate.
+
 ### Automatic Evaluation
 
 **Entry Point**: `evaluate.py` – Automatic assessment and scoring
 
 ```bash
-# Evaluate a specific experiment
+# Rubric scoring + Program-Chair / Test-Student validation
 python evaluate.py --exp web_dev_v1
+
+# Add textbook-citation verification (only meaningful on grounded runs)
+python evaluate.py --exp dm_grounded --use-textbook data/textbooks/han_data_mining_3e
 ```
 
-Evaluation results are saved in `eval/{experiment_name}/` directory.
+Evaluation results are saved in `eval/{experiment_name}/` directory. With `--use-textbook`, a `grounding_results/` subdirectory is added containing per-citation faithfulness scores (1–5), citation precision, malformed-token counts, and a **failure-mode breakdown** (`good` / `loose_paraphrase` / `hallucination` / `retrieval_bad` / `wrong_chunk_cited` / `judge_uncertain`) that pinpoints which lever to pull when precision is below target.
 
 ### LaTeX-to-PPTX Conversion
 
@@ -634,6 +671,21 @@ python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 # - Analysis → feedback on goals, resources, audience
 # - Design → feedback on syllabus, assessments
 # - Development → feedback on chapter materials
+```
+
+### Textbook-Grounded Course
+
+```bash
+# Step 1: Generate course grounded in a textbook
+python run.py "Data Mining" --catalog mwe_catalog --exp dm_grounded \
+  --use-textbook data/textbooks/han_data_mining_3e
+
+# Step 2: Evaluate + verify every citation
+python evaluate.py --exp dm_grounded \
+  --use-textbook data/textbooks/han_data_mining_3e
+
+# Step 3: Review the citation report
+open eval/gpt-4o-mini-Evaluation_dm_grounded/grounding_results/grounding_summary.md
 ```
 
 ---

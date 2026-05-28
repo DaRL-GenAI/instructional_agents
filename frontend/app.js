@@ -37,6 +37,11 @@ const translations = {
         catalogSelectPlaceholder: '选择 Catalog...',
         catalogJsonLabel: 'Catalog JSON 数据',
         catalogJsonPlaceholder: '{"student_profile": {...}, "instructor_preferences": {...}}',
+        textbookLabel: '教材引用（可选）',
+        textbookHint: '上传一个或多个 PDF / Markdown 文件。多个文件将作为一本多章节教材处理。生成的幻灯片/讲稿/作业将插入内联引用标记。留空表示不使用教材引用。',
+        textbookUploading: '上传中...',
+        textbookUploadSuccess: '上传成功',
+        textbookUploadFailed: '上传失败',
         submitButtonText: '<span>🚀</span><span>开始生成课程</span>',
         submitButtonLoading: '⏳ 提交中...',
         progressSectionTitle: '生成进度',
@@ -178,6 +183,11 @@ const translations = {
         catalogSelectPlaceholder: 'Select a catalog...',
         catalogJsonLabel: 'Catalog JSON Data',
         catalogJsonPlaceholder: '{"student_profile": {...}, "instructor_preferences": {...}}',
+        textbookLabel: 'Textbook grounding (optional)',
+        textbookHint: 'Upload one or more PDF / markdown files. Multiple files are treated as one multi-chapter textbook. Citations will be inserted inline in slides, scripts, and assessments. Leave empty to generate without grounding.',
+        textbookUploading: 'Uploading...',
+        textbookUploadSuccess: 'Uploaded',
+        textbookUploadFailed: 'Upload failed',
         submitButtonText: '<span>🚀</span><span>Generate Course</span>',
         submitButtonLoading: '⏳ Submitting...',
         progressSectionTitle: 'Progress',
@@ -429,6 +439,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadApiKey();
     setupEventListeners();
     loadCatalogs();
+    setupTextbookUpload();
 });
 
 // Load API Key from localStorage
@@ -596,7 +607,7 @@ async function loadCatalogs() {
             headers: getApiHeaders()
         });
         const data = await response.json();
-        
+
         const select = document.getElementById('catalog-select');
         select.innerHTML = '';
 
@@ -605,7 +616,7 @@ async function loadCatalogs() {
         defaultOption.setAttribute('data-i18n', 'catalogSelectDefault');
         defaultOption.textContent = t('catalogSelectDefault');
         select.appendChild(defaultOption);
-        
+
         data.catalogs.forEach(catalog => {
             const option = document.createElement('option');
             option.value = catalog.name;
@@ -624,6 +635,76 @@ async function loadCatalogs() {
             select.appendChild(option);
         }
     }
+}
+
+// Wire up the textbook-grounding file picker. On file-change we POST to
+// /api/textbooks/upload, then store the returned canonical path in the
+// hidden #textbook-path input so the form-submit handler can forward it
+// as `textbook_path`. The hidden input is the single source of truth —
+// an empty value means "no grounding" (vanilla pipeline).
+function setupTextbookUpload() {
+    const fileInput = document.getElementById('textbook-upload');
+    const pathInput = document.getElementById('textbook-path');
+    const status = document.getElementById('textbook-upload-status');
+    if (!fileInput || !pathInput) return;
+
+    fileInput.addEventListener('change', async (e) => {
+        const fileList = Array.from(e.target.files || []);
+        if (fileList.length === 0) {
+            pathInput.value = '';
+            if (status) status.textContent = '';
+            return;
+        }
+
+        const totalBytes = fileList.reduce((sum, f) => sum + f.size, 0);
+        const totalMb = (totalBytes / (1024 * 1024)).toFixed(1);
+        if (status) {
+            const label = fileList.length === 1
+                ? fileList[0].name
+                : `${fileList.length} files`;
+            status.textContent = `${t('textbookUploading')} (${label}, ${totalMb} MB total)`;
+            status.style.color = '#555';
+        }
+
+        try {
+            // Send every selected file under the `files` field — FastAPI
+            // collects them into List[UploadFile]. Order is preserved by
+            // the form-data spec, so chapter ordering is whatever the user
+            // selected in the OS file picker.
+            const fd = new FormData();
+            fileList.forEach(f => fd.append('files', f));
+
+            const resp = await fetch(`${API_BASE_URL}/api/textbooks/upload`, {
+                method: 'POST',
+                body: fd,
+            });
+            if (!resp.ok) {
+                let detail;
+                try { detail = (await resp.json()).detail || resp.statusText; }
+                catch { detail = resp.statusText; }
+                throw new Error(`HTTP ${resp.status}: ${detail}`);
+            }
+            const data = await resp.json();
+
+            pathInput.value = data.path;
+            if (status) {
+                const summary = data.kind === 'directory'
+                    ? `${data.n_files} files bundled as one textbook (${data.size_mb} MB)`
+                    : `${data.title} (${data.size_mb} MB)`;
+                status.textContent = `✓ ${t('textbookUploadSuccess')}: ${summary}`;
+                status.style.color = '#2a7';
+            }
+            console.info('[textbooks] uploaded:', data);
+        } catch (error) {
+            console.error('[textbooks] upload failed:', error);
+            pathInput.value = '';
+            if (status) {
+                status.textContent = `✗ ${t('textbookUploadFailed')}: ${error.message || error}`;
+                status.style.color = '#c33';
+            }
+            fileInput.value = '';  // allow retry with the same selection
+        }
+    });
 }
 
 function handleCatalogModeChange(e) {
@@ -703,6 +784,15 @@ async function handleFormSubmit(e) {
                     return;
                 }
             }
+        }
+
+        // Handle textbook grounding (opt-in). The hidden #textbook-path
+        // input is populated by setupTextbookUpload after a successful
+        // POST /api/textbooks/upload. Empty value = no textbook; omit the
+        // field entirely so the API takes the vanilla path.
+        const textbookPath = document.getElementById('textbook-path');
+        if (textbookPath && textbookPath.value) {
+            formData.textbook_path = textbookPath.value;
         }
 
         // Submit request

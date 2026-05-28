@@ -36,7 +36,11 @@ class LLM:
 
         except Exception as e:
             print(f"Error generating response: {e}")
-            return f"Error: {e}"
+            # Return a 3-tuple so callers can unpack consistently. A bare
+            # string here (the previous behavior) crashed any caller that
+            # tried `response, elapsed_time, token_usage = ...` — e.g.
+            # evaluate.py's rubric scorer on a transient 429 rate limit.
+            return f"Error: {e}", 0.0, 0
 
 class LLM_stream:
     """

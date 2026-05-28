@@ -36,6 +36,7 @@ eval/
 logs/
 assets/
 .cache/
+.grounding_cache/
 
 # Uploaded catalogs (user-specific)
 catalog/uploaded_*.json

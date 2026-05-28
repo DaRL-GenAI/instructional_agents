@@ -247,6 +247,9 @@ class SlidesDeliberation:
                  catalog: bool = False,
                  catalog_dict: Dict[str, Any] = None,
                  resume: bool = False,
+                 retriever=None,
+                 section_ids=None,
+                 textbook_id: str = None,
                  ):
         """
         Initialize SlidesDeliberation
@@ -273,12 +276,221 @@ class SlidesDeliberation:
         self.catalog_dict = catalog_dict if catalog_dict else {}
         self.resume = resume
 
+        # Optional textbook-grounding handles. When `retriever` is None,
+        # `_build_evidence_block` returns empty strings and every prompt is
+        # constructed exactly as in the vanilla pipeline.
+        self.retriever = retriever
+        self.section_ids = section_ids
+        self.textbook_id = textbook_id
+
         # Initialize containers for results
         self.slides_outline = []
         self.latex_dict = {}  # Now stores list of frames per slide
         self.slides_script = {}
         self.assessment_template = {}  # New: assessment template
         self.assessment_content = {}   # New: assessment content
+
+    # ------------------------------------------------------------------ #
+    # Textbook-grounding helpers                                          #
+    # ------------------------------------------------------------------ #
+    # Word budget for the injected evidence block. Stays well under
+    # gpt-4o-mini's 128k context window after the rest of the prompt.
+    _EVIDENCE_WORD_BUDGET = 1800   # bumped from 1500 — more evidence room
+    _EVIDENCE_TOP_K = 6            # bumped from 4 — more candidates for the LLM to choose from
+    _EXAMPLE_SNIPPET_WORDS = 22    # how much of the top excerpt to mirror as the worked example
+
+    # Artifact-type vocabulary for `_build_evidence_block`. The strict
+    # rule-set ("slide") applies to slides + assessments — both are
+    # READ documents where inline citations don't disrupt the reader.
+    # The relaxed rule-set ("script") applies to speaker scripts —
+    # SPOKEN narration where back-to-back inline citations and
+    # mandatory direct quotation break narrative flow. The 2026-05-27
+    # uplift re-eval showed slide_scripts:alignment + :coherence
+    # dropping monotonically B0 → B1 → v2 (-0.66 vs vanilla on each)
+    # while the same metrics held / improved on slides + assessments —
+    # the differentiated rule-set is the structural fix.
+    _ARTIFACT_TYPES = ("slide", "script", "assessment")
+
+    def _build_evidence_block(self, query: str, artifact: str = "slide") -> tuple:
+        """Retrieve textbook evidence for `query` and format it for a prompt.
+
+        Returns ``(evidence_block, citation_rules)`` — both empty strings
+        when ``self.retriever is None`` (vanilla path) or retrieval yielded
+        nothing in scope. ``evidence_block`` is a chunk of plain text the
+        caller prepends to its prompt; ``citation_rules`` is an instruction
+        the caller appends.
+
+        ``artifact`` is one of ``"slide" | "script" | "assessment"``; it
+        toggles rules 1 + 2 between strict (slide/assessment — cite every
+        claim, anchor exactly) and relaxed (script — cite each concept
+        once at sentence end, paraphrase naturally). Rules 3 / 4 / 5
+        (abstain, exact tokens, cite-correct-excerpt) are universal and
+        identical across artifacts.
+
+        Design notes (faithfulness uplift over the prior format):
+          * Structured per-excerpt headers (TOKEN / SOURCE / PAGE / PASSAGE)
+            give the LLM clear labels to anchor on, vs a flat token+text.
+          * Five numbered rules covering the three failure modes the
+            verifier surfaced (hallucination, wrong-cite, loose paraphrase),
+            plus an abstain rule for unsupported claims.
+          * The worked example mirrors a real snippet from the TOP retrieved
+            chunk so the LLM has a literal pattern to imitate — not a
+            generic placeholder.
+          * Script mode (2026-05-27 fix) softens RULE 1 + RULE 2 so
+            spoken narration doesn't get peppered with sentence-interrupting
+            citation tokens and broken-voice direct quotes.
+        """
+        if self.retriever is None:
+            return "", ""
+        if artifact not in self._ARTIFACT_TYPES:
+            # Defensive: an unknown artifact label silently falls back to
+            # the strict rule-set rather than crashing — prefer over-citing
+            # to under-citing if the call site is mis-wired.
+            artifact = "slide"
+        try:
+            results = self.retriever.search(
+                query,
+                top_k=self._EVIDENCE_TOP_K,
+                section_ids=self.section_ids,
+            )
+        except Exception as e:
+            print(f"[grounding] retrieval failed ({e}); falling back to vanilla prompt")
+            return "", ""
+        if not results:
+            return "", ""
+
+        # Build per-excerpt blocks with structured headers. Budget the
+        # total word count across all excerpts; truncate the last one if
+        # it would overflow.
+        budget = self._EVIDENCE_WORD_BUDGET
+        blocks = []
+        for idx, r in enumerate(results, start=1):
+            words = r.chunk.text.split()
+            if len(words) > budget:
+                if budget < 30:  # skip a useless tail-end fragment
+                    break
+                text = " ".join(words[:budget]) + " …"
+            else:
+                text = " ".join(words)
+            chapter_title = (getattr(r.chunk, "chapter_title", "") or "").strip()
+            section_title = (getattr(r.chunk, "section_title", "") or "").strip()
+            source_line = " / ".join(s for s in (chapter_title, section_title) if s) or "(untitled)"
+            block = (
+                f"━━ EXCERPT {idx} of {len(results)} "
+                f"{'━' * max(0, 50 - len(str(idx)) - len(str(len(results))))}\n"
+                f"  TOKEN   : {r.chunk.citation_token()}\n"
+                f"  SOURCE  : {source_line}\n"
+                f"  PAGE    : {r.chunk.page_start}\n"
+                f"  PASSAGE :\n"
+                f"  «{text}»"
+            )
+            blocks.append(block)
+            budget -= len(text.split())
+            if budget <= 0:
+                break
+
+        first_token = results[0].chunk.citation_token()
+        # Mirror a short snippet of the top excerpt as the worked example —
+        # gives the model a literal in-context pattern to imitate rather
+        # than a generic placeholder sentence.
+        snippet_words = results[0].chunk.text.split()[: self._EXAMPLE_SNIPPET_WORDS]
+        example_snippet = " ".join(snippet_words).rstrip(",.;:") + "…"
+
+        # Artifact-conditioned RULES 1 + 2. RULES 3, 4, 5 are universal.
+        if artifact == "script":
+            rule_1 = (
+                "  RULE 1 (CITE EACH CONCEPT, NOT EACH SENTENCE). This is a "
+                "SPOKEN SCRIPT, not a written document. Cite the textbook ONCE "
+                "per major concept, placed at a natural sentence boundary so "
+                "it does not interrupt narrative flow. Avoid back-to-back "
+                f"citations. Format: \"...nearest-mean assignment {first_token}.\"\n"
+                "  — not \"...nearest-mean {first_token} assignment...\""
+            )
+            rule_2 = (
+                "  RULE 2 (PARAPHRASE NATURALLY). This is spoken narration — "
+                "use plain, conversational language while keeping the textbook's "
+                "underlying meaning faithful. Direct quotation is RESERVED for "
+                "technical definitions where paraphrase would be lossy "
+                "(e.g. precise mathematical statements). Do NOT pepper the "
+                "script with quoted fragments — the speaker should sound like a "
+                "teacher explaining, not someone reading aloud from a book."
+            )
+            header_label = "TEXTBOOK GROUNDING — MANDATORY RULES FOR SPOKEN SCRIPT"
+            footer_intro = (
+                "GROUNDING REMINDER (apply while writing this spoken script):"
+            )
+            footer_rule_1 = (
+                f"  • Each major concept gets ONE citation token (e.g. "
+                f"{first_token}), placed at a natural sentence boundary."
+            )
+            footer_rule_2 = (
+                "  • Paraphrase naturally in the speaker's voice — direct "
+                "quotation only when technical precision demands it."
+            )
+        else:  # "slide" or "assessment"
+            rule_1 = (
+                "  RULE 1 (CITE EVERY SOURCED CLAIM). Every factual claim drawn "
+                "from an excerpt MUST end with that excerpt's citation token, "
+                f"exactly as printed in its header (e.g. {first_token})."
+            )
+            rule_2 = (
+                "  RULE 2 (ANCHOR TO SOURCE WORDING). For definitions, formulas, "
+                "and named concepts, use the TEXTBOOK'S exact phrasing. Direct "
+                "quotation in \"quotes\" is encouraged for definitions and formal "
+                "statements. Do NOT paraphrase definitions loosely."
+            )
+            header_label = "TEXTBOOK GROUNDING — MANDATORY RULES"
+            footer_intro = "GROUNDING REMINDER (apply while writing):"
+            footer_rule_1 = (
+                f"  • Every textbook-derived claim ends with its citation token "
+                f"(e.g. {first_token})."
+            )
+            footer_rule_2 = (
+                "  • Prefer textbook wording over paraphrase, especially for "
+                "definitions and formulas — use \"direct quotes\" where appropriate."
+            )
+
+        evidence_block = (
+            "════════════════════════════════════════════════════════════════════\n"
+            f"{header_label}\n"
+            "════════════════════════════════════════════════════════════════════\n\n"
+            f"You have {len(blocks)} excerpts from the textbook below. They are your "
+            "AUTHORITATIVE source for this topic. Follow these rules without "
+            "exception:\n\n"
+            + rule_1 + "\n\n"
+            + rule_2 + "\n\n"
+            "  RULE 3 (ABSTAIN IF UNSUPPORTED). If you cannot ground a claim in "
+            "ANY excerpt below, either drop the claim or restate what the textbook "
+            "DOES cover on that topic. Do NOT make textbook-attributed claims that "
+            "the excerpts do not support.\n\n"
+            "  RULE 4 (EXACT TOKENS ONLY). Each citation token must appear EXACTLY "
+            "as printed in the excerpt header — no truncation, no modification, "
+            "never invented. A token like \"[han_data_mining_3e:c]\" is wrong and "
+            "will be flagged.\n\n"
+            "  RULE 5 (CITE THE CORRECT EXCERPT). If a claim is supported by "
+            "Excerpt 2, cite Excerpt 2's token — not Excerpt 1's. The cited "
+            "excerpt must be the one that actually supports the claim.\n\n"
+            "Example of a well-formed claim drawn from Excerpt 1:\n"
+            f"  \"{example_snippet}\" {first_token}\n\n"
+            "═══════════════════════════ EXCERPTS ═══════════════════════════\n\n"
+            + "\n\n".join(blocks)
+            + "\n\n"
+            "════════════════════════════════════════════════════════════════════\n"
+        )
+        citation_rules = (
+            "\n" + footer_intro + "\n"
+            + footer_rule_1 + "\n"
+            + footer_rule_2 + "\n"
+            "  • If you can't find support for a claim in the excerpts above, "
+            "do NOT make that claim. State what the textbook covers instead.\n"
+            "  • Citation tokens must appear EXACTLY as in the excerpt headers. "
+            "Never truncate, modify, or invent tokens.\n"
+            "  • Cite the excerpt that actually supports the claim — not "
+            "whichever token you happen to remember.\n"
+            "  • Any special LaTeX characters from excerpts (& % $ # _ { } ~ ^) "
+            "must be escaped in LaTeX output (e.g. \\& \\% \\_).\n"
+        )
+        return evidence_block, citation_rules
 
     # ------------------------------------------------------------------ #
     # Checkpoint helpers (resume support)                                #
@@ -592,13 +804,19 @@ class SlidesDeliberation:
         teaching_assistant = self.agents.get("teaching_assistant")
         if not teaching_assistant:
             raise ValueError("Teaching Assistant agent not found")
-        
+
+        # Textbook grounding (no-op when self.retriever is None).
+        evidence_block, citation_rules = self._build_evidence_block(
+            f"{chapter['title']}. {chapter.get('description', '')}"
+        )
+
         # Create the prompt for the agent
         prompt = f"""
+        {evidence_block}
         Based on the following slides outline and LaTeX template, generate initial LaTeX code for a presentation.
-        
+
         Chapter Title: {chapter['title']}
-        
+
         Slides Outline:
         {json.dumps(self.slides_outline, indent=2)}
 
@@ -610,16 +828,16 @@ class SlidesDeliberation:
         ```latex
         {self.latex_template}
         ```
-        
+
         Please generate the initial LaTeX code with frame placeholders for each slide in the outline.
         Each slide can have one or more frames based on content complexity.
-        
+
         Example of frame structures:
         \\begin{{frame}}[fragile]
             \\frametitle{{Slide Title - Part 1}}
             % Content will be added here
         \\end{{frame}}
-        
+
         \\begin{{frame}}[fragile]
             \\frametitle{{Slide Title - Part 2}}
             % Content will be added here
@@ -627,6 +845,7 @@ class SlidesDeliberation:
 
         1. Don't use non-English characters directly, e.g. use $\gamma$ instead of γ, $\epsilon$ instead of ε
         2. If any of symbols has a special meaning, add a slash. e.g. use \& instead of &
+        {citation_rules}
 
         Your response should be LaTeX code that can be compiled directly.
         """
@@ -723,7 +942,7 @@ class SlidesDeliberation:
         teaching_assistant = self.agents.get("teaching_assistant")
         if not teaching_assistant:
             raise ValueError("Teaching Assistant agent not found")
-        
+
         # Create a simple script template example
         script_template = """[
             {
@@ -737,11 +956,23 @@ class SlidesDeliberation:
                 "script": "The key concepts we need to understand are..."
             }
             ]"""
-        
+
+        # Textbook grounding: use the outline as the query so script lines
+        # can be supported by the textbook excerpts. Script artifact uses
+        # the SOFTER rule-set (cite-each-concept-once, paraphrase-naturally)
+        # since this is spoken narration where inline citations break flow.
+        outline_query = " ".join(
+            s.get("title", "") for s in self.slides_outline
+        ) if self.slides_outline else ""
+        evidence_block, citation_rules = self._build_evidence_block(
+            outline_query, artifact="script"
+        )
+
         # Create the prompt for the agent
         prompt = f"""
+        {evidence_block}
         Based on the following slides outline, create a template for slides scripts in JSON format.
-        
+
         Slides Outline:
         {json.dumps(self.slides_outline, indent=2)}
 
@@ -751,10 +982,12 @@ class SlidesDeliberation:
 
         Please generate a script template with placeholders for each slide in the outline.
         The template should be in JSON format with the following structure:
-        
+
         {script_template}
-        
+
         Each script entry should include a brief placeholder description of what would be said when presenting that slide.
+        {citation_rules}
+
         Your response must be valid JSON that can be parsed programmatically.
         """
         
@@ -826,13 +1059,19 @@ class SlidesDeliberation:
             }
             ]"""
         
+        # Textbook grounding for assessment generation (no-op when off).
+        evidence_block, citation_rules = self._build_evidence_block(
+            f"{chapter['title']}. {chapter.get('description', '')}"
+        )
+
         # Create the prompt for the agent
         prompt = f"""
+        {evidence_block}
         Based on the following chapter information and slides outline, create an assessment template in JSON format.
-        
+
         Chapter Title: {chapter['title']}
         Chapter Description: {chapter['description']}
-        
+
         Slides Outline:
         {json.dumps(self.slides_outline, indent=2)}
 
@@ -843,9 +1082,9 @@ class SlidesDeliberation:
         Please generate an assessment template with placeholders for each slide in the outline.
         The template should include questions, activities, and learning objectives for each slide.
         The template should be in JSON format with the following structure:
-        
+
         {assessment_template}
-        
+
         Assessments should meet the following requirements:
         {self.catalog_dict['assessment_planning']}
 
@@ -853,7 +1092,8 @@ class SlidesDeliberation:
         1. Multiple choice questions (with options and correct answers)
         2. Practical activities or exercises
         3. Learning objectives for the slide
-        
+        {citation_rules}
+
         Your response must be valid JSON that can be parsed programmatically.
         """
         
@@ -938,29 +1178,37 @@ class SlidesDeliberation:
         teaching_faculty = self.agents.get("teaching_faculty")
         if not teaching_faculty:
             raise ValueError("Teaching Faculty agent not found")
-        
+
+        # Grounding: per-slide retrieval scoped to this chapter's bound sections
+        # (no-op when self.retriever is None — vanilla path).
+        evidence_block, citation_rules = self._build_evidence_block(
+            f"{slide['title']}. {slide.get('description', '')}"
+        )
+
         # Create the prompt for the agent
         prompt = f"""
+        {evidence_block}
         Please create detailed educational content for the following slide:
-        
+
         Chapter: {chapter['title']}
         Slide: {slide['title']}
         Description: {slide['description']}
-        
+
         Context (adjacent slides for reference):
         {json.dumps(context_slides, indent=2)}
 
         User Feedback:
         [For slides]{json.dumps(self.user_feedback['slides'], indent=2)}
         [For overall]{json.dumps(self.user_feedback['overall'], indent=2)}
-        
+
         Please generate comprehensive, detailed, and easy-to-understand educational content for this slide.
         Your content should include:
         1. Clear explanations of concepts
         2. Examples or illustrations where appropriate
         3. Key points to emphasize
         4. Any formulas, code snippets, or diagrams that would be helpful, but dont try to include any pictures in the LaTeX code.
-        
+        {citation_rules}
+
         Focus on making the content educational, engaging, and aligned with the chapter's learning objectives.
         Note: Your output length needs to be kept within a reasonable range so that it can fit on a single PPT slide.
         """
@@ -985,13 +1233,13 @@ class SlidesDeliberation:
         teaching_assistant = self.agents.get("teaching_assistant")
         if not teaching_assistant:
             raise ValueError("Teaching Assistant agent not found")
-        
+
         # Get the current LaTeX frames if they exist
         current_frames = self.latex_dict.get(slide_idx, {}).get("frames", [])
         current_frames_text = "\n\n".join([frame["full_frame"] for frame in current_frames]) if current_frames else None
-        
-        # Use utility function to generate prompt
-        prompt = SlideUtils.generate_latex_frame_prompt(
+
+        # Use utility function to generate the base prompt
+        base_prompt = SlideUtils.generate_latex_frame_prompt(
             title=slide['title'],
             content=slide_draft,
             description=slide.get('description'),
@@ -999,6 +1247,13 @@ class SlidesDeliberation:
             user_feedback=self.user_feedback,
             max_frames=3
         )
+
+        # Grounding: wrap the base prompt with evidence + citation rules
+        # (no-op when self.retriever is None — vanilla path).
+        evidence_block, citation_rules = self._build_evidence_block(
+            f"{slide['title']}. {slide.get('description', '')}"
+        )
+        prompt = f"{evidence_block}\n{base_prompt}\n{citation_rules}"
         
         # Reset agent history to ensure clean context
         teaching_assistant.reset_history()
@@ -1061,32 +1316,40 @@ class SlidesDeliberation:
         teaching_assistant = self.agents.get("teaching_assistant")
         if not teaching_assistant:
             raise ValueError("Teaching Assistant agent not found")
-        
+
         # Get adjacent slide scripts for context
         prev_script = self.slides_script.get(slide_idx-1, {}).get("script", "") if slide_idx > 0 else ""
         current_script = self.slides_script.get(slide_idx, {}).get("script", "")
         next_script = self.slides_script.get(slide_idx+1, {}).get("script", "") if slide_idx < len(self.slides_outline)-1 else ""
-        
+
         # Get all frames for this slide
         frames_info = ""
         if slide_idx in self.latex_dict:
             for i, frame in enumerate(self.latex_dict[slide_idx]["frames"]):
                 frames_info += f"Frame {i+1}:\n```latex\n{frame['full_frame']}\n```\n\n"
-        
+
+        # Grounding: per-slide retrieval (no-op when self.retriever is None).
+        # Script artifact uses softer rules — spoken narration, not text.
+        evidence_block, citation_rules = self._build_evidence_block(
+            f"{slide['title']}. {slide.get('description', '')}",
+            artifact="script",
+        )
+
         # Create the prompt for the agent
         prompt = f"""
+        {evidence_block}
         Based on the following slide content, generate a detailed speaking script for presenting this slide.
         Note: This slide may have multiple frames, so your script should cover all frames smoothly.
-        
+
         Slide Title: {slide['title']}
         Slide Description: {slide['description']}
-        
+
         Detailed Content:
         {slide_draft}
-        
+
         LaTeX Frames for this slide:
         {frames_info}
-        
+
         Context (adjacent slides' scripts for smooth transitions):
         Previous slide script: {prev_script[:200] + "..." if len(prev_script) > 200 else prev_script}
         Current placeholder: {current_script}
@@ -1095,7 +1358,7 @@ class SlidesDeliberation:
         User Feedback:
         [For script]{json.dumps(self.user_feedback['script'], indent=2)}
         [For overall]{json.dumps(self.user_feedback['overall'], indent=2)}
-        
+
         Please generate a comprehensive speaking script for this slide that:
         1. Introduces the slide topic
         2. Explains all key points clearly and thoroughly
@@ -1103,7 +1366,8 @@ class SlidesDeliberation:
         4. Provides relevant examples or analogies
         5. Connects to previous or upcoming content
         6. Includes rhetorical questions or engagement points for students
-        
+        {citation_rules}
+
         The script should be detailed enough for someone else to present effectively from it.
         If there are multiple frames, clearly indicate when to advance to the next frame.
         """
@@ -1134,33 +1398,40 @@ class SlidesDeliberation:
         teaching_assistant = self.agents.get("teaching_assistant")
         if not teaching_assistant:
             raise ValueError("Teaching Assistant agent not found")
-        
+
         # Get the current assessment template for this slide
         template = self.assessment_template.get(slide_idx, {})
-        
+
+        # Grounding: per-slide retrieval (no-op when self.retriever is None).
+        evidence_block, citation_rules = self._build_evidence_block(
+            f"{slide['title']}. {slide.get('description', '')}"
+        )
+
         # Create the prompt for the agent
         prompt = f"""
+        {evidence_block}
         Based on the following slide content and assessment template, generate detailed assessment content for this slide.
-        
+
         Slide Title: {slide['title']}
         Slide Description: {slide['description']}
-        
+
         Detailed Content:
         {slide_draft}
-        
+
         Assessment Template:
         {json.dumps(template, indent=2)}
 
         User Feedback:
         [For assessment]{json.dumps(self.user_feedback['assessment'], indent=2)}
         [For overall]{json.dumps(self.user_feedback['overall'], indent=2)}
-        
+
         Please generate comprehensive assessment content in JSON format that includes:
         1. Multiple choice questions (3-5 questions) with 4 options each, correct answer, and explanation
         2. Practical activities or exercises related to the slide content
         3. Clear learning objectives for this slide
         4. Discussion questions for student engagement
-        
+        {citation_rules}
+
         The assessment should test understanding of the key concepts presented in this slide.
         
         Your response should be in JSON format like:
