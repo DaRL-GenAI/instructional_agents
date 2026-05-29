@@ -219,26 +219,49 @@ class Deliberation:
             formatted += f"{entry['agent']}: {entry['content']}\n\n"
         return formatted
     
-    def run(self, current_context: str = None, user_suggestion: str = None) -> str:
+    def run(self, current_context: str = None, user_suggestion: str = None,
+            textbook_context: str = None) -> str:
         """
         Run the deliberation process
-        
+
         Args:
             current_state: Output from previous deliberation to use as context
             user_suggestion: Optional user suggestion to guide the deliberation
-            
+            textbook_context: Optional textbook TOC block to anchor the
+                deliberation to a real source. When the caller supplies this
+                (foundation deliberations during a ``--use-textbook`` run),
+                it is prepended to the instruction prompt as an "Available
+                textbook" block so the agents see what the book actually
+                contains before deciding course structure. ``None`` keeps
+                the vanilla prompt byte-identical.
+
         Returns:
             Discussion summary
         """
         print(f"\n{'='*50}\nStarting Deliberation: {self.name}\n{'='*50}\n")
-        
+
         # Process input files if provided
         file_contents = str(self.input_files)
-        
+
         # Combine initial prompt with previous state, user suggestion, and file contents
         print(f"Instruction prompt: {self.instruction_prompt}\n")
-        
+
         full_prompt = self.instruction_prompt
+        if textbook_context:
+            # Front-load the TOC so the agents see the book BEFORE the rest
+            # of the prompt frames the task. Mandatory directive included —
+            # without it the agents tend to treat the TOC as background
+            # context and write a syllabus on whatever topic the course
+            # title suggests, which is exactly the bug this fixes.
+            full_prompt = (
+                "**Available textbook chapters (the course must align to this source):**\n"
+                f"{textbook_context}\n\n"
+                "When designing course structure, learning objectives, content "
+                "sequencing, or assessments, prefer topics covered by the "
+                "textbook above. Avoid chapters or topics with no textbook "
+                "support — they will fail downstream grounding checks.\n\n"
+                + full_prompt
+            )
         if user_suggestion:
             full_prompt += f"\n\nUser Suggestion: {user_suggestion}"
         if current_context:

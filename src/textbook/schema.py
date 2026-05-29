@@ -43,6 +43,64 @@ class Textbook(BaseModel):
     parser_quality: float       # 0..1 — chapters <0.6 excluded from headline tables
     chapters: List[Chapter]
 
+    def toc(self, word_budget: int = 400) -> str:
+        """Format the textbook's table of contents for prompt injection.
+
+        Returns a chapter-first listing with sections under each chapter,
+        e.g. ::
+
+            Chapter 2: Getting to Know Your Data
+              - 2.1 Data Objects and Attribute Types
+              - 2.2 Basic Statistical Descriptions
+            Chapter 3: Data Preprocessing
+              - ...
+
+        Token-budgeted: chapters are packed in order, dropping section
+        detail (then truncating the chapter list itself) when the cumulative
+        word count would exceed ``word_budget``. Even on huge textbooks the
+        chapter-title backbone always fits — sections are a "nice to have"
+        that degrade first.
+        """
+        if not self.chapters:
+            return ""
+
+        # Skip placeholder chapters from heading-detector fallback —
+        # showing the model "Untitled chapter" five times is noise, not
+        # signal. Filter only when there are real titles to fall back on.
+        real_chapters = [c for c in self.chapters
+                         if c.title and c.title.lower() != "untitled chapter"]
+        chapters = real_chapters if real_chapters else self.chapters
+
+        # First pass: chapter titles only — this is the floor.
+        title_lines = [f"Chapter {c.number}: {c.title}" for c in chapters]
+        total = sum(len(l.split()) for l in title_lines)
+        if total > word_budget:
+            # Even the chapter list alone overflows; truncate it.
+            kept: List[str] = []
+            running = 0
+            for line in title_lines:
+                w = len(line.split())
+                if running + w > word_budget - 6:  # room for the ellipsis line
+                    break
+                kept.append(line)
+                running += w
+            kept.append(f"... ({len(title_lines) - len(kept)} more chapters)")
+            return "\n".join(kept)
+
+        # Second pass: add sections under each chapter while budget allows.
+        remaining = word_budget - total
+        out: List[str] = []
+        for c, title_line in zip(chapters, title_lines):
+            out.append(title_line)
+            for s in c.sections:
+                line = f"  - {s.section_id} {s.title}"
+                w = len(line.split())
+                if w > remaining:
+                    break
+                out.append(line)
+                remaining -= w
+        return "\n".join(out)
+
 class TopicMapping(BaseModel):
     topic: str
     section_ids: List[str]      # ordered, most-relevant first

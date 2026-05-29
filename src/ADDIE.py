@@ -1,7 +1,7 @@
 import os
 import json
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from src.agents import (
     LLM,
@@ -129,13 +129,41 @@ class ADDIERunner:
         
         self.results = [self.course_name]
     
+    def _textbook_toc_context(self) -> Optional[str]:
+        """Return the textbook TOC for foundation-deliberation injection.
+
+        Returns the formatted TOC string when ``--use-textbook`` is in play,
+        else ``None`` so the deliberation prompt is byte-identical to the
+        vanilla path. Called once at the start of the foundation loop and
+        reused for every deliberation + retry — the TOC doesn't change
+        during a single run.
+        """
+        kb = getattr(self.addie, "knowledge_base", None)
+        if kb is None:
+            return None
+        try:
+            return kb.toc()
+        except Exception as e:  # defensive: malformed textbook shouldn't kill the run
+            print(f"[grounding] TOC formatting failed ({e}); falling back to vanilla foundation prompts")
+            return None
+
     def run_foundation_deliberations(self):
         """Run the first 6 foundational deliberations"""
         print(f"\n{'#'*60}\nStarting ADDIE Workflow: Foundation Phase\n{'#'*60}\n")
-        
+
         # Get the first 6 deliberations
         foundation_deliberations = self.addie.deliberations
-        
+
+        # Build the textbook context block once — used by every foundation
+        # deliberation including any copilot retries. ``None`` when no
+        # ``--use-textbook``, which keeps the vanilla prompts byte-identical.
+        self._foundation_toc = self._textbook_toc_context()
+        if self._foundation_toc:
+            print(
+                f"[grounding] Injecting textbook TOC ({len(self._foundation_toc.split())} words) "
+                "into foundation deliberations to anchor course structure to the source"
+            )
+
         # Run each deliberation in sequence
         i = 0
         statistics = []
@@ -183,8 +211,15 @@ class ADDIERunner:
                 \n\n'''
                 print(f"User suggestions loaded: {user_suggestion}")
             
-            # Run deliberation with current state and user suggestion
-            result, elapsed_time, token_usage = deliberation.run(current_context=str(self.results), user_suggestion=user_suggestion)
+            # Run deliberation with current state and user suggestion. When
+            # textbook grounding is active, ``self._foundation_toc`` is the
+            # TOC string the agents see *before* deciding course structure;
+            # ``None`` for vanilla, which makes the prompt byte-identical.
+            result, elapsed_time, token_usage = deliberation.run(
+                current_context=str(self.results),
+                user_suggestion=user_suggestion,
+                textbook_context=self._foundation_toc,
+            )
             statistics.append({"elapsed_time": elapsed_time, "token_usage": token_usage})
 
             with open(os.path.join(self.output_dir, "statistics.json"), "w") as f:
@@ -586,16 +621,26 @@ class ADDIERunner:
             
             print("\nRe-running deliberation with your suggestions...\n")
             
+            # Pull the TOC injected at run_foundation_deliberations time so
+            # retries see the same source-anchored prompt the first call did.
+            # ``None`` when no textbook (vanilla path); ``None`` for chapter
+            # retries too (SlidesDeliberation has its own grounding path that
+            # works at the per-chapter level rather than the foundation TOC).
+            foundation_toc = getattr(self, "_foundation_toc", None)
             if chapter_context:
                 # Re-run chapter deliberation with combined suggestions but original context
                 result = deliberation.run(current_context=context_str, user_suggestion=combined_suggestions)
-                
+
                 # Save to chapter directory
                 chapter_dir = os.path.join(self.output_dir, f"chapter_{chapter_idx+1}")
                 self._save_chapter_result(deliberation, result, chapter_idx, chapter_dir)
             else:
                 # Re-run foundation deliberation with combined suggestions but original context
-                result = deliberation.run(current_context=context_str, user_suggestion=combined_suggestions)
+                result = deliberation.run(
+                    current_context=context_str,
+                    user_suggestion=combined_suggestions,
+                    textbook_context=foundation_toc,
+                )
                 self.results[idx] = result
                 self._save_result(deliberation, result)
             

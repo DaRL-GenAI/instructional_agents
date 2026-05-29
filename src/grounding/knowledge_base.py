@@ -134,6 +134,10 @@ class TextbookKnowledgeBase:
     def __len__(self) -> int:
         return len(self.chunks)
 
+    def toc(self, word_budget: int = 400) -> str:
+        """Formatted table of contents for prompt injection — see `Textbook.toc`."""
+        return self.textbook.toc(word_budget=word_budget)
+
     @classmethod
     def from_path(cls, path: str | Path, *,
                   textbook_id: Optional[str] = None,
