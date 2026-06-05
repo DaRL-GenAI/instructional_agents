@@ -318,6 +318,12 @@ class SlidesDeliberation:
         self.retriever = retriever
         self.section_ids = section_ids
         self.textbook_id = textbook_id
+        # Per-chapter top_k tuned by the density of chunks in the
+        # chapter's bound sections. Dense chapters (many candidate
+        # chunks) get a wider window so the LLM sees more options;
+        # thin chapters narrow down to avoid pulling tangential
+        # content into evidence.
+        self._evidence_top_k = self._compute_top_k_for_chapter()
 
         # Initialize containers for results
         self.slides_outline = []
@@ -332,7 +338,10 @@ class SlidesDeliberation:
     # Word budget for the injected evidence block. Stays well under
     # gpt-4o-mini's 128k context window after the rest of the prompt.
     _EVIDENCE_WORD_BUDGET = 1800   # bumped from 1500 — more evidence room
-    _EVIDENCE_TOP_K = 6            # bumped from 4 — more candidates for the LLM to choose from
+    _EVIDENCE_TOP_K = 6            # default; per-chapter tuning may override
+    _EVIDENCE_TOP_K_MIN = 5        # floor for thin chapters
+    _EVIDENCE_TOP_K_MAX = 12       # ceiling — beyond this hits the word budget
+    _CHUNKS_PER_TOP_K_STEP = 12    # ~12 chunks of density per top_k step
     _EXAMPLE_SNIPPET_WORDS = 22    # how much of the top excerpt to mirror as the worked example
 
     # Artifact-type vocabulary for `_build_evidence_block`. The strict
@@ -356,6 +365,31 @@ class SlidesDeliberation:
     # appropriate form for the artifact.
     _VISUAL_MARKERS = ("[IMAGE_PATH:", "[LATEX:", "[TABLE:",
                        "[ALGORITHM_STEPS:", "[DESCRIPTION:", "[INSIGHT:")
+
+    def _compute_top_k_for_chapter(self) -> int:
+        """Tune the retriever top_k by the density of bound chunks.
+
+        Returns ``_EVIDENCE_TOP_K`` (the default) when the retriever
+        is absent, no sections are bound, or the KB chunks attribute
+        is unavailable. Otherwise counts how many chunks belong to
+        sections in ``self.section_ids`` and scales: roughly
+        ``round(chunks / _CHUNKS_PER_TOP_K_STEP)``, clamped to
+        ``[_EVIDENCE_TOP_K_MIN, _EVIDENCE_TOP_K_MAX]``.
+        """
+        if self.retriever is None or not self.section_ids:
+            return self._EVIDENCE_TOP_K
+        try:
+            kb_chunks = self.retriever.kb.chunks
+        except AttributeError:
+            return self._EVIDENCE_TOP_K
+        bound = sum(
+            1 for c in kb_chunks if c.section_id in self.section_ids
+        )
+        if bound == 0:
+            return self._EVIDENCE_TOP_K
+        scaled = round(bound / self._CHUNKS_PER_TOP_K_STEP)
+        return max(self._EVIDENCE_TOP_K_MIN,
+                   min(self._EVIDENCE_TOP_K_MAX, scaled))
 
     def _build_evidence_block(self, query: str, artifact: str = "slide") -> tuple:
         """Retrieve textbook evidence for `query` and format it for a prompt.
@@ -394,9 +428,11 @@ class SlidesDeliberation:
             # to under-citing if the call site is mis-wired.
             artifact = "slide"
         try:
+            # `_evidence_top_k` is set in __init__; defensive fallback
+            # to the class default lets bypass-init test skeletons work.
             results = self.retriever.search(
                 query,
-                top_k=self._EVIDENCE_TOP_K,
+                top_k=getattr(self, "_evidence_top_k", self._EVIDENCE_TOP_K),
                 section_ids=self.section_ids,
             )
         except Exception as e:
