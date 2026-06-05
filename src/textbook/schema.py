@@ -6,9 +6,57 @@ Chapter -> Textbook) plus the retrieval and grounding artifacts
 agents to ingest sources, retrieve evidence, and verify generated claims.
 """
 
+import re
 from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel
+
+
+# Title-pattern regex for non-instructional chapters that PDF / markdown
+# ingesters often misclassify as real chapters. Matches case-insensitively
+# at the START of a chapter title — so "Preface" matches but "Chapter 1:
+# Introduction to Preprocessing" does NOT. Generic across textbooks; no
+# per-source rules.
+_POLLUTION_TITLE_RE = re.compile(
+    r"^(?:Acknowledg|Foreword|Preface|Appendix|Glossary|Index"
+    r"|Bibliography|References|Errata|Dedication|Copyright|Imprint"
+    r"|Table\s+of\s+Contents|TOC|About\s+the\s+Authors?"
+    r"|About\s+the\s+Editors?|Cover|Title\s+Page|Half\s+Title)",
+    re.IGNORECASE,
+)
+
+# Chapters with very few paragraphs are usually boilerplate (front-matter
+# blurbs, ad pages, brief notices). 5 paragraphs is a conservative floor:
+# even a short real chapter typically has at least one section with several
+# paragraphs of teaching content. Used in conjunction with the title regex.
+_MIN_PARAGRAPHS_INSTRUCTIONAL = 5
+
+
+def _is_instructional(c) -> bool:
+    """True if a `Chapter` looks like a real teaching chapter.
+
+    Three checks (in order — first failure wins):
+
+    1. Has a meaningful title (not empty, not the "Untitled chapter"
+       heading-detector fallback).
+    2. Title does NOT match the pollution regex (front-matter,
+       back-matter, etc.).
+    3. Has at least ``_MIN_PARAGRAPHS_INSTRUCTIONAL`` paragraphs across
+       all sections — boilerplate page-fillers are filtered here.
+
+    The function is intentionally type-hint-loose (just `c`) so it can
+    be defined before the `Chapter` class and still pick up duck-typed
+    callers in tests.
+    """
+    title = (c.title or "").strip()
+    if not title or title.lower() == "untitled chapter":
+        return False
+    if _POLLUTION_TITLE_RE.match(title):
+        return False
+    total_paragraphs = sum(len(s.paragraphs) for s in c.sections)
+    if total_paragraphs < _MIN_PARAGRAPHS_INSTRUCTIONAL:
+        return False
+    return True
 
 
 class Paragraph(BaseModel):
@@ -55,6 +103,21 @@ class Textbook(BaseModel):
             Chapter 3: Data Preprocessing
               - ...
 
+        **Pollution filter** (generic, no per-textbook rules) drops three
+        categories of non-instructional chapters before formatting:
+
+        * Heading-detector fallback titles ("Untitled chapter")
+        * Front-matter / back-matter by title pattern (Acknowledgment,
+          Foreword, Preface, Appendix, Glossary, Index, Bibliography,
+          References, etc.) — see ``_POLLUTION_TITLE_RE``
+        * Very short chapters (< ``_MIN_PARAGRAPHS_INSTRUCTIONAL``
+          paragraphs across all sections) which are almost always
+          boilerplate page-fillers
+
+        If pollution-filtering leaves zero chapters, we fall back to the
+        unfiltered list so the TOC is never empty (better to show some
+        front matter than nothing).
+
         Token-budgeted: chapters are packed in order, dropping section
         detail (then truncating the chapter list itself) when the cumulative
         word count would exceed ``word_budget``. Even on huge textbooks the
@@ -64,11 +127,11 @@ class Textbook(BaseModel):
         if not self.chapters:
             return ""
 
-        # Skip placeholder chapters from heading-detector fallback —
-        # showing the model "Untitled chapter" five times is noise, not
-        # signal. Filter only when there are real titles to fall back on.
-        real_chapters = [c for c in self.chapters
-                         if c.title and c.title.lower() != "untitled chapter"]
+        # Pollution filter. Drop chapters that are clearly non-instructional
+        # (front-matter, back-matter, boilerplate). All-or-nothing fallback:
+        # if filtering removes everything, keep the originals so the TOC
+        # remains non-empty.
+        real_chapters = [c for c in self.chapters if _is_instructional(c)]
         chapters = real_chapters if real_chapters else self.chapters
 
         # First pass: chapter titles only — this is the floor.

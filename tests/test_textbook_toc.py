@@ -9,6 +9,8 @@ ingestion from spamming the prompt with noise.
 
 from __future__ import annotations
 
+import pytest
+
 from src.textbook.schema import (
     Chapter,
     PageSpan,
@@ -28,12 +30,16 @@ def _para(idx: int, page: int = 1) -> Paragraph:
 
 
 def _section(chapter_num: int, section_num: int, title: str,
-             page_start: int = 1, page_end: int = 1) -> Section:
+             page_start: int = 1, page_end: int = 1,
+             n_paragraphs: int = 6) -> Section:
+    # Default to 6 paragraphs per section so the chapter clears the
+    # `_MIN_PARAGRAPHS_INSTRUCTIONAL` floor used by the pollution filter.
+    # Tests that need a boilerplate-thin chapter can pass `n_paragraphs=1`.
     return Section(
         section_id=f"ch{chapter_num}.s{section_num}",
         title=title,
         pages=PageSpan(start=page_start, end=page_end),
-        paragraphs=[_para(chapter_num)],
+        paragraphs=[_para(chapter_num) for _ in range(n_paragraphs)],
         concepts=[],
     )
 
@@ -148,3 +154,120 @@ class TestUntitledChapterFiltering:
         toc = tb.toc()
         assert toc != ""
         assert toc.count("Untitled chapter") == 3
+
+
+class TestPollutionFilter:
+    """The pollution filter drops three categories of non-instructional
+    chapters before the TOC is formatted:
+
+    * Heading-detector fallback titles (covered by `TestUntitledChapterFiltering`).
+    * Front- and back-matter by title pattern (this class).
+    * Boilerplate-thin chapters with very few paragraphs.
+
+    Generic — no per-textbook rules. All-or-nothing fallback when the
+    filter would leave us with zero chapters.
+    """
+
+    @pytest.mark.parametrize("polluted_title", [
+        "Acknowledgment", "Acknowledgments", "Acknowledgements",
+        "Foreword", "Preface",
+        "Appendix A", "Appendix B: Advanced Prompting", "Appendix",
+        "Glossary", "Index", "Bibliography", "References", "Errata",
+        "Dedication", "Copyright", "Imprint",
+        "Table of Contents", "TOC",
+        "About the Author", "About the Authors", "About the Editor",
+        "Cover", "Title Page", "Half Title",
+        # Case-insensitive
+        "preface", "GLOSSARY", "appendix c",
+    ])
+    def test_pollution_title_dropped(self, polluted_title):
+        # Pair the polluted chapter with one real chapter so the filter
+        # has something to fall back to.
+        tb = _textbook([
+            _chapter(1, polluted_title),
+            _chapter(2, "Real Teaching Chapter"),
+        ])
+        toc = tb.toc()
+        assert polluted_title not in toc
+        assert "Real Teaching Chapter" in toc
+
+    def test_real_chapter_titles_with_pollution_words_inside_are_kept(self):
+        # The regex anchors to start-of-string, so chapters whose name
+        # CONTAINS one of the pollution words (but doesn't START with it)
+        # are real teaching chapters and must survive.
+        tb = _textbook([
+            _chapter(1, "Chapter 1: Introduction to References"),
+            _chapter(2, "Chapter 2: Indexes and Catalogs"),
+            _chapter(3, "Chapter 3: Bibliography Studies in NLP"),
+        ])
+        toc = tb.toc()
+        # All three should survive — they're real chapters that just
+        # happen to contain a pollution word later in the title.
+        assert "Chapter 1: Introduction to References" in toc
+        assert "Chapter 2: Indexes and Catalogs" in toc
+        assert "Chapter 3: Bibliography Studies in NLP" in toc
+
+    def test_boilerplate_thin_chapter_dropped(self):
+        # A chapter with only 2 paragraphs total — below the boilerplate
+        # floor — is dropped even if its title looks fine.
+        tb = _textbook([
+            _chapter(1, "Tiny Front Notice", [_section(1, 1, "intro", n_paragraphs=2)]),
+            _chapter(2, "Substantive Chapter Two"),
+        ])
+        toc = tb.toc()
+        assert "Tiny Front Notice" not in toc
+        assert "Substantive Chapter Two" in toc
+
+    def test_chapter_just_above_threshold_kept(self):
+        # The floor is exclusive on the low side: a chapter with exactly
+        # `_MIN_PARAGRAPHS_INSTRUCTIONAL` paragraphs (= 5) survives, and a
+        # chapter with one fewer (4) does NOT. This tests both edges.
+        tb = _textbook([
+            _chapter(1, "Five-paragraph chapter",
+                     [_section(1, 1, "intro", n_paragraphs=5)]),
+            _chapter(2, "Four-paragraph chapter",
+                     [_section(2, 1, "intro", n_paragraphs=4)]),
+        ])
+        toc = tb.toc()
+        assert "Five-paragraph chapter" in toc
+        assert "Four-paragraph chapter" not in toc
+
+    def test_all_polluted_falls_back_to_unfiltered(self):
+        # If pollution-filtering would leave zero chapters, the unfiltered
+        # list is returned instead. The TOC must never be empty when the
+        # textbook has chapters to show.
+        tb = _textbook([
+            _chapter(1, "Foreword"),
+            _chapter(2, "Glossary"),
+            _chapter(3, "Index"),
+        ])
+        toc = tb.toc()
+        assert toc != ""
+        # Falls back to unfiltered — all three should appear.
+        assert "Foreword" in toc
+        assert "Glossary" in toc
+        assert "Index" in toc
+
+    def test_realistic_polluted_textbook_keeps_only_real_chapters(self):
+        # Mimics the Agentic Design Patterns ingestion: front matter,
+        # appendices, glossary, plus the real chapters in between.
+        tb = _textbook([
+            _chapter(1, "Acknowledgment"),
+            _chapter(2, "Foreword"),
+            _chapter(3, "Preface"),
+            _chapter(4, "Chapter 1: Prompt Chaining"),
+            _chapter(5, "Chapter 2: Routing"),
+            _chapter(6, "Chapter 3: Tool Use"),
+            _chapter(7, "Appendix A: Advanced Prompting"),
+            _chapter(8, "Appendix B: Coding Agents"),
+            _chapter(9, "Glossary"),
+        ])
+        toc = tb.toc()
+        # 3 real chapters survive.
+        assert "Chapter 1: Prompt Chaining" in toc
+        assert "Chapter 2: Routing" in toc
+        assert "Chapter 3: Tool Use" in toc
+        # 6 polluted chapters are dropped.
+        for polluted in ("Acknowledgment", "Foreword", "Preface",
+                         "Appendix A", "Appendix B", "Glossary"):
+            assert polluted not in toc
