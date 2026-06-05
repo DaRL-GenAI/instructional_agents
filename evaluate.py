@@ -277,6 +277,67 @@ FAILURE_MODE_VALUES = (
 )
 
 
+# Per-sentence relevance trim helper. When the judge gets the WHOLE
+# 500-token chunk, it can be hard to pinpoint which sentence is
+# supposed to support the claim, and the score gets noisy. Trimming
+# the chunk to the most-overlapping sentence + neighbours sharpens
+# the judge's input.
+_TRIM_MAX_CHARS = 1500       # safety cap on the final excerpt
+_TRIM_WINDOW_SENTENCES = 3   # neighbours on each side of the best sentence
+_TRIM_MIN_CHUNK_CHARS = 400  # don't bother trimming chunks shorter than this
+_WORD_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_-]{2,}\b")
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[])")
+
+
+def _normalise_words(text: str) -> set[str]:
+    """Lowercase the alphanumeric words of length ≥ 3 in text."""
+    return {m.group(0).lower() for m in _WORD_RE.finditer(text)}
+
+
+def _trim_chunk_to_relevant_passage(chunk_text: str, claim: str) -> str:
+    """Trim the chunk to the sentences most relevant to the claim.
+
+    Splits the chunk into sentences, scores each by the number of
+    content-word overlaps with the claim, and returns a window of
+    :data:`_TRIM_WINDOW_SENTENCES` sentences on each side of the
+    highest-scoring sentence. Falls back to a head-truncate when
+    overlap-scoring can't identify a clear best (zero overlap on
+    every sentence) so the judge still has something to work with.
+
+    Short chunks (< _TRIM_MIN_CHUNK_CHARS) are returned unmodified;
+    no point trimming what's already small.
+    """
+    if not chunk_text or len(chunk_text) < _TRIM_MIN_CHUNK_CHARS:
+        return chunk_text[:_TRIM_MAX_CHARS]
+    if not claim:
+        return chunk_text[:_TRIM_MAX_CHARS]
+
+    sentences = _SENT_SPLIT_RE.split(chunk_text)
+    if len(sentences) < 2:
+        return chunk_text[:_TRIM_MAX_CHARS]
+
+    claim_words = _normalise_words(claim)
+    if not claim_words:
+        return chunk_text[:_TRIM_MAX_CHARS]
+
+    best_idx = -1
+    best_score = -1
+    for i, s in enumerate(sentences):
+        score = len(claim_words & _normalise_words(s))
+        if score > best_score:
+            best_score = score
+            best_idx = i
+
+    if best_score == 0:
+        # No overlap anywhere — fall back to the chunk head.
+        return chunk_text[:_TRIM_MAX_CHARS]
+
+    lo = max(0, best_idx - _TRIM_WINDOW_SENTENCES)
+    hi = min(len(sentences), best_idx + _TRIM_WINDOW_SENTENCES + 1)
+    excerpt = " ".join(sentences[lo:hi]).strip()
+    return excerpt[:_TRIM_MAX_CHARS]
+
+
 class GroundingAgent:
     """Score citation faithfulness against an ingested textbook.
 
@@ -602,9 +663,11 @@ class GroundingAgent:
         :meth:`_llm_score_aggregate`; callers that want self-consistency
         voting should go through the aggregate method instead.
         """
-        # Truncate the chunk to a reasonable cap so the scoring prompt
-        # stays small. 1500 chars is comfortable for one paragraph or two.
-        chunk_excerpt = chunk_text[:1500]
+        # Trim the chunk to the most relevant passage for THIS claim so
+        # the judge focuses on the supporting text rather than the
+        # whole 500-token chunk. Falls back to a head-truncate when
+        # the trim helper can't identify a clear best match.
+        chunk_excerpt = _trim_chunk_to_relevant_passage(chunk_text, claim)
         prompt = f"""You are evaluating whether a textbook excerpt supports a claim drawn from generated course material.
 
 CLAIM (with [...] citation token, drawn from a generated slide / script / assessment):
