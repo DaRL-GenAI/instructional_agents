@@ -246,10 +246,13 @@ class VlmExtractor:
         """Send the page image to the VLM and parse the structured response.
 
         Encapsulated so tests can mock the OpenAI call cleanly.
+
+        ``temperature=0`` + a fixed ``seed`` push the API toward
+        deterministic output across runs. The IR cache pins this
+        further: once a textbook has been ingested, subsequent loads
+        skip the VLM entirely.
         """
         b64 = base64.b64encode(png_bytes).decode("ascii")
-        # OpenAI Structured Outputs via parse() — validates the schema
-        # at the API boundary and returns a typed object.
         completion = self.client.beta.chat.completions.parse(
             model=self.model,
             messages=[{
@@ -263,7 +266,8 @@ class VlmExtractor:
                 ],
             }],
             response_format=ExtractedPage,
+            temperature=0,
+            seed=42,
         )
         parsed = completion.choices[0].message.parsed
-        # The API may return None on refusal; treat as empty extraction.
         return parsed if parsed is not None else ExtractedPage()

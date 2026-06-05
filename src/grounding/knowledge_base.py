@@ -142,7 +142,9 @@ class TextbookKnowledgeBase:
     def from_path(cls, path: str | Path, *,
                   textbook_id: Optional[str] = None,
                   title: Optional[str] = None,
-                  vlm_extractor=None) -> "TextbookKnowledgeBase":
+                  vlm_extractor=None,
+                  ir_cache_dir: Optional[Path] = None,
+                  use_ir_cache: bool = True) -> "TextbookKnowledgeBase":
         """Load a textbook from a file or directory and build chunks.
 
         Auto-dispatches by extension / directory contents:
@@ -158,6 +160,15 @@ class TextbookKnowledgeBase:
                 on pages flagged complex by the spatial router).
                 When None, the existing plain-text ingester is used —
                 vanilla path is byte-identical.
+            ir_cache_dir: Where to read / write the cached Textbook IR.
+                Defaults to ``<project>/.grounding_cache/``. The cache
+                pins the parsed IR to disk on first ingestion so every
+                subsequent call against the same source returns
+                identical chunks — critical for the hybrid path where
+                VLM extraction is not strictly deterministic across
+                runs.
+            use_ir_cache: If False, bypass the cache entirely and
+                always re-ingest. Useful for one-off comparisons.
         """
         p = Path(path)
         if not p.exists():
@@ -166,7 +177,29 @@ class TextbookKnowledgeBase:
         derived_id = textbook_id or _derive_id(p)
         derived_title = title or _derive_title(p)
 
-        textbook = _ingest(p, derived_id, derived_title, vlm_extractor=vlm_extractor)
+        # Default cache location: <project>/.grounding_cache/
+        if ir_cache_dir is None:
+            ir_cache_dir = Path(__file__).resolve().parents[2] / ".grounding_cache"
+
+        from src.grounding.ir_cache import load_ir, save_ir
+
+        textbook: Optional[Textbook] = None
+        if use_ir_cache:
+            textbook = load_ir(ir_cache_dir, derived_id)
+            if textbook is not None:
+                print(
+                    f"[grounding] Loaded IR for '{derived_id}' from cache "
+                    f"({len(textbook.chapters)} chapters)."
+                )
+        if textbook is None:
+            textbook = _ingest(p, derived_id, derived_title, vlm_extractor=vlm_extractor)
+            if use_ir_cache:
+                save_ir(ir_cache_dir, derived_id, textbook)
+                print(
+                    f"[grounding] Cached IR for '{derived_id}' "
+                    f"({len(textbook.chapters)} chapters)."
+                )
+
         chunks: List[Chunk] = []
         for chapter in textbook.chapters:
             for section in chapter.sections:
