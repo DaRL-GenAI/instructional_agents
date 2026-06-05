@@ -37,20 +37,31 @@ class SyllabusProcessor(Agent):
         # Create a prompt to send to the LLM
         prompt = f"""
         Please analyze the following syllabus content and extract its weekly topics and schedule.
+
         Format your response as a JSON array of objects, each with 'title' and 'description' fields.
-        
+
+        Rules for the 'title' field:
+        - Use the EXACT title from each weekly schedule entry in the syllabus.
+        - Preserve the syllabus's own numbering and label style (e.g. "Week 1: ...",
+          "Module 1: ...", "Unit 1: ...", or whatever heading the syllabus actually uses).
+        - DO NOT renumber entries based on textbook chapter references that appear in
+          the readings (e.g. "Readings: Chapter 1.1 - 1.2"). Textbook chapter numbers
+          must NOT become the course chapter numbers.
+        - Output exactly one entry per weekly schedule item in the syllabus, in the
+          same order they appear.
+
         Syllabus Content:
         {syllabus_content}
-        
-        Example format:
+
+        Example format (when the syllabus uses week-based headings):
         [
             {{
-                "title": "Chapter 1: Introduction to Machine Learning",
+                "title": "Week 1: Introduction to Machine Learning",
                 "description": "Overview of basic machine learning concepts and applications."
             }},
             ...
         ]
-        
+
         Important: Your entire response must be valid JSON. Do not include any explanatory text before or after the JSON array.
         """
         
