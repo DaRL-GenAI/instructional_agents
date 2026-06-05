@@ -53,6 +53,90 @@ def _assign_real_pages(textbook: Textbook) -> None:
                                      end=max(chapter_pages))
 
 
+def _ends_mid_sentence(text: str) -> bool:
+    """True if the text appears to break off mid-sentence at its end.
+
+    Heuristic: the last non-whitespace character is NOT one of the
+    standard sentence terminators ``. ! ? ; :``. Words ending in
+    common abbreviations (``etc.``, ``e.g.``) terminate cleanly under
+    this rule (false negatives — they're treated as complete), which
+    is the safer direction to err in.
+    """
+    stripped = text.rstrip()
+    if not stripped:
+        return False
+    return stripped[-1] not in ".!?;:"
+
+
+def _starts_mid_sentence(text: str) -> bool:
+    """True if the text appears to continue from a prior sentence.
+
+    Heuristic: the first non-whitespace character is a lowercase
+    letter. A capital letter, digit, or punctuation signals a fresh
+    sentence and we do NOT stitch.
+    """
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+    return stripped[0].islower()
+
+
+# Cross-page dangling paragraphs are merged into a single paragraph
+# whose total length stays under this many characters. The cap is a
+# safety belt against runaway merges on very long pages; in practice
+# dangling sentences cap out at ~200-400 chars and won't approach it.
+_STITCH_MAX_LEN = 2000
+
+
+def _stitch_cross_page_dangles(blocks: list[dict]) -> list[dict]:
+    """Glue dangling sentences across page boundaries into one paragraph.
+
+    The PyMuPDF4LLM page-chunked extractor produces a separate block
+    per page. When a sentence breaks mid-thought at a physical page
+    break, it appears as two half-paragraphs in adjacent blocks:
+    block N's last paragraph ends without a terminator and block N+1's
+    first paragraph starts with a lowercase letter (continuation).
+    Neither half retrieves well in isolation — the verifier query
+    matches the WHOLE sentence, not either half.
+
+    This helper detects that pattern and merges the two halves into a
+    single paragraph that carries the EARLIER page's tag (the sentence
+    started there). The chunker's page-range handling absorbs the
+    multi-page content cleanly.
+
+    Pure paragraph stitching: heading blocks are NEVER merged with
+    paragraph blocks; merges that would exceed ``_STITCH_MAX_LEN`` are
+    skipped (safety belt against unlikely degenerate inputs).
+    """
+    if not blocks:
+        return blocks
+    out: list[dict] = []
+    prev: Optional[dict] = None
+    for blk in blocks:
+        if prev is None:
+            prev = blk
+            continue
+        if (
+            prev["type"] == "paragraph"
+            and blk["type"] == "paragraph"
+            and prev.get("page") != blk.get("page")
+            and _ends_mid_sentence(prev.get("text", ""))
+            and _starts_mid_sentence(blk.get("text", ""))
+        ):
+            merged_text = (
+                prev["text"].rstrip() + " " + blk["text"].lstrip()
+            )
+            if len(merged_text) <= _STITCH_MAX_LEN:
+                merged = {**prev, "text": merged_text}
+                prev = merged
+                continue
+        out.append(prev)
+        prev = blk
+    if prev is not None:
+        out.append(prev)
+    return out
+
+
 def _extract_blocks_with_page(md_text: str, page_num: int,
                               seen_chapter: bool) -> tuple[list[dict], bool]:
     """Extract blocks from one page's markdown and tag them with ``page``.
@@ -124,6 +208,11 @@ def ingest_pdf_file_paged(
             md_text, page_num, seen_chapter,
         )
         all_blocks.extend(blocks)
+
+    # Cross-page sentence stitching: merge dangling-end paragraphs on
+    # page N with continuing-start paragraphs on page N+1 so a sentence
+    # broken by a physical page break becomes one retrievable unit.
+    all_blocks = _stitch_cross_page_dangles(all_blocks)
 
     chapters = _blocks_to_chapters(all_blocks)
     if not chapters:

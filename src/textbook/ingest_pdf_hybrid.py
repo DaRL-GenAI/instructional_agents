@@ -277,6 +277,16 @@ def ingest_pdf_file_hybrid(
     finally:
         doc.close()
 
+    # Cross-page sentence stitching applies to BOTH the prose blocks
+    # extracted by PyMuPDF4LLM AND the VLM-component blocks. The
+    # stitcher only merges paragraph-typed adjacent blocks where the
+    # earlier ends mid-sentence and the later starts mid-sentence;
+    # visual chunks (figure_cap / equation / example) carrying VLM
+    # markers always start cleanly (their text begins with "Figure",
+    # "Equation", "Table", etc.) and are never merged.
+    from .ingest_pdf_paged import _stitch_cross_page_dangles
+    all_blocks = _stitch_cross_page_dangles(all_blocks)
+
     chapters = _blocks_to_chapters(all_blocks)
     if not chapters:
         # No chapter structure — fall back to plain text.
