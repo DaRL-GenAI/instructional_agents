@@ -190,6 +190,60 @@ class TestUnsupportedPaths:
             TextbookKnowledgeBase.from_path(tmp_path)
 
 
+class TestCitationTokensInRange:
+    """Multi-page chunks register one citation token per page in
+    their range so the LLM can cite the most relevant page within
+    the chunk's span and have its citation still resolve."""
+
+    def _multi_page_chunk(self):
+        return Chunk(
+            chunk_id="t:ch1.s1:c00",
+            text="content",
+            textbook_id="t",
+            chapter_id="ch1",
+            chapter_title="C",
+            section_id="ch1.s1",
+            section_title="S",
+            para_ids=["ch1.s1.p01"],
+            page_start=3,
+            page_end=5,
+        )
+
+    def test_single_page_chunk_returns_one_token(self):
+        c = Chunk(
+            chunk_id="t:ch1.s1:c00", text="x",
+            textbook_id="t", chapter_id="ch1", chapter_title="C",
+            section_id="ch1.s1", section_title="S",
+            para_ids=["ch1.s1.p01"], page_start=7, page_end=7,
+        )
+        tokens = c.citation_tokens_in_range()
+        assert tokens == ["[t:ch1.s1:p07]"]
+
+    def test_multi_page_chunk_yields_one_token_per_page(self):
+        c = self._multi_page_chunk()
+        tokens = c.citation_tokens_in_range()
+        assert tokens == ["[t:ch1.s1:p03]", "[t:ch1.s1:p04]", "[t:ch1.s1:p05]"]
+
+    def test_page_range_label_single_page(self):
+        c = Chunk(
+            chunk_id="t:ch1.s1:c00", text="x",
+            textbook_id="t", chapter_id="ch1", chapter_title="C",
+            section_id="ch1.s1", section_title="S",
+            para_ids=["ch1.s1.p01"], page_start=7, page_end=7,
+        )
+        assert c.page_range_label() == "p7"
+
+    def test_page_range_label_multi_page(self):
+        c = self._multi_page_chunk()
+        assert c.page_range_label() == "p3-p5"
+
+    def test_canonical_citation_token_unchanged_for_back_compat(self):
+        # citation_token() still uses page_start so existing callers
+        # see no behaviour change.
+        c = self._multi_page_chunk()
+        assert c.citation_token() == "[t:ch1.s1:p03]"
+
+
 class TestVisualParagraphChunking:
     """Visual paragraphs (those carrying hybrid-ingester markers like
     [IMAGE_PATH:, [LATEX:, [TABLE:, [ALGORITHM_STEPS:) emit their own

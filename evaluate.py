@@ -324,11 +324,28 @@ class GroundingAgent:
         if n_samples < 1:
             raise ValueError(f"n_samples must be >= 1, got {n_samples}")
         self.n_samples = n_samples
-        # Pre-index every chunk by its citation token so the per-citation
-        # lookup is O(1). Token format matches Chunk.citation_token().
-        self._chunk_by_token: Dict[str, Any] = {
-            c.citation_token(): c for c in knowledge_base.chunks
-        }
+        # Pre-index every chunk by EVERY citation token that should
+        # resolve to it. A multi-page chunk (page_start < page_end)
+        # registers one entry per page in its range so the LLM can
+        # cite any page within the chunk and have its citation
+        # resolve correctly. Single-page chunks register exactly one
+        # entry (identical to the prior behaviour).
+        self._chunk_by_token: Dict[str, Any] = {}
+        for c in knowledge_base.chunks:
+            # citation_tokens_in_range yields one token per page in the
+            # chunk's range; for single-page chunks it returns a single
+            # token equal to citation_token().
+            try:
+                tokens = c.citation_tokens_in_range()
+            except AttributeError:
+                # Older Chunk shape without the method — fall back to
+                # the single canonical token.
+                tokens = [c.citation_token()]
+            for tok in tokens:
+                # Don't overwrite if another chunk has already claimed
+                # this token (rare; could happen if two sections happen
+                # to overlap on a boundary page). First write wins.
+                self._chunk_by_token.setdefault(tok, c)
 
     # ----- public API ----------------------------------------------------
 

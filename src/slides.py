@@ -433,12 +433,20 @@ class SlidesDeliberation:
             chapter_title = (getattr(r.chunk, "chapter_title", "") or "").strip()
             section_title = (getattr(r.chunk, "section_title", "") or "").strip()
             source_line = " / ".join(s for s in (chapter_title, section_title) if s) or "(untitled)"
+            # Show the page RANGE for multi-page chunks so the LLM can
+            # cite the most relevant page within the chunk's span (the
+            # verifier index registers every page in the range, so any
+            # page-in-range token resolves to this chunk).
+            try:
+                page_label = r.chunk.page_range_label()
+            except AttributeError:
+                page_label = f"p{r.chunk.page_start}"
             block = (
                 f"━━ EXCERPT {idx} of {len(results)} "
                 f"{'━' * max(0, 50 - len(str(idx)) - len(str(len(results))))}\n"
                 f"  TOKEN   : {r.chunk.citation_token()}\n"
                 f"  SOURCE  : {source_line}\n"
-                f"  PAGE    : {r.chunk.page_start}\n"
+                f"  PAGE    : {page_label}\n"
                 f"  PASSAGE :\n"
                 f"  «{text}»"
             )

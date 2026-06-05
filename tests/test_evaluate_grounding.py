@@ -27,6 +27,7 @@ def fake_kb():
     """A KB-shaped object with two chunks whose citation tokens we control."""
     chunk_a = MagicMock()
     chunk_a.citation_token.return_value = "[han_data_mining_3e:ch6.s3:p15]"
+    chunk_a.citation_tokens_in_range.return_value = ["[han_data_mining_3e:ch6.s3:p15]"]
     chunk_a.section_id = "ch6.s3"
     chunk_a.section_title = "10.2 Partitioning Methods"
     chunk_a.text = (
@@ -36,6 +37,7 @@ def fake_kb():
 
     chunk_b = MagicMock()
     chunk_b.citation_token.return_value = "[han_data_mining_3e:ch2.s1:p01]"
+    chunk_b.citation_tokens_in_range.return_value = ["[han_data_mining_3e:ch2.s1:p01]"]
     chunk_b.section_id = "ch2.s1"
     chunk_b.section_title = "3.1 Data Preprocessing"
     chunk_b.text = (

@@ -72,6 +72,32 @@ class Chunk:
         """
         return f"[{self.textbook_id}:{self.section_id}:p{self.page_start:02d}]"
 
+    def citation_tokens_in_range(self) -> List[str]:
+        """All citation tokens that resolve to this chunk.
+
+        A chunk often spans multiple pages (a prose chunk can cover 2-3
+        pages). The LLM is allowed to cite ANY page within the chunk's
+        page range — the verifier's lookup index registers all such
+        tokens against the same underlying chunk, so the LLM's choice
+        of page (the one most relevant to its claim) doesn't fail
+        resolution.
+        """
+        return [
+            f"[{self.textbook_id}:{self.section_id}:p{page:02d}]"
+            for page in range(self.page_start, self.page_end + 1)
+        ]
+
+    def page_range_label(self) -> str:
+        """Human-readable label for the chunk's page span.
+
+        Single-page chunks render as ``p<page>``; multi-page chunks as
+        ``p<start>-p<end>``. Shown in the evidence block so the LLM
+        can pick the most relevant page within the span.
+        """
+        if self.page_start == self.page_end:
+            return f"p{self.page_start}"
+        return f"p{self.page_start}-p{self.page_end}"
+
     def token_count(self) -> int:
         return len(self.text.split())
 
