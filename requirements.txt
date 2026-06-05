@@ -33,7 +33,17 @@ rank-bm25>=0.2.2
 # inference is fine; the default `cross-encoder/ms-marco-MiniLM-L-6-v2`
 # model is ~90 MB and is fetched from HuggingFace on first use, then
 # cached locally at ~/.cache/huggingface/.
-sentence-transformers>=2.7.0
+#
+# Floor pins below are the minimum versions verified to work with
+# Python 3.13 + the default cross-encoder model. Major-version upper
+# bounds lock out the next major (e.g. torch 3.x, transformers 6.x,
+# sentence-transformers 6.x) which may ship breaking ABI changes;
+# ADDIERunner's reranker construction is defensive (try/except → falls
+# back to first-stage retrieval without rerank if the load fails) so
+# the worst case if the pins lapse is a no-op warning.
+sentence-transformers>=5.0,<6
+torch>=2.5,<3
+transformers>=5.0,<6
 
 # Note: pdflatex is installed via system package manager in Docker
 #

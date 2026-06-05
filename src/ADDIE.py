@@ -874,8 +874,23 @@ class ADDIE:
             # keeps the first-stage order on any reranker failure, so
             # the caller is never worse off than the no-reranker
             # baseline. Generic across textbooks — no per-source tuning.
-            from src.grounding.reranker import CrossEncoderReranker
-            reranker = CrossEncoderReranker()
+            # Defensive construction: the cross-encoder pulls in
+            # sentence-transformers / torch which can fail on bleeding-edge
+            # versions (SIGBUS / NaN scores observed historically). If
+            # construction throws OR if the optional dep is missing, log a
+            # warning and continue with first-stage retrieval only — the
+            # rest of the grounding pipeline works fine without rerank.
+            try:
+                from src.grounding.reranker import CrossEncoderReranker
+                reranker = CrossEncoderReranker()
+            except Exception as e:
+                print(
+                    f"[grounding] Cross-encoder reranker unavailable "
+                    f"({type(e).__name__}: {e}). Falling back to first-stage "
+                    f"retrieval (BM25 + dense + RRF) without rerank.",
+                    flush=True,
+                )
+                reranker = None
             self.retriever = HybridRetriever(
                 self.knowledge_base, cache_dir=cache_dir, reranker=reranker,
             )
