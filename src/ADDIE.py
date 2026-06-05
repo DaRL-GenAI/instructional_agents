@@ -429,6 +429,21 @@ class ADDIERunner:
             "\n[grounding] Building course contract from chapters "
             "(with HyDE + subtopic multi-query)..."
         )
+        # Use a stronger LLM (gpt-4o) just for query expansion (HyDE
+        # passages, subtopic decomposition). The contract is built
+        # once per run; 15 chapters × ~2 calls each = ~30 LLM calls
+        # is ~$0.05-0.10 extra — cheap given the coverage lift better
+        # queries produce.
+        query_llm = self.addie.llm
+        try:
+            from src.agents import LLM
+            query_llm = LLM(model_name="gpt-4o")
+        except Exception as e:
+            print(
+                f"[grounding] Could not build gpt-4o query helper "
+                f"({type(e).__name__}: {e}); falling back to default LLM."
+            )
+            query_llm = self.addie.llm
         self.addie.contract = build_course_contract(
             course_id=self.addie.course_name or "course",
             chapters=self.chapters,
@@ -436,7 +451,7 @@ class ADDIERunner:
             retriever=self.addie.retriever,
             # Enable the retrieval-quality boosts when an LLM is on hand.
             # They degrade gracefully on per-call errors (logged + skipped).
-            llm=self.addie.llm,
+            llm=query_llm,
         )
         for i, m in enumerate(self.addie.contract.topic_to_textbook):
             print(
@@ -870,9 +885,16 @@ class ADDIE:
                         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         ".grounding_cache", "figures",
                     )
-                    vlm_extractor = VlmExtractor(figures_dir=figures_root)
+                    # Use gpt-4o (not -mini) for VLM extraction:
+                    # extraction quality cascades through every
+                    # downstream metric and the cost is one-time per
+                    # textbook (cached). ~$0.06 per textbook vs
+                    # ~$0.006 with mini — well within budget.
+                    vlm_extractor = VlmExtractor(
+                        figures_dir=figures_root, model="gpt-4o",
+                    )
                     print("[grounding] VLM extraction enabled "
-                          "(complex pages routed to GPT-4o-mini vision).")
+                          "(complex pages routed to GPT-4o vision).")
                 except Exception as e:
                     print(
                         f"[grounding] VLM extractor unavailable "
