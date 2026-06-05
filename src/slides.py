@@ -236,6 +236,61 @@ Separate multiple frames with blank lines.
 _DEDUPE_PREFIX_WORDS = 40
 
 
+# Canonical citation token shape — matches what Chunk.citation_token()
+# emits. Anything that LOOKS like a citation (starts with the textbook
+# id and ends with a closing bracket) but doesn't match this shape is
+# considered malformed.
+_CITATION_TOKEN_CANONICAL_RE = __import__("re").compile(
+    r"\[([A-Za-z0-9_]+):([A-Za-z0-9._]+):p(\d+)\]"
+)
+
+
+def _strip_malformed_citation_tokens(text: str, textbook_id):
+    """Remove malformed citation-shaped tokens from generated text.
+
+    Detects bracketed tokens that START with the configured
+    ``textbook_id`` followed by ``:`` but FAIL to match the canonical
+    citation shape (textbook_id : section_id : p<page>). Common cases:
+
+      * ``[han_data_mining_3e:c]`` — section truncated mid-word
+      * ``[han_data_mining_3e]`` — section + page missing
+      * ``[han_data_mining_3e:ch1.s1]`` — page missing
+
+    These would otherwise be counted as ``malformed`` by the verifier
+    and inflate the failure-mode bucket. Stripping them at write-time
+    leaves the surrounding claim text intact and lets the verifier
+    score only the well-formed citations the writer produced.
+
+    When ``textbook_id`` is None / empty (vanilla path) this is a
+    no-op — vanilla artifacts contain no citation tokens at all.
+    """
+    if not textbook_id or not text:
+        return text
+    import re as _re
+    # Match any bracketed token starting with the textbook_id (the prefix
+    # has to be followed by either ":" or "]" so we don't accidentally
+    # match a substring of a different identifier).
+    suspect_re = _re.compile(
+        r"\[" + _re.escape(textbook_id) + r"(?::[^\]]*)?\]"
+    )
+    out_parts = []
+    last = 0
+    for m in suspect_re.finditer(text):
+        if _CITATION_TOKEN_CANONICAL_RE.fullmatch(m.group(0)):
+            continue  # well-formed; leave it alone
+        # Malformed: keep everything up to this token, drop the token.
+        out_parts.append(text[last:m.start()])
+        last = m.end()
+        # Also collapse one preceding space if it was attached to the
+        # token (e.g. "word [bad_tok]" → "word" not "word ").
+        if out_parts and out_parts[-1].endswith(" "):
+            out_parts[-1] = out_parts[-1][:-1]
+    out_parts.append(text[last:])
+    if last == 0:
+        return text  # no malformed found; return original
+    return "".join(out_parts)
+
+
 def _dedupe_results(results):
     """Drop later results whose chunk overlaps a kept earlier chunk.
 
@@ -917,6 +972,19 @@ class SlidesDeliberation:
         assessment_path = os.path.join(self.output_dir, f"assessment.md")
 
         os.makedirs(self.output_dir, exist_ok=True)
+        # Strip malformed citation-shaped tokens before saving so the
+        # downstream verifier doesn't waste judge calls on truncated
+        # tokens like "[textbook_id:c]" or "[textbook_id]". The LLM's
+        # claim text stays; only the broken token is removed.
+        latex_source = _strip_malformed_citation_tokens(
+            latex_source, self.textbook_id,
+        )
+        slides_script_md = _strip_malformed_citation_tokens(
+            slides_script_md, self.textbook_id,
+        )
+        assessment_md = _strip_malformed_citation_tokens(
+            assessment_md, self.textbook_id,
+        )
         with open(latex_path, "w") as f:
             f.write(latex_source)
         with open(script_path, "w") as f:
