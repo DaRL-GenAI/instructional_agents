@@ -233,6 +233,42 @@ Separate multiple frames with blank lines.
         return frames
 
 
+_DEDUPE_PREFIX_WORDS = 40
+
+
+def _dedupe_results(results):
+    """Drop later results whose chunk overlaps a kept earlier chunk.
+
+    Two retrieval results are considered duplicates if EITHER:
+      * their full text matches byte-for-byte (rare but possible when
+        two chunks happen to be identical), OR
+      * their first :data:`_DEDUPE_PREFIX_WORDS` words match the first
+        ``_DEDUPE_PREFIX_WORDS`` words of an already-kept chunk
+        (catches the common case where chunk N+1 starts with the last
+        ~64 tokens of chunk N due to OVERLAP_TOKENS).
+
+    Preserves the retriever's rank order — first occurrence of each
+    cluster is kept, later occurrences are dropped. Returns the
+    filtered list; never raises.
+    """
+    if not results:
+        return results
+    kept = []
+    seen_full: set[str] = set()
+    seen_prefix: set[str] = set()
+    for r in results:
+        chunk = r.chunk
+        text = chunk.text or ""
+        prefix = " ".join(text.split()[:_DEDUPE_PREFIX_WORDS])
+        if text in seen_full or (prefix and prefix in seen_prefix):
+            continue
+        kept.append(r)
+        seen_full.add(text)
+        if prefix:
+            seen_prefix.add(prefix)
+    return kept
+
+
 class SlidesDeliberation:
     """
     SlidesDeliberation class for organizing agents to collaboratively create slides
@@ -368,6 +404,18 @@ class SlidesDeliberation:
             return "", ""
         if not results:
             return "", ""
+
+        # Deduplicate near-identical chunks before showing to the LLM.
+        # The chunker emits OVERLAP_TOKENS of overlap between adjacent
+        # prose chunks, so the retriever can occasionally rank two
+        # neighboring chunks both in the top-K. Without dedup the LLM
+        # sees redundant content and may cite the wrong instance
+        # (manifests as `wrong_chunk_cited` or `loose_paraphrase` in the
+        # verifier). We drop later occurrences of any chunk whose text
+        # is byte-for-byte equal to an earlier kept chunk OR whose first
+        # ~40 words match an earlier kept chunk (catches the overlap
+        # case where the start of chunk N+1 equals the end of chunk N).
+        results = _dedupe_results(results)
 
         # Build per-excerpt blocks with structured headers. Budget the
         # total word count across all excerpts; truncate the last one if
