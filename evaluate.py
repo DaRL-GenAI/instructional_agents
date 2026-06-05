@@ -458,21 +458,71 @@ class GroundingAgent:
             "chunk_section_title": chunk.section_title,
         }
 
+    # Sentence-boundary regex: a terminator (. ! ?) followed by
+    # whitespace then a capital letter or a section-internal marker.
+    # Tolerates citation tokens at the end of a sentence (the regex
+    # matches even when a "[textbook_id:section_id:p<page>]" appears
+    # just before the terminator).
+    _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[])")
+
     def _claim_window(self, text: str, cite: Dict[str, Any]) -> str:
-        """Pull a CLAIM_WINDOW_CHARS-sized window around the citation."""
-        w = self.CLAIM_WINDOW_CHARS
-        start = max(0, cite["start"] - w)
-        end = min(len(text), cite["end"] + w)
-        ctx = text[start:end]
-        # Best-effort trim to sentence boundaries on each side. Looking
-        # for ". " (or similar) inside the leading/trailing margins.
-        head = ctx[: w // 2]
-        if ". " in head:
-            ctx = ctx[head.rindex(". ") + 2 :]
-        tail = ctx[-(w // 2) :]
-        if ". " in tail:
-            ctx = ctx[: -(len(tail) - tail.rindex(". ") - 1)]
-        return ctx.strip()
+        """Pull the sentence containing the citation as the claim window.
+
+        Sentence-bounded rather than fixed-character-width: the
+        verifier judges a complete sentence as the unit of a claim,
+        which is the natural unit for the citation token. Falls back
+        to a wider expansion if the immediate sentence is shorter
+        than ~40 chars (e.g. a fragment) so the judge has enough
+        context to score.
+        """
+        # Split the surrounding text into sentences and locate the one
+        # containing the citation's character offset.
+        cit_start = cite["start"]
+        cit_end = cite["end"]
+        # Sentence boundaries: positions just after a terminator+space.
+        boundaries = [0]
+        for m in self._SENTENCE_BOUNDARY_RE.finditer(text):
+            boundaries.append(m.end())
+        boundaries.append(len(text))
+
+        # Find the sentence span [s, e) whose [s, e) covers the citation
+        # token. Sentences are [boundaries[i], boundaries[i+1]).
+        target_idx = 0
+        for i in range(len(boundaries) - 1):
+            s, e = boundaries[i], boundaries[i + 1]
+            if s <= cit_start < e:
+                target_idx = i
+                break
+
+        s, e = boundaries[target_idx], boundaries[target_idx + 1]
+        # Ensure the cited token is fully inside [s, e); if it spans a
+        # boundary (rare but possible), expand the window to cover it.
+        if cit_end > e:
+            e = min(len(text), cit_end + 1)
+
+        claim = text[s:e].strip()
+
+        # If the claim is tiny (e.g. extracted "K-means [tok]."), pad
+        # with one adjacent sentence on each side so the judge has
+        # enough context to evaluate the assertion.
+        _MIN_CLAIM_CHARS = 40
+        if len(claim) < _MIN_CLAIM_CHARS:
+            left_idx = max(0, target_idx - 1)
+            right_idx = min(len(boundaries) - 2, target_idx + 1)
+            s = boundaries[left_idx]
+            e = boundaries[right_idx + 1]
+            claim = text[s:e].strip()
+
+        # Hard cap to CLAIM_WINDOW_CHARS as a safety belt (the
+        # expanded fallback could in theory be long).
+        if len(claim) > self.CLAIM_WINDOW_CHARS:
+            # Center the cap around the citation.
+            offset = cit_start - s
+            half = self.CLAIM_WINDOW_CHARS // 2
+            new_s = max(0, offset - half)
+            new_e = min(len(claim), offset + half)
+            claim = claim[new_s:new_e].strip()
+        return claim
 
     def _llm_score_aggregate(self, claim: str, chunk_text: str) -> tuple:
         """Score a (claim, chunk) pair with self-consistency voting.
