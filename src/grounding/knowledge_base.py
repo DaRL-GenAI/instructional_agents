@@ -30,6 +30,23 @@ TARGET_TOKENS = 512
 OVERLAP_TOKENS = 64
 
 
+# Inline markers carried by paragraphs that came through the hybrid
+# ingester's VLM augmentation. A paragraph containing any of these is
+# emitted as its OWN small chunk rather than being bundled with the
+# surrounding prose — so a query about a figure / equation / table /
+# algorithm ranks the visual chunk directly rather than ranking a
+# 500-token chunk that happens to contain the visual element as one
+# small fraction.
+_VISUAL_MARKERS = (
+    "[IMAGE_PATH:", "[LATEX:", "[TABLE:", "[ALGORITHM_STEPS:",
+)
+
+
+def _is_visual_paragraph(p) -> bool:
+    """True if the paragraph carries a hybrid-ingester visual marker."""
+    return any(m in p.text for m in _VISUAL_MARKERS)
+
+
 @dataclass
 class Chunk:
     """One retrievable unit. Holds enough metadata to build a citation token."""
@@ -64,23 +81,60 @@ def _word_count(text: str) -> int:
 
 
 def _paragraph_chunks(section: Section, chapter: Chapter, textbook_id: str) -> Iterable[Chunk]:
-    """Pack a section's paragraphs into ~TARGET_TOKENS chunks with overlap.
+    """Pack a section's paragraphs into chunks with two distinct shapes.
 
-    Greedy: walk the paragraphs in order, accumulating until adding the
-    next would exceed TARGET_TOKENS. Emit, then back-step by paragraphs
-    summing to roughly OVERLAP_TOKENS so adjacent chunks overlap.
+    Visual paragraphs (those carrying a hybrid-ingester marker like
+    ``[IMAGE_PATH:`` or ``[LATEX:``) are emitted as their OWN
+    standalone chunks — they're small (typically 30-150 tokens) and
+    should rank directly for visual queries instead of being buried
+    in a 500-token prose chunk.
+
+    Non-visual paragraphs are packed greedily up to TARGET_TOKENS as
+    before, with OVERLAP_TOKENS of overlap between adjacent prose
+    chunks. Visual paragraphs interrupt the prose stream — a prose
+    chunk ends at the boundary, the visual chunk fires, then a new
+    prose chunk starts after the visual paragraph. Overlap is NOT
+    applied across visual paragraphs (their content shouldn't bleed
+    into adjacent prose chunks).
     """
     paras = section.paragraphs
     if not paras:
         return
 
     chunk_idx = 0
+
+    def _emit(buf: List[Paragraph]) -> Chunk:
+        nonlocal chunk_idx
+        c = Chunk(
+            chunk_id=f"{textbook_id}:{section.section_id}:c{chunk_idx:02d}",
+            text="\n\n".join(p.text for p in buf),
+            textbook_id=textbook_id,
+            chapter_id=chapter.chapter_id,
+            chapter_title=chapter.title,
+            section_id=section.section_id,
+            section_title=section.title,
+            para_ids=[p.para_id for p in buf],
+            page_start=min(p.page for p in buf),
+            page_end=max(p.page for p in buf),
+            kinds=sorted({p.kind for p in buf}),
+        )
+        chunk_idx += 1
+        return c
+
     i = 0
     while i < len(paras):
+        # Visual paragraphs get their own one-paragraph chunk.
+        if _is_visual_paragraph(paras[i]):
+            yield _emit([paras[i]])
+            i += 1
+            continue
+
+        # Pack consecutive non-visual paragraphs up to TARGET_TOKENS.
+        # Stop at the first visual paragraph so it can emit its own chunk.
         buf: List[Paragraph] = []
         tokens = 0
         j = i
-        while j < len(paras):
+        while j < len(paras) and not _is_visual_paragraph(paras[j]):
             p_tokens = _word_count(paras[j].text)
             if buf and tokens + p_tokens > TARGET_TOKENS:
                 break
@@ -89,32 +143,24 @@ def _paragraph_chunks(section: Section, chapter: Chapter, textbook_id: str) -> I
             j += 1
 
         if buf:
-            yield Chunk(
-                chunk_id=f"{textbook_id}:{section.section_id}:c{chunk_idx:02d}",
-                text="\n\n".join(p.text for p in buf),
-                textbook_id=textbook_id,
-                chapter_id=chapter.chapter_id,
-                chapter_title=chapter.title,
-                section_id=section.section_id,
-                section_title=section.title,
-                para_ids=[p.para_id for p in buf],
-                page_start=min(p.page for p in buf),
-                page_end=max(p.page for p in buf),
-                kinds=sorted({p.kind for p in buf}),
-            )
-            chunk_idx += 1
+            yield _emit(buf)
 
-        # If this chunk reached the last paragraph, we're done — no overlap
-        # back-step would produce anything new.
         if j >= len(paras):
             break
-        # Otherwise step forward; back up by ~OVERLAP_TOKENS worth of
-        # paragraphs so adjacent chunks share context.
-        if j == i:  # no progress (a single paragraph longer than TARGET) — force advance
+        # If we stopped at a visual paragraph, advance to it (next loop
+        # iteration handles it as a standalone chunk).
+        if j < len(paras) and _is_visual_paragraph(paras[j]):
+            i = j
+            continue
+        # Otherwise step forward; back up by ~OVERLAP_TOKENS so adjacent
+        # prose chunks share context. Overlap stops at visual paragraphs
+        # so their content doesn't bleed into the next prose chunk.
+        if j == i:  # no progress (single paragraph > TARGET) — force advance
             j = i + 1
         overlap = 0
         k = j - 1
-        while k > i and overlap < OVERLAP_TOKENS:
+        while (k > i and overlap < OVERLAP_TOKENS
+               and not _is_visual_paragraph(paras[k])):
             overlap += _word_count(paras[k].text)
             k -= 1
         i = max(k + 1, i + 1)

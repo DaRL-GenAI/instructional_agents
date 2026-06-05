@@ -188,3 +188,105 @@ class TestUnsupportedPaths:
         (tmp_path / "b.md").write_text("x")
         with pytest.raises(ValueError, match="mixed sources"):
             TextbookKnowledgeBase.from_path(tmp_path)
+
+
+class TestVisualParagraphChunking:
+    """Visual paragraphs (those carrying hybrid-ingester markers like
+    [IMAGE_PATH:, [LATEX:, [TABLE:, [ALGORITHM_STEPS:) emit their own
+    standalone chunks rather than being bundled with prose."""
+
+    def _visual_para(self, idx: int, marker_text: str, page: int = 1,
+                     kind: str = "figure_cap") -> Paragraph:
+        return Paragraph(
+            para_id=f"ch1.s1.p{idx:02d}",
+            text=marker_text,
+            page=page,
+            kind=kind,
+        )
+
+    def test_figure_paragraph_emits_its_own_chunk(self):
+        section = _section([
+            _para(1, 50),
+            self._visual_para(2, "Figure 8.22 [IMAGE_PATH: /figs/x.png] "
+                                "[DESCRIPTION: Two boundary plots.]"),
+            _para(3, 50),
+        ])
+        chunks = list(_paragraph_chunks(section, _chapter(section), "t"))
+        # Expect three chunks: prose, figure, prose
+        assert len(chunks) == 3
+        assert "Figure 8.22" in chunks[1].text
+        assert "[IMAGE_PATH:" in chunks[1].text
+        # The figure chunk references only one paragraph
+        assert len(chunks[1].para_ids) == 1
+        # The figure chunk is much smaller than a prose chunk
+        assert _word_count(chunks[1].text) < _word_count(chunks[0].text)
+
+    def test_equation_paragraph_emits_its_own_chunk(self):
+        section = _section([
+            _para(1, 50),
+            self._visual_para(
+                2,
+                "Equation (10.5): [LATEX: \\max\\{a, b\\}] "
+                "[DESCRIPTION: Maximum of two values.]",
+                kind="equation",
+            ),
+        ])
+        chunks = list(_paragraph_chunks(section, _chapter(section), "t"))
+        assert len(chunks) == 2
+        assert "[LATEX:" in chunks[1].text
+        assert chunks[1].kinds == ["equation"]
+
+    def test_table_paragraph_emits_its_own_chunk(self):
+        section = _section([
+            self._visual_para(
+                1,
+                "Table 2.1: Sample data [TABLE: | A | B |]",
+                kind="example",
+            ),
+            _para(2, 50),
+        ])
+        chunks = list(_paragraph_chunks(section, _chapter(section), "t"))
+        assert len(chunks) == 2
+        assert "[TABLE:" in chunks[0].text
+
+    def test_consecutive_visual_paragraphs_each_get_own_chunk(self):
+        section = _section([
+            self._visual_para(1, "Figure 1 [IMAGE_PATH: /a.png]"),
+            self._visual_para(2, "Equation [LATEX: x = y]", kind="equation"),
+            self._visual_para(3, "Table 1 [TABLE: ...]", kind="example"),
+        ])
+        chunks = list(_paragraph_chunks(section, _chapter(section), "t"))
+        assert len(chunks) == 3
+        assert "[IMAGE_PATH:" in chunks[0].text
+        assert "[LATEX:" in chunks[1].text
+        assert "[TABLE:" in chunks[2].text
+
+    def test_no_visual_paragraphs_chunker_behaves_as_before(self):
+        section = _section([_para(i, 50) for i in range(1, 8)])
+        chunks = list(_paragraph_chunks(section, _chapter(section), "t"))
+        # Should pack prose paragraphs greedily up to TARGET_TOKENS;
+        # 7 paragraphs of 50 words each = 350 words → all fit in one chunk
+        assert len(chunks) == 1
+
+    def test_prose_chunk_overlap_does_not_cross_visual_paragraph(self):
+        # Setup: a prose chunk just before a visual, then the visual,
+        # then another big prose chunk. Verify the second prose chunk's
+        # backstep doesn't pull the visual paragraph into its overlap.
+        section = _section([
+            _para(1, 100),
+            _para(2, 100),
+            _para(3, 100),
+            _para(4, 100),
+            self._visual_para(5, "Figure [IMAGE_PATH: /x.png]"),
+            _para(6, 100),
+            _para(7, 100),
+        ])
+        chunks = list(_paragraph_chunks(section, _chapter(section), "t"))
+        # The visual paragraph should be its own chunk; no prose chunk
+        # should contain its marker text
+        visual_chunks = [c for c in chunks if "[IMAGE_PATH:" in c.text]
+        non_visual_chunks = [c for c in chunks if "[IMAGE_PATH:" not in c.text]
+        assert len(visual_chunks) == 1
+        # No prose chunk should also contain the marker
+        for c in non_visual_chunks:
+            assert "[IMAGE_PATH:" not in c.text
