@@ -311,6 +311,16 @@ class SlidesDeliberation:
     # the differentiated rule-set is the structural fix.
     _ARTIFACT_TYPES = ("slide", "script", "assessment")
 
+    # Inline markers carried by chunks that came through the hybrid
+    # ingester's VLM augmentation (Phase 4 of the v3 work). When any
+    # of these appear in the evidence text, _build_evidence_block adds
+    # an extra rule block instructing the LLM how to consume them —
+    # reproducing equations as LaTeX, including saved figure images
+    # via includegraphics, and rendering tables / algorithms in
+    # appropriate form for the artifact.
+    _VISUAL_MARKERS = ("[IMAGE_PATH:", "[LATEX:", "[TABLE:",
+                       "[ALGORITHM_STEPS:", "[DESCRIPTION:", "[INSIGHT:")
+
     def _build_evidence_block(self, query: str, artifact: str = "slide") -> tuple:
         """Retrieve textbook evidence for `query` and format it for a prompt.
 
@@ -490,7 +500,129 @@ class SlidesDeliberation:
             "  • Any special LaTeX characters from excerpts (& % $ # _ { } ~ ^) "
             "must be escaped in LaTeX output (e.g. \\& \\% \\_).\n"
         )
+
+        # ---- v3 visual-content rules: only added when the evidence
+        # ---- actually contains hybrid-ingester markers. Vanilla and v2
+        # ---- chunks contain none of these, so the rules block is empty
+        # ---- and the prompt is byte-identical to the prior behavior.
+        joined_text = "\n".join(blocks)
+        visual_rules = self._build_visual_content_rules(joined_text, artifact)
+        if visual_rules:
+            evidence_block = evidence_block + visual_rules
+
         return evidence_block, citation_rules
+
+    def _build_visual_content_rules(self, evidence_text: str, artifact: str) -> str:
+        """Return an extra rule block for hybrid-ingester visual markers.
+
+        Detects which v3 visual markers are present in the evidence
+        excerpts and emits artifact-specific instructions telling the
+        LLM how to consume each. Returns an empty string when no
+        markers are present (vanilla and v2 path) so the rules block
+        is fully opt-in.
+
+        Markers and their artifact-conditioned handling:
+
+        ``[IMAGE_PATH: ...]``  (figure_cap chunks)
+            slide / assessment → include via ``\\includegraphics``.
+            script → describe the figure verbally using the adjacent
+            ``[DESCRIPTION: ...]`` / ``[INSIGHT: ...]`` markers.
+
+        ``[LATEX: ...]``  (equation chunks)
+            slide / assessment → render as display math via ``\\[ ... \\]``.
+            script → describe the formula in plain English using the
+            adjacent ``[DESCRIPTION: ...]`` marker; do NOT speak raw
+            LaTeX aloud.
+
+        ``[TABLE: ...]``  (table chunks)
+            slide / assessment → render as a LaTeX ``tabular``.
+            script → narrate the key rows verbally.
+
+        ``[ALGORITHM_STEPS: ...]``  (algorithm chunks)
+            slide / assessment → render as an enumerated list (or
+            ``algorithm2e`` block if the slide deck supports it).
+            script → narrate the steps in order.
+        """
+        present = {m for m in self._VISUAL_MARKERS if m in evidence_text}
+        if not present:
+            return ""
+
+        rule_lines = [
+            "\n",
+            "═══════════════════════════ VISUAL CONTENT RULES ═══════════════════════════",
+            "Some excerpts above carry inline markers from hybrid PDF extraction.",
+            "Consume them as follows for THIS artifact:",
+        ]
+
+        if "[IMAGE_PATH:" in present:
+            if artifact in ("slide", "assessment"):
+                rule_lines.append(
+                    "  • [IMAGE_PATH: /path/to/file.png] → include the figure on "
+                    "the slide via \\includegraphics[width=0.55\\textwidth]{/path/...}. "
+                    "Use the EXACT path from the marker. Place it centered or "
+                    "in a column layout next to descriptive bullets. Do NOT "
+                    "tell the student to 'see the textbook' — the actual image "
+                    "is included via the path."
+                )
+            else:  # script
+                rule_lines.append(
+                    "  • [IMAGE_PATH: ...] → the figure appears in the slide. "
+                    "Narrate what the student is looking at, using the adjacent "
+                    "[DESCRIPTION: ...] and [INSIGHT: ...] markers as the basis "
+                    "for the verbal description."
+                )
+
+        if "[LATEX:" in present:
+            if artifact in ("slide", "assessment"):
+                rule_lines.append(
+                    "  • [LATEX: ...] → render the formula on the slide via "
+                    "display math \\[ ... \\]. Use the LaTeX EXACTLY as given. "
+                    "Do NOT paraphrase the formula in words instead of "
+                    "rendering it — the LaTeX is your source of truth."
+                )
+            else:
+                rule_lines.append(
+                    "  • [LATEX: ...] → describe the formula in plain English "
+                    "using the adjacent [DESCRIPTION: ...] marker. Do NOT "
+                    "speak raw LaTeX aloud (the listener can't see backslashes)."
+                )
+
+        if "[TABLE:" in present:
+            if artifact in ("slide", "assessment"):
+                rule_lines.append(
+                    "  • [TABLE: ...] → render as a LaTeX \\begin{tabular} on "
+                    "the slide. Headers in bold, rows in order. Use \\toprule, "
+                    "\\midrule, \\bottomrule for clean separation."
+                )
+            else:
+                rule_lines.append(
+                    "  • [TABLE: ...] → narrate the key rows verbally; do not "
+                    "read every cell aloud."
+                )
+
+        if "[ALGORITHM_STEPS:" in present:
+            if artifact in ("slide", "assessment"):
+                rule_lines.append(
+                    "  • [ALGORITHM_STEPS: ...] → render as a LaTeX "
+                    "enumerated list on the slide, preserving step numbering."
+                )
+            else:
+                rule_lines.append(
+                    "  • [ALGORITHM_STEPS: ...] → narrate the steps in order, "
+                    "in plain language."
+                )
+
+        if "[DESCRIPTION:" in present or "[INSIGHT:" in present:
+            rule_lines.append(
+                "  • [DESCRIPTION: ...] and [INSIGHT: ...] markers provide the "
+                "pedagogical content. Use the description for WHAT a figure / "
+                "equation / table shows, and the insight for WHY it matters."
+            )
+
+        rule_lines.append(
+            "═════════════════════════════════════════════════════════════════════════════\n"
+        )
+        return "\n" + "\n".join(rule_lines)
 
     # ------------------------------------------------------------------ #
     # Checkpoint helpers (resume support)                                #
