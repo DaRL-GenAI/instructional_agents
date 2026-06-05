@@ -816,7 +816,7 @@ class ADDIE:
     ADDIE (Analyze, Design, Develop, Implement, Evaluate) class for instructional design
     This class coordinates a series of deliberations to create a complete course design
     """
-    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None):
+    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False):
         """
         Initialize ADDIE workflow
 
@@ -832,6 +832,12 @@ class ADDIE:
                 directory of either) used to ground course generation. When
                 ``None`` (the default) generation runs exactly as in the
                 vanilla pipeline.
+            vlm_extraction: When True AND a textbook_path is set, ingest
+                via the hybrid path that augments complex pages (figures,
+                equations, tables) with structured content extracted via
+                GPT-4o-mini vision. Saves cropped page PNGs to disk so
+                the downstream slide generator can include them as
+                figures. No effect when textbook_path is None.
         """
         self.course_name = course_name
         self.model_name = model_name
@@ -852,7 +858,32 @@ class ADDIE:
         if textbook_path:
             from src.grounding import HybridRetriever, TextbookKnowledgeBase
             print(f"[grounding] Loading textbook from: {textbook_path}")
-            self.knowledge_base = TextbookKnowledgeBase.from_path(textbook_path)
+            # Optional VLM extractor for the hybrid ingester. Defensive:
+            # if the OpenAI import fails or the API key isn't set we
+            # fall back to the standard ingester rather than refusing
+            # the run.
+            vlm_extractor = None
+            if vlm_extraction:
+                try:
+                    from src.textbook.vlm_adapter import VlmExtractor
+                    figures_root = os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        ".grounding_cache", "figures",
+                    )
+                    vlm_extractor = VlmExtractor(figures_dir=figures_root)
+                    print("[grounding] VLM extraction enabled "
+                          "(complex pages routed to GPT-4o-mini vision).")
+                except Exception as e:
+                    print(
+                        f"[grounding] VLM extractor unavailable "
+                        f"({type(e).__name__}: {e}); falling back to "
+                        f"text-only PDF extraction.",
+                        flush=True,
+                    )
+                    vlm_extractor = None
+            self.knowledge_base = TextbookKnowledgeBase.from_path(
+                textbook_path, vlm_extractor=vlm_extractor,
+            )
             print(
                 f"[grounding] Loaded '{self.knowledge_base.textbook.title}': "
                 f"{len(self.knowledge_base.textbook.chapters)} chapters, "

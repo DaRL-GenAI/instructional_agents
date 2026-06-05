@@ -141,7 +141,8 @@ class TextbookKnowledgeBase:
     @classmethod
     def from_path(cls, path: str | Path, *,
                   textbook_id: Optional[str] = None,
-                  title: Optional[str] = None) -> "TextbookKnowledgeBase":
+                  title: Optional[str] = None,
+                  vlm_extractor=None) -> "TextbookKnowledgeBase":
         """Load a textbook from a file or directory and build chunks.
 
         Auto-dispatches by extension / directory contents:
@@ -149,6 +150,14 @@ class TextbookKnowledgeBase:
           - `.md` file → markdown ingester (single file)
           - directory of `*.pdf` → PDF ingester (one-chapter-per-file)
           - directory of `*.md` → markdown ingester (one-chapter-per-file)
+
+        Args:
+            vlm_extractor: Optional :class:`VlmExtractor` instance.
+                When set AND the source is PDF, ingestion uses the
+                hybrid path (PyMuPDF4LLM workhorse + VLM augmentation
+                on pages flagged complex by the spatial router).
+                When None, the existing plain-text ingester is used —
+                vanilla path is byte-identical.
         """
         p = Path(path)
         if not p.exists():
@@ -157,7 +166,7 @@ class TextbookKnowledgeBase:
         derived_id = textbook_id or _derive_id(p)
         derived_title = title or _derive_title(p)
 
-        textbook = _ingest(p, derived_id, derived_title)
+        textbook = _ingest(p, derived_id, derived_title, vlm_extractor=vlm_extractor)
         chunks: List[Chunk] = []
         for chapter in textbook.chapters:
             for section in chapter.sections:
@@ -166,10 +175,16 @@ class TextbookKnowledgeBase:
         return cls(textbook=textbook, chunks=chunks)
 
 
-def _ingest(p: Path, textbook_id: str, title: str) -> Textbook:
+def _ingest(p: Path, textbook_id: str, title: str, *, vlm_extractor=None) -> Textbook:
     # Lazy imports so importing this module doesn't pay PyMuPDF startup
     # cost when no textbook is in play.
     if p.is_file() and p.suffix.lower() == ".pdf":
+        if vlm_extractor is not None:
+            from src.textbook.ingest_pdf_hybrid import ingest_pdf_file_hybrid
+            return ingest_pdf_file_hybrid(
+                p, textbook_id=textbook_id, title=title,
+                vlm_extractor=vlm_extractor,
+            )
         from src.textbook.ingest_pdf import ingest_pdf_file
         return ingest_pdf_file(p, textbook_id=textbook_id, title=title)
     if p.is_file() and p.suffix.lower() in {".md", ".markdown"}:
@@ -179,6 +194,12 @@ def _ingest(p: Path, textbook_id: str, title: str) -> Textbook:
         pdfs = list(p.glob("*.pdf"))
         mds = list(p.glob("*.md")) + list(p.glob("*.markdown"))
         if pdfs and not mds:
+            if vlm_extractor is not None:
+                from src.textbook.ingest_pdf_hybrid import ingest_pdf_directory_hybrid
+                return ingest_pdf_directory_hybrid(
+                    p, textbook_id=textbook_id, title=title,
+                    vlm_extractor=vlm_extractor,
+                )
             from src.textbook.ingest_pdf import ingest_pdf_directory
             return ingest_pdf_directory(p, textbook_id=textbook_id, title=title)
         if mds and not pdfs:
