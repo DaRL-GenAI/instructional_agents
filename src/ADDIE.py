@@ -243,9 +243,125 @@ class ADDIERunner:
             else:
                 i += 1
 
+        # After foundation deliberations finish but before chapter
+        # extraction: when textbook grounding is on, augment the syllabus
+        # output file with administrative scaffolding (office hours,
+        # grading policy, accessibility statement, etc.). The grounding
+        # work done above stays untouched — this is a separate LLM call
+        # that READS the existing syllabus and APPENDS admin sections.
+        # Targets the rubric metrics that regressed under TOC injection
+        # (transparency_of_policies, accessibility, etc.) without
+        # competing for prompt budget against grounding directives. No-op
+        # on the vanilla path.
+        self._maybe_augment_syllabus_with_admin()
+
         # After running the syllabus design deliberation, process the syllabus
         self._process_syllabus()
-    
+
+    # Generic administrative scaffolding template — appended as a new
+    # section to the syllabus output. Catalog-agnostic and textbook-
+    # agnostic: every variable is a placeholder the instructor fills in.
+    # Keeping this here (vs. inside the prompt body inline) makes it easy
+    # to inspect / extend without touching control flow.
+    _ADMIN_SCAFFOLDING_INSTRUCTIONS = (
+        "You are revising a course syllabus to ensure it includes the standard "
+        "administrative components that academic courses must have. The current "
+        "syllabus content (course objectives, weekly schedule, etc.) is shown below.\n\n"
+        "Your task: APPEND a new section titled '## Course Policies' to the END "
+        "of the syllabus markdown. The new section must include subsections for:\n"
+        "- Instructor Contact Information (use bracket placeholders: [Instructor Name], "
+        "[Email], [Office Location], [Office Hours]).\n"
+        "- Communication Channels (response-time expectations, preferred channel).\n"
+        "- Grading Policy (the overall weighting scheme + late-work policy + rounding).\n"
+        "- Attendance Policy (expectations + how absences are handled).\n"
+        "- Accessibility and Accommodations (ADA-style statement directing students "
+        "to the institution's disability services office; placeholder for the office name).\n"
+        "- Academic Integrity (plagiarism + AI-assistance + collaboration boundaries).\n\n"
+        "Constraints:\n"
+        "- Keep ALL existing syllabus content unchanged. Only APPEND the new section.\n"
+        "- Use generic, institution-agnostic language with placeholders rather than "
+        "made-up policy specifics.\n"
+        "- Keep the tone consistent with the existing syllabus.\n"
+        "- Return the FULL revised syllabus markdown, not just the new section.\n\n"
+        "Current syllabus:\n{syllabus_content}\n"
+    )
+
+    def _maybe_augment_syllabus_with_admin(self) -> None:
+        """Append administrative scaffolding to the syllabus output FILE.
+
+        Runs only when textbook grounding is active. The rationale: under
+        TOC injection, the syllabus deliberation's prompt budget is mostly
+        consumed by textbook chapter alignment and the grounding directive
+        — there isn't room for the LLM to also produce standard admin
+        scaffolding (office hours, grading policy, accessibility statement,
+        academic integrity). The rubric's `syllabus:transparency_of_policies`
+        and `syllabus:accessibility` metrics regress as a result.
+
+        Rather than modify the syllabus deliberation prompt (which would
+        compete with the grounding directive for prompt budget and
+        empirically hurt grounding substance), we run a SEPARATE
+        post-foundation LLM call that reads the produced syllabus file
+        and APPENDS a "Course Policies" section. The grounding-relevant content is
+        already generated; this call only adds administrative metadata.
+
+        Idempotent across `--resume`: a sibling sentinel file
+        ``result_syllabus_design.md.pre_admin_scaffolding.bak`` is written
+        on first augmentation and used to detect that the augmentation has
+        already happened, so resumed runs don't double-append.
+
+        Vanilla path: no-op (early-returns when
+        ``self.addie.knowledge_base is None``).
+        """
+        if self.addie.knowledge_base is None:
+            return
+        syllabus_path = os.path.join(self.output_dir, "result_syllabus_design.md")
+        if not os.path.exists(syllabus_path):
+            # No syllabus to augment (foundation phase probably didn't run
+            # to completion). Skip silently.
+            return
+        sentinel = syllabus_path + ".pre_admin_scaffolding.bak"
+        if os.path.exists(sentinel):
+            # Already augmented in a previous run; don't double-append.
+            print(
+                "[grounding] Syllabus admin scaffolding already applied "
+                f"(sentinel {os.path.basename(sentinel)} exists); skipping."
+            )
+            return
+
+        with open(syllabus_path, "r") as f:
+            current = f.read()
+        if not current.strip():
+            return
+
+        print("\n[grounding] Appending administrative scaffolding to syllabus...")
+        prompt = self._ADMIN_SCAFFOLDING_INSTRUCTIONS.format(syllabus_content=current)
+        response = self.addie.llm.generate_response(prompt)
+        # `LLM.generate_response` returns (text, elapsed, tokens); be
+        # defensive in case the error path returned a bare string in a
+        # historical build.
+        if isinstance(response, tuple) and response:
+            augmented = response[0]
+        else:
+            augmented = str(response or "")
+        # If the LLM call failed or returned empty, leave the original
+        # syllabus alone — never write a worse syllabus over a working one.
+        if not augmented.strip() or augmented.startswith("Error"):
+            print("[grounding] Augmentation produced no usable output; "
+                  "leaving original syllabus unchanged.")
+            return
+
+        # Preserve the original under a sentinel name (lets us detect that
+        # augmentation has been applied, and gives us a clean rollback path
+        # if anything looks off in the augmented version).
+        with open(sentinel, "w") as f:
+            f.write(current)
+        with open(syllabus_path, "w") as f:
+            f.write(augmented)
+        print(
+            f"[grounding] Syllabus augmented. Original preserved at "
+            f"{os.path.basename(sentinel)}."
+        )
+
     def _process_syllabus(self):
         """Process the syllabus to extract chapters"""
         # Resume: if chapters were already processed in a previous run,
@@ -738,17 +854,30 @@ class ADDIE:
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                 ".grounding_cache",
             )
-            # NOTE: An LLM-based second-stage reranker (LLMReranker in
-            # src.grounding.reranker) was prototyped to address the
-            # ``retrieval_bad`` failure-mode bucket. Side-by-side eval
-            # showed no improvement (precision 89.3 % with vs 90.2 %
-            # without; ``retrieval_bad`` slice held at ~5 % either way)
-            # while adding ~9–12 min and ~500 extra LLM calls per
-            # chapter. We removed it from the runtime path but kept the
-            # `reranker.py` module + tests as documentation of the
-            # experiment and as a hook for future, stronger rerankers.
+            # Second-stage cross-encoder reranker. Operates on the top-K
+            # candidates from BM25 + dense fusion and rescores them via a
+            # pretrained BERT-style relevance model (ms-marco-MiniLM-L-6-v2
+            # by default, ~90 MB, loaded lazily on first .score() call).
+            #
+            # Targets the `retrieval_bad` failure mode the verifier
+            # identifies — citations that land on the wrong textbook
+            # chunk. The cross-encoder reads (query, passage) as a pair
+            # and produces a semantic-relevance score that RRF's
+            # order-agnostic fusion can't, so it tends to recover the
+            # cases where dense and sparse retrieval agreed on a chunk
+            # that wasn't actually about the query.
+            #
+            # An earlier LLM-based reranker (LLMReranker) was tried and
+            # measured no improvement (89.3 % vs 90.2 % precision); the
+            # cross-encoder is a different signal entirely (offline BERT
+            # vs LLM-as-judge). Defensive code in HybridRetriever.search
+            # keeps the first-stage order on any reranker failure, so
+            # the caller is never worse off than the no-reranker
+            # baseline. Generic across textbooks — no per-source tuning.
+            from src.grounding.reranker import CrossEncoderReranker
+            reranker = CrossEncoderReranker()
             self.retriever = HybridRetriever(
-                self.knowledge_base, cache_dir=cache_dir,
+                self.knowledge_base, cache_dir=cache_dir, reranker=reranker,
             )
 
         # Create all deliberations in the workflow
