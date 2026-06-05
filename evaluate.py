@@ -285,6 +285,99 @@ FAILURE_MODE_VALUES = (
 _TRIM_MAX_CHARS = 1500       # safety cap on the final excerpt
 _TRIM_WINDOW_SENTENCES = 3   # neighbours on each side of the best sentence
 _TRIM_MIN_CHUNK_CHARS = 400  # don't bother trimming chunks shorter than this
+_VISUAL_MARKER_RE = re.compile(r"\[(?:IMAGE_PATH|LATEX|TABLE|ALGORITHM_STEPS):")
+
+
+def _chunk_is_visual(chunk) -> bool:
+    """True if the chunk carries any hybrid-ingester visual marker.
+
+    Used to split per-citation precision into visual vs prose classes
+    in the grounding summary — the per-class split surfaces the
+    prose-bias / complex-coverage tradeoff that a single headline
+    precision number hides.
+    """
+    text = getattr(chunk, "text", "") or ""
+    return bool(_VISUAL_MARKER_RE.search(text))
+
+
+def _summarise_coverage(kb, files) -> dict:
+    """Compute page coverage + per-class precision for a verified run.
+
+    Returns a dict with:
+      * total_pages_in_textbook
+      * distinct_pages_cited
+      * page_coverage_pct
+      * per_class_precision: {visual: {n, supported, precision},
+                              prose: same}
+      * per_failure_mode_top_section: {mode: most-common-section-id}
+
+    Robust to KBs / files in older shapes — missing fields default
+    to sensible empty values so the summary writer still runs.
+    """
+    pages_per_chapter: dict[str, set[int]] = {}
+    chunk_by_token = {}
+    if kb is not None and hasattr(kb, "chunks"):
+        for c in kb.chunks:
+            ch = getattr(c, "chapter_id", "?")
+            for page in range(c.page_start, c.page_end + 1):
+                pages_per_chapter.setdefault(ch, set()).add(page)
+            try:
+                for tok in c.citation_tokens_in_range():
+                    chunk_by_token[tok] = c
+            except AttributeError:
+                chunk_by_token[c.citation_token()] = c
+
+    total_pages = sum(len(s) for s in pages_per_chapter.values())
+    cited_pages: set[tuple[str, int]] = set()
+    visual = {"n": 0, "supported": 0}
+    prose = {"n": 0, "supported": 0}
+    by_mode_section: dict[str, dict[str, int]] = {}
+
+    for f in files:
+        for cite in f.get("per_citation", []):
+            score = cite.get("score")
+            tok = cite.get("token", "")
+            chunk = chunk_by_token.get(tok)
+            if chunk is None:
+                continue
+            ch = getattr(chunk, "chapter_id", "?")
+            for page in range(chunk.page_start, chunk.page_end + 1):
+                cited_pages.add((ch, page))
+            if isinstance(score, (int, float)):
+                bucket = visual if _chunk_is_visual(chunk) else prose
+                bucket["n"] += 1
+                if score >= 4:
+                    bucket["supported"] += 1
+                mode = cite.get("failure_mode") or "unknown"
+                sec = getattr(chunk, "section_id", "?")
+                by_mode_section.setdefault(mode, {})
+                by_mode_section[mode][sec] = by_mode_section[mode].get(sec, 0) + 1
+
+    def _ratio(d):
+        return (d["supported"] / d["n"]) if d["n"] else None
+
+    # Pick the most-common section per failure mode for the report.
+    top_section_per_mode = {
+        mode: max(secs.items(), key=lambda kv: kv[1])
+        for mode, secs in by_mode_section.items()
+    }
+    return {
+        "total_pages_in_textbook": total_pages,
+        "distinct_pages_cited": len(cited_pages),
+        "page_coverage_pct": (
+            (100.0 * len(cited_pages) / total_pages) if total_pages else None
+        ),
+        "per_class_precision": {
+            "visual": {**visual, "precision": _ratio(visual)},
+            "prose": {**prose, "precision": _ratio(prose)},
+        },
+        "per_failure_mode_top_section": {
+            mode: {"section_id": sec, "count": cnt}
+            for mode, (sec, cnt) in top_section_per_mode.items()
+        },
+    }
+
+
 _WORD_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_-]{2,}\b")
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[])")
 
@@ -890,6 +983,7 @@ class CourseEvaluationSystem:
                 "distinct_sections_cited": cited_sections,
                 "n_distinct_sections_cited": len(cited_sections),
                 "failure_mode_counts": overall_failure_modes,
+                **_summarise_coverage(self.kb, per_file),
             },
             "files": per_file,
         }
@@ -926,6 +1020,71 @@ class CourseEvaluationSystem:
             f.write(f"- Distinct sections cited: **{ov['n_distinct_sections_cited']}**"
                     f" — {', '.join(ov['distinct_sections_cited'][:20])}"
                     f"{'...' if len(ov['distinct_sections_cited']) > 20 else ''}\n\n")
+
+            # Page-coverage block. Surfaces the recall side of the
+            # coverage / accuracy split — precision alone says nothing
+            # about how much of the textbook is represented in the course.
+            total_pages = ov.get("total_pages_in_textbook") or 0
+            cited_pages = ov.get("distinct_pages_cited") or 0
+            cov_pct = ov.get("page_coverage_pct")
+            if total_pages and cov_pct is not None:
+                f.write("## Page coverage\n\n")
+                f.write(
+                    f"- Distinct source pages cited: **{cited_pages} of "
+                    f"{total_pages}** ({cov_pct:.1f} %).\n"
+                    f"- Coverage measures the fraction of source pages "
+                    f"the course directly references; complementary to "
+                    f"precision and not the same dial.\n\n"
+                )
+
+            # Per-class precision: prose chunks vs visual-content chunks.
+            pcp = ov.get("per_class_precision") or {}
+            v = pcp.get("visual", {})
+            p = pcp.get("prose", {})
+            if (v.get("n", 0) + p.get("n", 0)) > 0:
+                f.write("## Per-class precision\n\n")
+                f.write(
+                    "Visual chunks carry hybrid-ingester markers "
+                    "(figures, equations, tables, algorithms). Prose "
+                    "chunks are plain narrative. The split surfaces "
+                    "tradeoffs the headline number hides.\n\n"
+                )
+                for label, d in [("Visual", v), ("Prose", p)]:
+                    if d.get("n", 0):
+                        prec = d.get("precision")
+                        prec_str = f"{prec:.2%}" if prec is not None else "—"
+                        f.write(
+                            f"- **{label}**: {d['n']} citations, "
+                            f"{d.get('supported', 0)} supported "
+                            f"(precision {prec_str})\n"
+                        )
+                f.write("\n")
+
+            # Per-failure-mode top section: pinpoints where the lever
+            # for each failure mode lives. Skip "good" since it's by
+            # definition a no-failure category.
+            tsm = ov.get("per_failure_mode_top_section") or {}
+            interesting_modes = {
+                k: v for k, v in tsm.items() if k != "good"
+            }
+            if interesting_modes:
+                f.write("## Top section per failure mode\n\n")
+                f.write(
+                    "The section that contributed the most citations "
+                    "for each failure mode. Targets debugging effort.\n\n"
+                )
+                for mode in (
+                    "retrieval_bad", "hallucination",
+                    "loose_paraphrase", "wrong_chunk_cited",
+                    "judge_uncertain",
+                ):
+                    info = interesting_modes.get(mode)
+                    if info:
+                        f.write(
+                            f"- **{mode}**: section `{info['section_id']}` "
+                            f"({info['count']} citations)\n"
+                        )
+                f.write("\n")
 
             # Failure-mode breakdown — surfaces which lever to pull next.
             fmc = ov.get("failure_mode_counts") or {}
