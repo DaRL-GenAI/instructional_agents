@@ -31,8 +31,15 @@ DENSE_FETCH_K = 32          # candidates pulled from each index before fusion
 SPARSE_FETCH_K = 32
 COSINE_FLOOR = 0.20         # discard dense matches below this (clearly off-topic)
 EMBED_BATCH = 64            # how many chunks to embed per API call
-EMBED_MODEL = "text-embedding-3-small"
+EMBED_MODEL = "text-embedding-3-large"
 EMBED_DIM_BY_MODEL = {"text-embedding-3-small": 1536, "text-embedding-3-large": 3072}
+# Note on model choice: `text-embedding-3-large` produces 3072-dim vectors
+# (vs `-small`'s 1536) and reportedly improves disambiguation between
+# similar-but-not-quite-right chunks on MTEB-style benchmarks by ~5 pp.
+# Cost is ~6.5× per token but absolute spend is tiny at our scale (a
+# single textbook of ~400-500 chunks costs ~$0.03 to embed one-time;
+# the result is cached in `.grounding_cache/` keyed on the model name,
+# so existing `_small` caches don't collide with `_large` re-embeds).
 
 # When a reranker is attached, fetch this many first-stage candidates
 # BEFORE reranking, then keep the reranker's top-`top_k`. Larger = more
