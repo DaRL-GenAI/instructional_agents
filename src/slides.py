@@ -235,6 +235,15 @@ Separate multiple frames with blank lines.
 
 _DEDUPE_PREFIX_WORDS = 40
 
+# Visual-content markers (also enumerated on SlidesDeliberation; kept
+# here as a module-level constant so the dedupe helper can recognise
+# visual chunks without importing the class).
+_VISUAL_CHUNK_MARKERS = ("[IMAGE_PATH:", "[LATEX:", "[TABLE:", "[ALGORITHM_STEPS:")
+
+
+def _is_visual_chunk_text(text: str) -> bool:
+    return any(m in text for m in _VISUAL_CHUNK_MARKERS)
+
 
 # Canonical citation token shape — matches what Chunk.citation_token()
 # emits. Anything that LOOKS like a citation (starts with the textbook
@@ -245,7 +254,7 @@ _CITATION_TOKEN_CANONICAL_RE = __import__("re").compile(
 )
 
 
-def _strip_malformed_citation_tokens(text: str, textbook_id):
+def _strip_malformed_citation_tokens(text: str, textbook_id, valid_tokens=None):
     """Remove malformed citation-shaped tokens from generated text.
 
     Detects bracketed tokens that START with the configured
@@ -255,6 +264,12 @@ def _strip_malformed_citation_tokens(text: str, textbook_id):
       * ``[han_data_mining_3e:c]`` — section truncated mid-word
       * ``[han_data_mining_3e]`` — section + page missing
       * ``[han_data_mining_3e:ch1.s1]`` — page missing
+      * ``[han_data_mining_3e:ch99.s99:p01]`` — well-formed but the
+        section/page combination doesn't resolve to any chunk in the
+        knowledge base. When ``valid_tokens`` is supplied (a set of
+        every token the KB recognises), well-formed tokens that
+        aren't in the set are stripped too. Without this guard the
+        verifier counts them as ``malformed``.
 
     These would otherwise be counted as ``malformed`` by the verifier
     and inflate the failure-mode bucket. Stripping them at write-time
@@ -276,9 +291,16 @@ def _strip_malformed_citation_tokens(text: str, textbook_id):
     out_parts = []
     last = 0
     for m in suspect_re.finditer(text):
-        if _CITATION_TOKEN_CANONICAL_RE.fullmatch(m.group(0)):
-            continue  # well-formed; leave it alone
-        # Malformed: keep everything up to this token, drop the token.
+        tok = m.group(0)
+        if _CITATION_TOKEN_CANONICAL_RE.fullmatch(tok):
+            # Well-formed; check it actually resolves to a real KB chunk
+            # when caller supplied the valid-token set.
+            if valid_tokens is None or tok in valid_tokens:
+                continue  # leave it alone
+            # Else: well-formed but unresolvable → strip it (treated
+            # the same as a syntactically broken token).
+        # Malformed (syntactic) or unresolvable (semantic):
+        # keep everything up to this token, drop the token.
         out_parts.append(text[last:m.start()])
         last = m.end()
         # Also collapse one preceding space if it was attached to the
@@ -314,12 +336,27 @@ def _dedupe_results(results):
     for r in results:
         chunk = r.chunk
         text = chunk.text or ""
+        # Visual chunks (those carrying hybrid-ingester markers like
+        # [IMAGE_PATH:, [LATEX:, [TABLE:, [ALGORITHM_STEPS:) are
+        # exempt from dedup against PROSE chunks: their content role
+        # is distinct, they're tiny (50-150 tokens), and silently
+        # losing one to dedup against a coincidentally-prefix-matching
+        # prose chunk drops a visual-content delivery slot. They CAN
+        # still dedup against other visual chunks of the same kind.
+        is_visual = _is_visual_chunk_text(text)
         prefix = " ".join(text.split()[:_DEDUPE_PREFIX_WORDS])
-        if text in seen_full or (prefix and prefix in seen_prefix):
-            continue
+        if is_visual:
+            # Visual chunks dedup only on byte-identical text — full
+            # equality across two visual chunks is the only realistic
+            # collision (e.g. a figure caption repeated).
+            if text in seen_full:
+                continue
+        else:
+            if text in seen_full or (prefix and prefix in seen_prefix):
+                continue
         kept.append(r)
         seen_full.add(text)
-        if prefix:
+        if prefix and not is_visual:
             seen_prefix.add(prefix)
     return kept
 
@@ -972,18 +1009,36 @@ class SlidesDeliberation:
         assessment_path = os.path.join(self.output_dir, f"assessment.md")
 
         os.makedirs(self.output_dir, exist_ok=True)
+        # Build the set of EVERY citation token the KB recognises so
+        # the stripper can drop well-formed-but-non-resolving tokens
+        # the writer occasionally hallucinates (e.g. plausible-looking
+        # [han_data_mining_3e:ch99.s99:p01] that doesn't exist).
+        valid_tokens = None
+        if self.retriever is not None:
+            try:
+                kb_chunks = self.retriever.kb.chunks
+                valid_tokens = set()
+                for c in kb_chunks:
+                    try:
+                        valid_tokens.update(c.citation_tokens_in_range())
+                    except AttributeError:
+                        valid_tokens.add(c.citation_token())
+            except Exception as e:
+                print(f"[grounding] Could not build valid-token set "
+                      f"({type(e).__name__}: {e}); skipping KB-existence check.")
+                valid_tokens = None
         # Strip malformed citation-shaped tokens before saving so the
         # downstream verifier doesn't waste judge calls on truncated
         # tokens like "[textbook_id:c]" or "[textbook_id]". The LLM's
         # claim text stays; only the broken token is removed.
         latex_source = _strip_malformed_citation_tokens(
-            latex_source, self.textbook_id,
+            latex_source, self.textbook_id, valid_tokens=valid_tokens,
         )
         slides_script_md = _strip_malformed_citation_tokens(
-            slides_script_md, self.textbook_id,
+            slides_script_md, self.textbook_id, valid_tokens=valid_tokens,
         )
         assessment_md = _strip_malformed_citation_tokens(
-            assessment_md, self.textbook_id,
+            assessment_md, self.textbook_id, valid_tokens=valid_tokens,
         )
         with open(latex_path, "w") as f:
             f.write(latex_source)

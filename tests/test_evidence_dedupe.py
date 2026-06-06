@@ -87,3 +87,60 @@ class TestDedupeResults:
         results = [_result(a), _result(a), _result("different tiny chunk")]
         kept = _dedupe_results(results)
         assert len(kept) == 2
+
+
+class TestVisualChunkDedupExemption:
+    """Visual chunks (those with [IMAGE_PATH:, [LATEX:, [TABLE:,
+    [ALGORITHM_STEPS: markers) are NOT subject to prefix-based dedup
+    against prose chunks. Their content role is distinct; silently
+    losing one to a coincidentally-prefix-matching prose chunk drops
+    a visual-content delivery slot."""
+
+    def test_visual_chunk_with_shared_prefix_is_kept(self):
+        # Prose chunk and visual chunk share the same first 40 words
+        # (e.g. both quote a figure caption verbatim). The visual
+        # chunk should NOT be deduped against the prose chunk.
+        shared_prefix = " ".join(["shared"] * 40)
+        prose = shared_prefix + " " + " ".join(["prose_continuation"] * 20)
+        visual = shared_prefix + " [IMAGE_PATH: /figs/a.png] [DESCRIPTION: ...]"
+        kept = _dedupe_results([_result(prose), _result(visual)])
+        assert len(kept) == 2
+        assert any("[IMAGE_PATH:" in r.chunk.text for r in kept)
+
+    def test_visual_chunk_at_top_is_preserved_when_prose_repeats(self):
+        # Reverse order: visual comes first, prose with same prefix follows
+        shared_prefix = " ".join(["common"] * 40)
+        visual = shared_prefix + " [LATEX: x^2 = y]"
+        prose = shared_prefix + " then continues as prose."
+        kept = _dedupe_results([_result(visual), _result(prose)])
+        # Both kept; visual ranks first, prose follows (it has prose-vs-visual
+        # ambiguity but its prefix matches the prior visual which is exempt)
+        assert len(kept) == 2
+
+    def test_two_identical_visual_chunks_still_dedupe(self):
+        # Visual chunks CAN dedup against EACH OTHER on byte-identical text
+        v = "Figure 1 [IMAGE_PATH: /a.png] [DESCRIPTION: x]"
+        kept = _dedupe_results([_result(v), _result(v), _result("prose")])
+        assert len(kept) == 2  # one visual + one prose
+
+    def test_each_marker_type_exempt(self):
+        # All four visual marker types should trigger exemption
+        shared = " ".join(["w"] * 40)
+        results = [
+            _result(shared + " prose continues"),
+            _result(shared + " [IMAGE_PATH: /a.png]"),
+            _result(shared + " [LATEX: x=y]"),
+            _result(shared + " [TABLE: | A | B |]"),
+            _result(shared + " [ALGORITHM_STEPS: 1. step]"),
+        ]
+        kept = _dedupe_results(results)
+        # Prose deduped against nothing (it's first); 4 visuals each kept
+        assert len(kept) == 5
+
+    def test_prose_dedup_still_works_normally(self):
+        # Sanity: prose-only dedup behaviour is unchanged
+        shared = " ".join(["w"] * 40)
+        a = shared + " uniqueA"
+        b = shared + " uniqueB"
+        kept = _dedupe_results([_result(a), _result(b)])
+        assert len(kept) == 1

@@ -76,3 +76,58 @@ class TestStripMalformedCitationTokens:
         # Tokens referencing OTHER textbooks shouldn't be touched
         text = "Different textbook [other_textbook:ch1.s1:p01] reference."
         assert _strip_malformed_citation_tokens(text, self.TID) == text
+
+
+class TestStripUnresolvableTokens:
+    """When the caller supplies a valid_tokens set, well-formed-but-
+    non-existent tokens (e.g. the writer hallucinated a fake section
+    that passes the format regex but doesn't resolve to any KB chunk)
+    are also stripped."""
+
+    TID = "han_data_mining_3e"
+    VALID = {
+        "[han_data_mining_3e:ch1.s1:p01]",
+        "[han_data_mining_3e:ch2.s3:p17]",
+        "[han_data_mining_3e:ch4.s7:p51]",
+    }
+
+    def test_valid_token_in_set_preserved(self):
+        text = "Claim [han_data_mining_3e:ch1.s1:p01] supported."
+        out = _strip_malformed_citation_tokens(text, self.TID, valid_tokens=self.VALID)
+        assert "[han_data_mining_3e:ch1.s1:p01]" in out
+
+    def test_unresolvable_token_stripped(self):
+        text = "Plausible-looking but fake [han_data_mining_3e:ch99.s99:p01]."
+        out = _strip_malformed_citation_tokens(text, self.TID, valid_tokens=self.VALID)
+        assert "[han_data_mining_3e:ch99.s99:p01]" not in out
+        assert "Plausible-looking but fake" in out
+
+    def test_mixed_resolvable_and_unresolvable(self):
+        text = (
+            "Real [han_data_mining_3e:ch2.s3:p17] and "
+            "fake [han_data_mining_3e:ch77.s77:p77] in one sentence."
+        )
+        out = _strip_malformed_citation_tokens(text, self.TID, valid_tokens=self.VALID)
+        assert "[han_data_mining_3e:ch2.s3:p17]" in out
+        assert "[han_data_mining_3e:ch77.s77:p77]" not in out
+
+    def test_valid_tokens_none_falls_back_to_format_check_only(self):
+        # When valid_tokens=None, all well-formed tokens are preserved
+        # (the old behaviour; backward-compat).
+        text = "Plausible [han_data_mining_3e:ch99.s99:p01] token."
+        out = _strip_malformed_citation_tokens(text, self.TID, valid_tokens=None)
+        assert "[han_data_mining_3e:ch99.s99:p01]" in out
+
+    def test_unresolvable_still_works_with_syntactically_malformed(self):
+        # Both kinds of bad tokens removed in the same pass
+        text = (
+            "Real [han_data_mining_3e:ch1.s1:p01]; "
+            "broken [han_data_mining_3e:c]; "
+            "fake [han_data_mining_3e:ch99.s99:p99]; "
+            "real again [han_data_mining_3e:ch4.s7:p51]"
+        )
+        out = _strip_malformed_citation_tokens(text, self.TID, valid_tokens=self.VALID)
+        assert "[han_data_mining_3e:ch1.s1:p01]" in out
+        assert "[han_data_mining_3e:ch4.s7:p51]" in out
+        assert "[han_data_mining_3e:c]" not in out
+        assert "[han_data_mining_3e:ch99.s99:p99]" not in out
