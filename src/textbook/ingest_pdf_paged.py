@@ -142,15 +142,14 @@ def _extract_blocks_with_page(md_text: str, page_num: int,
     """Extract blocks from one page's markdown and tag them with ``page``.
 
     Returns ``(blocks, new_seen_chapter)`` so caller can thread the
-    ``seen_chapter`` state across pages (the heading normaliser uses
-    it to decide whether the first unnumbered ``##`` becomes a chapter
-    or a sub-section).
+    ``seen_chapter`` state across pages. The state is now passed INTO
+    the heading normaliser as well (previously the normaliser reset
+    the flag every call, causing one chapter per page on PDFs whose
+    pymupdf4llm output has unnumbered ``##`` headings throughout —
+    the chapter-inflation bug observed at v4 measurement time).
     """
-    # Track whether a `# Chapter ...` heading is present anywhere in
-    # this page's normalised markdown so we can update seen_chapter.
-    md_normalised = _normalize_pdf_markdown_headings(md_text)
-    next_seen = seen_chapter or any(
-        line.startswith("# ") for line in md_normalised.splitlines()
+    md_normalised, next_seen = _normalize_pdf_markdown_headings(
+        md_text, seen_chapter=seen_chapter,
     )
     blocks = _extract_blocks(md_normalised)
     for blk in blocks:

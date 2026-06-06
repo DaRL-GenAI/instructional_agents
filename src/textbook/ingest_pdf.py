@@ -449,7 +449,7 @@ _PDF_MD_CHAPTER_PATTERN_RE = re.compile(
 )
 
 
-def _normalize_pdf_markdown_headings(md_text: str) -> str:
+def _normalize_pdf_markdown_headings(md_text: str, seen_chapter: bool = False) -> tuple[str, bool]:
     """Convert pymupdf4llm's uniform `##` headings into the level
     hierarchy that the markdown ingester expects.
 
@@ -469,10 +469,17 @@ def _normalize_pdf_markdown_headings(md_text: str) -> str:
       * Other levels (already ``#``, ``###+``, or non-heading lines) are
         left alone.
 
+    The ``seen_chapter`` argument lets callers thread the
+    chapter-promotion state ACROSS multiple invocations — useful when
+    pymupdf4llm yields one markdown block per source page and a
+    later page's first unnumbered ``##`` should be treated as a
+    sub-section rather than a fresh chapter. Returns a
+    ``(normalised_text, seen_chapter_after)`` tuple so callers can
+    chain calls without losing state.
+
     Operates line-by-line on the raw markdown text.
     """
     lines = md_text.split("\n")
-    seen_chapter = False
     out_lines: List[str] = []
     for line in lines:
         m = _PDF_MD_HEADING_RE.match(line)
@@ -503,7 +510,7 @@ def _normalize_pdf_markdown_headings(md_text: str) -> str:
             seen_chapter = True
         else:
             out_lines.append(f"### {content}")
-    return "\n".join(out_lines)
+    return "\n".join(out_lines), seen_chapter
 
 
 def ingest_pdf_file_via_markdown(
@@ -533,7 +540,7 @@ def ingest_pdf_file_via_markdown(
     from .ingest_md import _extract_blocks, _assign_pages
     path = Path(path)
     md_text = pymupdf4llm.to_markdown(str(path), page_chunks=False, show_progress=False)
-    md_text = _normalize_pdf_markdown_headings(md_text)
+    md_text, _ = _normalize_pdf_markdown_headings(md_text)
     blocks = _extract_blocks(md_text)
     chapters = _blocks_to_chapters(blocks)
     if not chapters:
