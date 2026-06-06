@@ -983,7 +983,7 @@ class CourseEvaluationSystem:
                 "distinct_sections_cited": cited_sections,
                 "n_distinct_sections_cited": len(cited_sections),
                 "failure_mode_counts": overall_failure_modes,
-                **_summarise_coverage(self.kb, per_file),
+                **_summarise_coverage(self.grounding_agent.kb, per_file),
             },
             "files": per_file,
         }
