@@ -79,6 +79,12 @@
                                placeholder="默认：default" value="default" data-i18n-placeholder="expNamePlaceholder">
                     </div>
 
+                    <div class="form-group">
+                        <label for="textbook-file" data-i18n="textbookFileLabel">上传教材参考文件（可选）</label>
+                        <input type="file" id="textbook-file" accept=".pdf,.txt,.md">
+                        <small data-i18n="textbookFileTip">支持 PDF/TXT/MD；系统会先提取前若干页并保存为 textbook catalog JSON 供检查。</small>
+                    </div>
+
                     <div class="form-group checkbox-group">
                         <label>
                             <input type="checkbox" id="copilot-mode" name="copilot">
@@ -101,6 +107,9 @@
                             <option value="upload" data-i18n="catalogOptionUpload">上传 Catalog 文件</option>
                             <option value="select" data-i18n="catalogOptionSelect">选择已有 Catalog</option>
                         </select>
+                        <small id="textbook-catalog-note" style="display:none;color:#856404;background:#fff3cd;padding:4px 8px;border-radius:4px;margin-top:4px;display:none;">
+                            Textbook file uploaded above — the extracted catalog will be used automatically. Catalog mode selection is ignored.
+                        </small>
                     </div>
 
                     <div class="form-group" id="catalog-upload-group" style="display: none;">

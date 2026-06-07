@@ -39,6 +39,7 @@ assets/
 
 # Uploaded catalogs (user-specific)
 catalog/uploaded_*.json
+catalog/textbook_*.json
 
 # Test & Coverage
 .pytest_cache/

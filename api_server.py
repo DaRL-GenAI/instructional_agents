@@ -14,7 +14,7 @@ from datetime import datetime
 from queue import Queue
 from threading import Thread
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File, Header
+from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File, Header, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +26,7 @@ from run import run_instructional_design, run_optimization
 from src import __version__
 from src.pdf_processor import PDFSlideProcessor
 from src.ADDIE_optimize import ADDIEOptimizer
+from src.textbook_reference import TextbookReferenceBuilder
 import tempfile
 import shutil
 
@@ -391,6 +392,58 @@ async def upload_catalog(
         raise HTTPException(status_code=400, detail="Invalid JSON file")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error uploading catalog: {str(e)}")
+
+@app.post("/api/textbook/catalog")
+async def build_textbook_catalog(
+    file: UploadFile = File(...),
+    course_name: str = Form(default="")
+):
+    """
+    Build catalog-compatible reference data from an uploaded textbook file.
+
+    This proof-of-concept extracts a bounded amount of text from PDF/TXT/MD
+    input and converts it into the existing catalog schema. It does not call
+    an LLM, so it can be used before starting a paid generation task.
+    """
+    allowed_suffixes = {".pdf", ".txt", ".md"}
+    original_name = file.filename or "textbook.pdf"
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in allowed_suffixes:
+        raise HTTPException(status_code=400, detail="Only PDF, TXT, and Markdown textbook files are supported")
+
+    MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Textbook file is too large (max 50 MB)")
+
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir) / original_name
+            temp_path.write_bytes(content)
+
+            builder = TextbookReferenceBuilder()
+            catalog_data = builder.build_catalog(temp_path, course_name=course_name)
+
+        catalog_dir = Path("catalog")
+        catalog_dir.mkdir(exist_ok=True)
+        catalog_name = f"textbook_{uuid.uuid4().hex[:8]}"
+        catalog_filename = f"{catalog_name}.json"
+        catalog_path = catalog_dir / catalog_filename
+        with open(catalog_path, "w", encoding="utf-8") as f:
+            json.dump(catalog_data, f, indent=2, ensure_ascii=False)
+
+        return {
+            "catalog_name": catalog_name,
+            "filename": catalog_filename,
+            "saved_path": str(catalog_path),
+            "catalog_data": catalog_data,
+            "message": "Textbook reference catalog generated successfully"
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing textbook: {str(e)}")
 
 @app.get("/api/tasks/list")
 async def list_tasks():
