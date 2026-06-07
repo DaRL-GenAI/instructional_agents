@@ -48,7 +48,50 @@ def unescape_latex(text: str) -> str:
     text = re.sub(r'\\{', '{', text)
     text = re.sub(r'\\}', '}', text)
     text = re.sub(r'~', ' ', text)
+    # Convert LaTeX-style backtick quotes to curly quotes:
+    #   ``...''   → "..."   (double-backtick + double-apostrophe)
+    #   `...'     → '...'   (single-backtick + single-apostrophe)
+    # Beamer writers emit these literally; PPTX renders them as raw
+    # backticks without conversion. Greedy is safe here because the
+    # paired delimiters are distinct enough not to span unrelated text.
+    text = re.sub(r"``([^']*?)''", r'"\1"', text)
+    text = re.sub(r"`([^']*?)'(?!')", r"'\1'", text)
     return text
+
+
+# Markdown-style bold/italic that the writer occasionally produces even
+# inside .tex output. **bold** and __bold__ should render as plain bold
+# inline text on the slide; in our pipeline they show as raw asterisks.
+# Strip the markers and keep the content.
+_MARKDOWN_BOLD_RE = re.compile(r'\*\*([^*\n]+?)\*\*')
+_MARKDOWN_BOLD_UNDERSCORE_RE = re.compile(r'(?<!\w)__([^_\n]+?)__(?!\w)')
+# Markdown italic with a single asterisk pair. Tighter — must not be
+# adjacent to whitespace and content must be non-empty.
+_MARKDOWN_ITALIC_RE = re.compile(r'(?<![*\w])\*([^*\n]+?)\*(?![*\w])')
+
+# Bare $...$ math fences that survived through to the converter. In the
+# native LaTeX → PDF path these would render as math. In our path we
+# don't have a math renderer, so they leak as visible "$ 30$" text.
+# Strip the fence; keep the content.
+_BARE_DOLLAR_MATH_RE = re.compile(r'\$\s*([^$\n]{1,60})\s*\$')
+
+
+def strip_markdown_artifacts(text: str) -> str:
+    """Remove leftover markdown formatting that the writer included in
+    .tex output and that LaTeX would have ignored (but the PPTX path
+    renders as raw asterisks). Defensive: only matches bounded pairs."""
+    text = _MARKDOWN_BOLD_RE.sub(r'\1', text)
+    text = _MARKDOWN_BOLD_UNDERSCORE_RE.sub(r'\1', text)
+    text = _MARKDOWN_ITALIC_RE.sub(r'\1', text)
+    return text
+
+
+def strip_bare_math_fences(text: str) -> str:
+    """Replace ``$ value $`` with just ``value``. The writer sometimes
+    used ``$\\geq 30$`` to write "≥ 30"; LaTeX would render this as math
+    but the PPTX path can't, so the dollars leak as visible text. Strip
+    the fences; keep the inner content."""
+    return _BARE_DOLLAR_MATH_RE.sub(r'\1', text)
 
 
 def strip_latex_formatting(text: str) -> str:
@@ -84,8 +127,21 @@ def strip_latex_formatting(text: str) -> str:
     # Remove remaining \begin{...} / \end{...} that leaked through
     text = re.sub(r'\\begin\{[^}]*\}', '', text)
     text = re.sub(r'\\end\{[^}]*\}', '', text)
-    # Remove remaining unknown \commands (but preserve \\ as newline)
-    text = re.sub(r'\\(?!\\)[a-zA-Z]+\*?(?:\{[^}]*\})*', '', text)
+    # Remove remaining unknown \commands (but preserve \\ as newline).
+    # Match optional ``[opt]`` argument first then any number of ``{arg}``
+    # groups; that way a leftover ``\includegraphics[width=...]{path}``
+    # gets fully stripped rather than leaving the bracket+brace tail as
+    # visible text.
+    text = re.sub(
+        r'\\(?!\\)[a-zA-Z]+\*?(?:\[[^\]\n]*\])?(?:\{[^}]*\})*',
+        '', text,
+    )
+    # Strip markdown leftovers (**bold**, __bold__, *italic*) before
+    # math-fence stripping so the asterisks don't confuse later regexes
+    text = strip_markdown_artifacts(text)
+    # Drop bare $...$ math fences — we can't render math in pptxgenjs,
+    # so $\geq 30$ → "\geq 30" reads better than "$\geq 30$".
+    text = strip_bare_math_fences(text)
     # Inline math: keep as-is (raw LaTeX)
     return unescape_latex(text).strip()
 
@@ -399,8 +455,20 @@ class LaTeXParser:
             else:
                 item['text'] = strip_latex_formatting(part)
 
-            if item['text'] or item['subitems']:
-                items.append(item)
+            # Drop empty items so they don't render as a lone "•" bullet
+            # on the slide. We accept "text is empty AND subitems is
+            # empty" as the empty signal, and also strip items whose
+            # text is only punctuation/whitespace.
+            cleaned_text = (item['text'] or '').strip()
+            if not cleaned_text and not item['subitems']:
+                continue
+            # Whitespace-or-punct-only text counts as empty too
+            if cleaned_text and not re.search(r'\w', cleaned_text):
+                if not item['subitems']:
+                    continue
+                # Keep subitems but null out the noise text
+                item['text'] = ''
+            items.append(item)
 
         return items
 

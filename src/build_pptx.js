@@ -180,7 +180,7 @@ function estimateElemH(el) {
     case "code": return Math.min((el.content || "").split("\n").length * 0.25 + 0.5, 3.5) + L.gap;
     case "math": return 0.6 + L.gap;
     case "tikz": return 1.2 + L.gap;
-    case "image": return 3.5 + L.gap;
+    case "image": return 3.2 + L.gap;
     case "columns": return 2.0 + L.gap;
     default: return 0.5;
   }
@@ -400,8 +400,7 @@ function addPicture(slide, elem, x, y, w) {
   // \includegraphics — embed a real image file (PNG/JPG) on the slide.
   // The Python side has already resolved elem.content to an absolute
   // path. We sanity-check the file exists and constrain the rendered
-  // box to a sensible aspect ratio. Falls back to a placeholder box
-  // when the file is missing.
+  // box so the image never bleeds past the slide's bottom margin.
   const fs = require("fs");
   const path = elem.content;
   if (!path || !fs.existsSync(path)) {
@@ -417,13 +416,17 @@ function addPicture(slide, elem, x, y, w) {
     });
     return y + 1.0 + L.gap;
   }
-  // Constrain to ~3.5 inch tall max so multiple images can stack.
-  const maxH = 3.5;
-  // We don't know image dimensions ahead of time without probing —
-  // use sizing: "contain" so pptxgenjs preserves the aspect ratio
-  // inside the bounding box.
-  slide.addImage({ path, x, y, w, h: maxH, sizing: { type: "contain", w, h: maxH } });
-  return y + maxH + L.gap;
+  // Constrain height so the image always fits inside the slide.
+  // L.maxY is the bottom of the usable content area; leave a small
+  // buffer so the image doesn't visually crowd it. Cap at 3.2" so
+  // multiple stacked elements stay sane on dense slides.
+  const buffer = 0.25;
+  const remaining = Math.max(0.8, L.maxY - y - buffer);
+  const h = Math.min(3.2, remaining);
+  // sizing: "contain" preserves aspect ratio inside the box; pptxgenjs
+  // centers the actual image within (w, h).
+  slide.addImage({ path, x, y, w, h, sizing: { type: "contain", w, h } });
+  return y + h + L.gap;
 }
 
 function addTikz(slide, x, y, w) {

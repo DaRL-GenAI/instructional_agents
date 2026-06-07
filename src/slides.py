@@ -312,6 +312,26 @@ _VLM_MARKER_RE = _re_for_latex_cleanup.compile(
     r"\s*([^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*)\]",
     _re_for_latex_cleanup.IGNORECASE,
 )
+# Defensive fallback: the writer sometimes emits an UNCLOSED VLM marker
+# (e.g. ``[DESCRIPTION: text without the closing bracket"\texttt{...}``).
+# The strict regex above requires the closing ``]`` and skips these.
+# This fallback catches the opening marker and strips up to the next
+# closing-quote-then-backslash sequence (``"\``) which is the most
+# common boundary in writer output. Stops at end-of-line otherwise.
+_VLM_MARKER_UNCLOSED_RE = _re_for_latex_cleanup.compile(
+    r"\[(IMAGE_PATH|LATEX|TABLE|ALGORITHM_STEPS|DESCRIPTION|INSIGHT)\s*:"
+    r"\s*[^\n]*?(?=\"\s*\\|\n)",
+    _re_for_latex_cleanup.IGNORECASE,
+)
+
+# Markdown ** bold ** that the writer emitted into the .tex source. LaTeX
+# would render this as raw asterisks. Convert to \textbf{...} so it gets
+# proper bold formatting in the LaTeX output AND so downstream PPTX
+# converters (which strip \textbf{} but read asterisks as literal text)
+# don't show "**Data Types**" as visible noise.
+_MARKDOWN_BOLD_IN_TEX_RE = _re_for_latex_cleanup.compile(
+    r"\*\*([^*\n]+?)\*\*"
+)
 
 # Unicode characters the LaTeX default font (ec-lmss10) cannot render.
 # Replace with LaTeX-native equivalents. Conservative: only swap unicode
@@ -373,6 +393,14 @@ def _clean_latex_artifacts(text):
     # [IMAGE_PATH:], [LATEX:], [TABLE:], [ALGORITHM_STEPS:]) — all become
     # invisible so the surrounding narration reads cleanly.
     text = _VLM_MARKER_RE.sub("", text)
+    # Fallback for unclosed markers that the strict regex skipped.
+    text = _VLM_MARKER_UNCLOSED_RE.sub("", text)
+    # Fix 4b: convert markdown **bold** the writer emitted into the LaTeX
+    # body into proper \textbf{...}. The writer occasionally falls back
+    # to markdown when it should use LaTeX; LaTeX itself ignores
+    # asterisks and they leak as raw "**...**" to any downstream PPTX
+    # or HTML render.
+    text = _MARKDOWN_BOLD_IN_TEX_RE.sub(r"\\textbf{\1}", text)
     # Fix 4: replace problem unicode characters with LaTeX equivalents
     for src, dst in _UNICODE_REPLACEMENTS.items():
         if src in text:

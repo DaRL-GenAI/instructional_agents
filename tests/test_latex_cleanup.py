@@ -211,6 +211,31 @@ class TestGraphicspathInjection:
         assert "\\graphicspath" not in out
 
 
+class TestMarkdownBoldUpstreamFix:
+    """v7.2 — strip markdown **bold** from .tex output BEFORE the file
+    is saved so downstream PPTX/HTML converters never see the raw
+    asterisks. Converts to \\textbf{} so LaTeX still renders it bold."""
+
+    def test_double_asterisks_become_textbf(self):
+        text = "**Data Types** can be classified"
+        out = _clean_latex_artifacts(text)
+        assert "**" not in out
+        assert r"\textbf{Data Types}" in out
+
+    def test_multiple_bold_phrases_in_one_line(self):
+        text = "**Synchronous**: fast. **Asynchronous**: slow."
+        out = _clean_latex_artifacts(text)
+        assert "**" not in out
+        assert r"\textbf{Synchronous}" in out
+        assert r"\textbf{Asynchronous}" in out
+
+    def test_lone_asterisk_preserved(self):
+        text = "Mark with * for footnotes."
+        out = _clean_latex_artifacts(text)
+        # Single asterisk should not match the bold pattern
+        assert "Mark with * for footnotes." in out
+
+
 class TestVLMMarkerLeakage:
     """When the VLM extractor produces [DESCRIPTION:] / [INSIGHT:] /
     [IMAGE_PATH:] / [LATEX:] / [TABLE:] / [ALGORITHM_STEPS:] markers,
