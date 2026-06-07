@@ -484,22 +484,53 @@ class GroundingAgent:
         # cite any page within the chunk and have its citation
         # resolve correctly. Single-page chunks register exactly one
         # entry (identical to the prior behaviour).
+        # v7 AMBIGUOUS-TOKEN-RESCUE — collect ALL chunks per token
+        # (multi-chunk tokens common with OVERLAP_TOKENS-based chunking).
+        # Score-time disambiguator picks the BEST sibling (highest
+        # word-overlap to claim). v6 used first-write-wins setdefault
+        # which collapsed multi-chunk tokens, losing potentially-better
+        # matches; v6 deep-mine showed 75.8% of Han tokens are ambiguous
+        # and the verifier picked the wrong sibling on 62% of bad
+        # ambiguous cites.
         self._chunk_by_token: Dict[str, Any] = {}
+        self._candidate_chunks_by_token: Dict[str, list] = {}
         for c in knowledge_base.chunks:
-            # citation_tokens_in_range yields one token per page in the
-            # chunk's range; for single-page chunks it returns a single
-            # token equal to citation_token().
             try:
                 tokens = c.citation_tokens_in_range()
             except AttributeError:
-                # Older Chunk shape without the method — fall back to
-                # the single canonical token.
                 tokens = [c.citation_token()]
             for tok in tokens:
-                # Don't overwrite if another chunk has already claimed
-                # this token (rare; could happen if two sections happen
-                # to overlap on a boundary page). First write wins.
+                # Primary mapping (first chunk wins — preserves v6
+                # backward-compatible behavior for callers that only
+                # use _chunk_by_token directly).
                 self._chunk_by_token.setdefault(tok, c)
+                # ALL candidates per token — used by _resolve_best_chunk
+                # at score time.
+                self._candidate_chunks_by_token.setdefault(tok, []).append(c)
+
+    def _resolve_best_chunk(self, token: str, claim_text: str):
+        """v7 AMBIGUOUS-TOKEN-RESCUE: when a token resolves to multiple
+        chunks (multi-chunk overlap), pick the one with the highest
+        word-overlap to the claim sentence. Falls back to first-chunk
+        if no candidates resolve.
+        """
+        candidates = self._candidate_chunks_by_token.get(token, [])
+        if len(candidates) <= 1:
+            return self._chunk_by_token.get(token)
+        # Word-overlap (Jaccard-like) scoring
+        claim_words = set(w.lower() for w in claim_text.split() if len(w) > 3)
+        if not claim_words:
+            return candidates[0]
+        best, best_score = candidates[0], -1.0
+        for c in candidates:
+            chunk_words = set(w.lower() for w in c.text.split() if len(w) > 3)
+            if not chunk_words:
+                continue
+            overlap = len(claim_words & chunk_words) / max(1, len(claim_words))
+            if overlap > best_score:
+                best_score = overlap
+                best = c
+        return best
 
     # ----- public API ----------------------------------------------------
 
@@ -578,8 +609,12 @@ class GroundingAgent:
 
     def _score_one(self, cite: Dict[str, Any], text: str) -> Dict[str, Any]:
         """Look up the cited chunk, ask the LLM to rate 1-5 + categorise failure."""
-        chunk = self._chunk_by_token.get(cite["token"])
+        # v7 AMBIGUOUS-TOKEN-RESCUE: claim-aware chunk lookup. For
+        # multi-chunk tokens, pick the sibling with highest word-overlap
+        # to the claim. Falls back to first-chunk for single-chunk tokens
+        # (identical to v6 behavior).
         claim = self._claim_window(text, cite)
+        chunk = self._resolve_best_chunk(cite["token"], claim)
 
         if chunk is None:
             # Token doesn't resolve. Could be a typo, hallucinated section

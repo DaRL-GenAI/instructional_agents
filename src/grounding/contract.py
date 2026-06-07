@@ -40,19 +40,103 @@ from src.textbook.schema import CourseContract, TopicMapping
 # How many candidate chunks to pull per individual query before fusion.
 RETRIEVE_PER_TOPIC = 8
 
-# How many sections per topic to lock into the contract. 3 strikes a
-# balance: tight enough to keep retrieval focused, loose enough to allow
-# topics that span multiple sections (common in survey chapters).
-SECTIONS_PER_TOPIC = 3
+# How many sections per topic to lock into the contract.
+#
+# v6 Lever B (was 3, now 6). The v5 forensic replay against Han showed
+# 12 of 15 course chapters had their top-section share above 50 % — the
+# top-3 binding was over-concentrating writers onto a single section,
+# driving the retrieval_bad slice. Widening to 6 gives the writer more
+# in-scope options when the top-3 don't match a slide's exact topic.
+# Generic across textbooks: a wider contract on a well-matched chapter
+# just lets retrieval continue picking the same top sections.
+SECTIONS_PER_TOPIC = 6
 
 # Subtopic decomposition: how many subtopics to extract per chapter.
-# 3 is the sweet spot — enough breadth to surface distinct sections,
-# few enough that each retrieval pass stays informative.
-SUBTOPICS_PER_CHAPTER = 3
+#
+# v6 Lever N — HyDE++ (was 3, now 5). The replay diagnosed coverage as
+# the gap to 90 % on Han: pushing to 5 paraphrased queries per chapter
+# brings more candidate sections into top-k, lifting recall on chapters
+# where the chapter title alone doesn't anchor well to any single
+# section. Each extra subtopic adds ~$0.04 / chapter (gpt-4o-mini),
+# which lands at ~$0.20 across a 15-chapter course.
+SUBTOPICS_PER_CHAPTER = 5
 
 # RRF constant for fusing rankings across multiple queries. Same value
 # as the retriever's internal RRF (Cormack et al. 2009).
 QUERY_FUSION_RRF_K = 60
+
+# v6 Lever C — smart intro detection.
+#
+# Generic-survey chapter titles ("Introduction to X", "Overview of Y",
+# "Basics of Z") don't anchor well to any single textbook section because
+# the survey *spans* the textbook. The v5 forensic replay showed those
+# course chapters had the worst over-concentrated bindings (Ch 1 → ch6.s2
+# Cluster Analysis at 46 %; Ch 10 "Classification Basics" → ch5.s8 at 60 %;
+# Ch 9 "Pattern Evaluation" → ch3.s4 at 94 %).
+#
+# Two complementary heuristics flag a chapter for an extended contract:
+#   * KEYWORD MATCH on title or description against ``_GENERIC_KEYWORDS``
+#   * DOMINANCE — top section's fused RRF is at least the multiplier
+#     above the second section's. Catches the cases where the title isn't
+#     literally "introduction" but the binding still collapsed to one
+#     section (the chapter title's a poor topical anchor anyway).
+#
+# Affected chapters get ``SMART_INTRO_SECTIONS_PER_TOPIC`` sections instead
+# of ``SECTIONS_PER_TOPIC``. Generic across textbooks: the keyword list
+# is curriculum-vocabulary, not Han- or Agentic-specific.
+_GENERIC_KEYWORDS = (
+    # v6 keywords
+    "introduction", "intro to", "overview", "basics", "basic ",
+    "fundamentals", "fundamental ", "survey", "review",
+    "project work", "presentations", "summary", "final",
+    # v7 EXTENSIONS — catch meta-evaluation and meta-comparison
+    # chapters that v6 missed (ch_9 Pattern Evaluation, ch_13 Cluster
+    # Analysis Basics — note "Basics" is captured but "Cluster Analysis"
+    # comes first so the keyword search now scans full topic).
+    "evaluation", "evaluating", "validation", "validating",
+    "assessment of", "advanced", "comparison", "comparing",
+    "methods of", "techniques of", "applications of",
+    "cluster analysis", "pattern evaluation",
+)
+SMART_INTRO_DOMINANCE_RATIO = 2.0  # v6 deep-mine: lowered from 2.5 to
+                                    # catch ch14 Clustering Methods
+SMART_INTRO_SECTIONS_PER_TOPIC = 10
+
+# v7 META-CHAPTER ABSTAIN — when a chapter's best section after widening
+# still has a low fused RRF score, the topic genuinely has no good Han
+# anchor (ch_9 Pattern Evaluation, ch_15 Project Work). Rather than
+# widen to even more weakly-related sections, set section_ids=[] so the
+# writer falls back to vanilla (no fabricated citations). The threshold
+# is calibrated to v6 data: chapters with top RRF < 0.025 after widening
+# had average precision <40% in v6.
+META_ABSTAIN_RRF_FLOOR = 0.025
+
+
+def _is_generic_intro_chapter(title: str, desc: str) -> bool:
+    """v6 Lever C: keyword-based intro detection.
+
+    Catches the bulk of catastrophic intro chapters by curriculum
+    vocabulary. The dominance heuristic catches the rest (chapter titles
+    that aren't literally "Introduction" but still bind to a single
+    section).
+    """
+    text = f"{title} {desc}".lower()
+    return any(kw in text for kw in _GENERIC_KEYWORDS)
+
+
+def _is_dominant_binding(ranked: list[tuple[str, float]]) -> bool:
+    """v6 Lever C: top section dominates if the next section is ≥ ratio×
+    below it on the fused RRF score. Reflects an over-concentrated
+    contract — the writer will keep citing the dominant section and
+    drown out the smaller signal.
+    """
+    if len(ranked) < 2:
+        return False
+    top = ranked[0][1]
+    second = ranked[1][1]
+    if second <= 0:
+        return True
+    return top / second >= SMART_INTRO_DOMINANCE_RATIO
 
 # Coverage floor for the top section's fused RRF score. Below this, we
 # treat the chapter as "off-textbook" — no good match exists in the
@@ -159,8 +243,51 @@ def build_course_contract(
                 f"{COVERAGE_FLOOR_RRF:.4f})"
             )
         else:
-            section_ids = [sid for sid, _ in ranked[:sections_per_topic]]
-            coverage_status = f"top section RRF={top_score:.4f}"
+            # v6 Lever C — smart intro widening. If the chapter looks
+            # like a generic-survey or its binding is dominated by a
+            # single section, widen to SMART_INTRO_SECTIONS_PER_TOPIC so
+            # the writer has cross-section options. Otherwise keep
+            # sections_per_topic (Lever B default = 6).
+            effective_top_n = sections_per_topic
+            smart_widen_trigger = None
+            if _is_generic_intro_chapter(title, desc):
+                effective_top_n = max(effective_top_n, SMART_INTRO_SECTIONS_PER_TOPIC)
+                smart_widen_trigger = "generic-keyword"
+            elif _is_dominant_binding(ranked):
+                effective_top_n = max(effective_top_n, SMART_INTRO_SECTIONS_PER_TOPIC)
+                smart_widen_trigger = "dominant-binding"
+
+            # v7 META-CHAPTER ABSTAIN — if the chapter was widened but
+            # the top section's score is STILL below the abstain floor,
+            # the topic has no real Han anchor (ch_9 Pattern Evaluation,
+            # ch_15 Project Work). Force section_ids=[] so the writer
+            # falls back to vanilla rather than fabricate citations
+            # against weakly-related sections.
+            if smart_widen_trigger and top_score < META_ABSTAIN_RRF_FLOOR:
+                section_ids = []
+                rationale_parts.append(
+                    f"META-ABSTAIN (widened but top RRF={top_score:.4f} < "
+                    f"META_ABSTAIN_RRF_FLOOR={META_ABSTAIN_RRF_FLOOR})"
+                )
+                mappings.append(TopicMapping(
+                    topic=title,
+                    section_ids=section_ids,
+                    rationale=" · ".join(
+                        [f"{len(queries)} queries"] + rationale_parts +
+                        ["meta-chapter abstain"]
+                    ),
+                ))
+                continue
+
+            section_ids = [sid for sid, _ in ranked[:effective_top_n]]
+            if smart_widen_trigger:
+                coverage_status = (
+                    f"top section RRF={top_score:.4f} · "
+                    f"smart-intro widened to {len(section_ids)} sections "
+                    f"({smart_widen_trigger})"
+                )
+            else:
+                coverage_status = f"top section RRF={top_score:.4f}"
 
         rationale_pieces = [f"{len(queries)} queries"] + rationale_parts + [
             coverage_status

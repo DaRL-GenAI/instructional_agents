@@ -232,15 +232,85 @@ class VlmExtractor:
             )
             return ExtractedPage()
 
-        try:
-            return self._call_vlm(png_bytes)
-        except Exception as e:
-            print(
-                f"[vlm] VLM call failed for {textbook_id}:p{page_num} "
-                f"({type(e).__name__}: {e}); returning empty extraction.",
-                flush=True,
-            )
-            return ExtractedPage()
+        return self._call_vlm_with_retry(png_bytes, textbook_id, page_num)
+
+    # Retry budget for transient VLM failures. gpt-4o's 30k TPM cap is
+    # hit hard during dense PDF ingestion (~29.5k tokens/page); a single
+    # call fails roughly every 2 minutes at saturation. Each attempt
+    # backs off proportionally so retries don't pile on the rate limit.
+    _VLM_RETRY_MAX_ATTEMPTS = 6
+    _VLM_RETRY_BASE_SLEEP_S = 30.0  # 30s, 60s, 90s, 120s, 150s, 180s
+    _VLM_RETRY_RATE_LIMIT_SLEEP_S = 65.0  # sleep past the TPM window
+
+    def _call_vlm_with_retry(
+        self,
+        png_bytes: bytes,
+        textbook_id: str,
+        page_num: int,
+    ) -> ExtractedPage:
+        """v7.1 — retry transient VLM failures (rate limits, timeouts).
+
+        Returns an empty ExtractedPage only when ALL retries fail.
+        Stays defensive — never raises so the caller's ingestion loop
+        can continue even when a page genuinely can't be processed.
+        """
+        import time as _time
+        last_err = None
+        for attempt in range(1, self._VLM_RETRY_MAX_ATTEMPTS + 1):
+            try:
+                return self._call_vlm(png_bytes)
+            except Exception as e:
+                last_err = e
+                err_name = type(e).__name__
+                err_str = str(e)
+                # Rate-limit handling: parse retry-after if present, else
+                # sleep past the 1-min TPM window.
+                if "RateLimitError" in err_name or "rate_limit_exceeded" in err_str.lower():
+                    sleep_s = self._parse_retry_after(err_str) or self._VLM_RETRY_RATE_LIMIT_SLEEP_S
+                    if attempt < self._VLM_RETRY_MAX_ATTEMPTS:
+                        print(
+                            f"[vlm] Rate limit on {textbook_id}:p{page_num} "
+                            f"(attempt {attempt}/{self._VLM_RETRY_MAX_ATTEMPTS}); "
+                            f"sleeping {sleep_s:.0f}s before retry.",
+                            flush=True,
+                        )
+                        _time.sleep(sleep_s)
+                        continue
+                # Other transient errors: exponential-ish backoff.
+                if attempt < self._VLM_RETRY_MAX_ATTEMPTS:
+                    sleep_s = self._VLM_RETRY_BASE_SLEEP_S * attempt
+                    print(
+                        f"[vlm] Transient failure on {textbook_id}:p{page_num} "
+                        f"({err_name}, attempt {attempt}/{self._VLM_RETRY_MAX_ATTEMPTS}); "
+                        f"sleeping {sleep_s:.0f}s before retry.",
+                        flush=True,
+                    )
+                    _time.sleep(sleep_s)
+                    continue
+        # Exhausted retries — log and return empty.
+        print(
+            f"[vlm] VLM call failed for {textbook_id}:p{page_num} after "
+            f"{self._VLM_RETRY_MAX_ATTEMPTS} attempts "
+            f"({type(last_err).__name__}: {last_err}); returning empty extraction.",
+            flush=True,
+        )
+        return ExtractedPage()
+
+    @staticmethod
+    def _parse_retry_after(err_str: str) -> Optional[float]:
+        """Parse 'try again in 892ms' / 'try again in 30s' from a
+        rate-limit message into a seconds-to-sleep value. Returns None
+        when no parseable hint is found."""
+        import re as _re
+        m = _re.search(r"try again in\s+(\d+(?:\.\d+)?)\s*(ms|s)", err_str, _re.IGNORECASE)
+        if not m:
+            return None
+        value = float(m.group(1))
+        unit = m.group(2).lower()
+        seconds = value / 1000.0 if unit == "ms" else value
+        # Always sleep at least 5s — the API's "try again in 892ms" is
+        # often optimistic and we hit the limit again immediately.
+        return max(5.0, seconds + 2.0)
 
     def _call_vlm(self, png_bytes: bytes) -> ExtractedPage:
         """Send the page image to the VLM and parse the structured response.

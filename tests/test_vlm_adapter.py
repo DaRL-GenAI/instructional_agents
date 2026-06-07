@@ -197,3 +197,93 @@ class TestExtract:
         saved = figs / "han_data_mining_3e_p0476.png"
         assert saved.exists()
         assert saved.read_bytes() == b"\x89PNG fake"
+
+
+class TestRateLimitRetry:
+    """v7.1 — VLM rate-limit retry behaviour."""
+
+    def _make_extractor(self, side_effects):
+        """Build a VlmExtractor whose _call_vlm raises in sequence then
+        returns ExtractedPage on the final call."""
+        client = MagicMock()
+        ex = VlmExtractor(client=client)
+        # Patch _call_vlm directly (we test the retry wrapper, not the
+        # internals of the OpenAI call).
+        ex._call_vlm = MagicMock(side_effect=side_effects)
+        # Speed up tests — collapse sleeps to ~no-op
+        ex._VLM_RETRY_BASE_SLEEP_S = 0.001
+        ex._VLM_RETRY_RATE_LIMIT_SLEEP_S = 0.001
+        return ex
+
+    def _rate_limit_error(self, retry_after_ms=None):
+        msg = "Rate limit reached for gpt-4o ... rate_limit_exceeded"
+        if retry_after_ms is not None:
+            msg += f" Please try again in {retry_after_ms}ms. Visit ..."
+        # Wrap in an exception whose class name contains RateLimitError
+        class RateLimitError(Exception):
+            pass
+        return RateLimitError(msg)
+
+    def test_rate_limit_then_success(self):
+        good = ExtractedPage()
+        ex = self._make_extractor([
+            self._rate_limit_error(retry_after_ms=500),
+            good,
+        ])
+        result = ex._call_vlm_with_retry(b"png", "han", 264)
+        assert result is good
+        assert ex._call_vlm.call_count == 2
+
+    def test_rate_limit_retries_then_gives_up(self):
+        # All 6 attempts fail with rate limit
+        ex = self._make_extractor([
+            self._rate_limit_error(retry_after_ms=100)
+        ] * 6)
+        result = ex._call_vlm_with_retry(b"png", "han", 264)
+        # Defensive: returns empty extraction, doesn't raise
+        assert isinstance(result, ExtractedPage)
+        assert result.components == []
+        assert ex._call_vlm.call_count == 6
+
+    def test_transient_error_retries(self):
+        good = ExtractedPage()
+        ex = self._make_extractor([
+            TimeoutError("read timeout"),
+            ConnectionError("network blip"),
+            good,
+        ])
+        result = ex._call_vlm_with_retry(b"png", "han", 100)
+        assert result is good
+        assert ex._call_vlm.call_count == 3
+
+    def test_success_on_first_attempt_no_retry(self):
+        good = ExtractedPage()
+        ex = self._make_extractor([good])
+        result = ex._call_vlm_with_retry(b"png", "han", 1)
+        assert result is good
+        assert ex._call_vlm.call_count == 1
+
+
+class TestParseRetryAfter:
+    """v7.1 — parse OpenAI's retry-after hint from the error string."""
+
+    def test_parses_milliseconds(self):
+        msg = "Please try again in 892ms. Visit ..."
+        s = VlmExtractor._parse_retry_after(msg)
+        # Adds 2s safety margin + clamps to >= 5s
+        assert s == 5.0
+
+    def test_parses_seconds(self):
+        msg = "Please try again in 30s. Visit ..."
+        s = VlmExtractor._parse_retry_after(msg)
+        assert s == 32.0  # 30 + 2 safety margin
+
+    def test_returns_none_when_no_hint(self):
+        msg = "rate_limit_exceeded with no parseable hint"
+        s = VlmExtractor._parse_retry_after(msg)
+        assert s is None
+
+    def test_clamps_to_minimum_5s(self):
+        msg = "Please try again in 100ms. Visit ..."
+        s = VlmExtractor._parse_retry_after(msg)
+        assert s >= 5.0

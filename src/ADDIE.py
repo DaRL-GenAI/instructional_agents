@@ -689,6 +689,9 @@ class ADDIERunner:
                 self.addie.knowledge_base.textbook_id
                 if self.addie.knowledge_base else None
             ),
+            citation_usage_tracker=getattr(self.addie, "citation_usage_tracker", None),
+            semantic_gate=getattr(self.addie, "semantic_gate", None),
+            write_time_verifier=getattr(self.addie, "write_time_verifier", None),
         )
     
     def _save_result(self, deliberation, result):
@@ -958,6 +961,29 @@ class ADDIE:
             self.retriever = HybridRetriever(
                 self.knowledge_base, cache_dir=cache_dir, reranker=reranker,
             )
+            # v6 Lever A: per-run citation diversity cap. One tracker
+            # shared across all SlidesDeliberation instances so the cap
+            # is global across the course.
+            from src.grounding.usage_tracker import CitationUsageTracker
+            self.citation_usage_tracker = CitationUsageTracker(
+                kb=self.knowledge_base, cap=CitationUsageTracker.DEFAULT_CAP,
+            )
+            # v7 Gate A + Gate B — sentence-transformer claim-chunk
+            # similarity filter. Free signal that the v6 stack threw
+            # away. Constructed once; lazy encoder load on first use.
+            from src.grounding.semantic_gate import SemanticGate
+            self.semantic_gate = SemanticGate(kb=self.knowledge_base)
+            # v7 Step 9 — LLM write-time citation verifier. Per-citation
+            # YES/NO check via gpt-4o-mini after Gate B (semantic) has
+            # caught the obvious wrong cases for free. ~$0.0001 per call.
+            from src.grounding.write_time_verifier import WriteTimeVerifier
+            self.write_time_verifier = WriteTimeVerifier(
+                kb=self.knowledge_base, llm=self.llm,
+            )
+        else:
+            self.citation_usage_tracker = None
+            self.semantic_gate = None
+            self.write_time_verifier = None
 
         # Create all deliberations in the workflow
         self.set_catalog(data_catalog)

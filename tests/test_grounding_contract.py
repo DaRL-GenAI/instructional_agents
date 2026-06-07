@@ -111,6 +111,19 @@ def test_module_constants_sane():
     assert 0 < COVERAGE_FLOOR_RRF < 0.1  # sensible range — see contract.py constant doc
 
 
+def test_sections_per_topic_default_is_six_v6_lever_b():
+    """v6 Lever B widened the contract default from 3 → 6. This test
+    locks in the new value so an accidental revert is caught."""
+    assert SECTIONS_PER_TOPIC == 6
+
+
+def test_subtopics_per_chapter_default_is_five_v6_lever_n():
+    """v6 Lever N bumped HyDE++ subtopic count from 3 → 5. Locks in
+    the new value."""
+    from src.grounding.contract import SUBTOPICS_PER_CHAPTER
+    assert SUBTOPICS_PER_CHAPTER == 5
+
+
 # --------------------------------------------------------------------- #
 # Multi-query: LLM-extracted subtopics + HyDE expansion.
 # These tests use mock LLMs — no network, no API key.
