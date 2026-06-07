@@ -396,7 +396,7 @@ function addMath(slide, elem, x, y, w) {
   return y + h + L.gap;
 }
 
-function addPicture(slide, elem, x, y, w) {
+function addPicture(slide, elem, x, y, w, trailingH) {
   // \includegraphics — embed a real image file (PNG/JPG) on the slide.
   // The Python side has already resolved elem.content to an absolute
   // path. We sanity-check the file exists and constrain the rendered
@@ -418,11 +418,16 @@ function addPicture(slide, elem, x, y, w) {
   }
   // Constrain height so the image always fits inside the slide.
   // L.maxY is the bottom of the usable content area; leave a small
-  // buffer so the image doesn't visually crowd it. Cap at 3.2" so
-  // multiple stacked elements stay sane on dense slides.
+  // buffer so the image doesn't visually crowd it. Cap at 4.5" so
+  // figures get the room they deserve while leaving headroom for a
+  // bullet or caption above.
   const buffer = 0.25;
-  const remaining = Math.max(0.8, L.maxY - y - buffer);
-  const boxH = Math.min(3.2, remaining);
+  // Reserve room for any text/list elements that will render AFTER
+  // this image (renderStandard lifts images to the top of the slide;
+  // bullets that follow need vertical room or they get pushed off).
+  const reserve = Math.max(0, trailingH || 0);
+  const remaining = Math.max(0.8, L.maxY - y - buffer - reserve);
+  const boxH = Math.min(4.5, remaining);
   const boxW = w;
   // Read PNG dimensions from header so we can pre-fit instead of relying on
   // pptxgenjs's sizing:"contain" (which LibreOffice doesn't always honour).
@@ -485,7 +490,7 @@ function addColumns(slide, elem, x, y, w) {
   return maxBot + L.gap * 0.5;
 }
 
-function renderElem(slide, elem, x, y, w) {
+function renderElem(slide, elem, x, y, w, trailingH) {
   if (y > L.maxY) return y;
   switch (elem.type) {
     case "text":        return addText(slide, elem.content, x, y, w);
@@ -498,7 +503,7 @@ function renderElem(slide, elem, x, y, w) {
     case "math":        return addMath(slide, elem, x, y, w);
     case "tikz":        return addTikz(slide, x, y, w);
     case "columns":     return addColumns(slide, elem, x, y, w);
-    case "image":       return addPicture(slide, elem, x, y, w);
+    case "image":       return addPicture(slide, elem, x, y, w, trailingH);
     default:            return y;
   }
 }
@@ -520,21 +525,36 @@ function classifyFrame(frame) {
 
 // ─── Slide renderers by layout ──────────────────────────────────────────────
 
+// Shared helper used by every layout that renders a vertical stack of
+// elements. Lifts images to the top of the stack (they otherwise get
+// squeezed below text into <3" of usable height) and passes each call
+// a trailingH estimate so addPicture can reserve room for what follows.
+function _stackElements(slide, elems, x, w) {
+  let ordered = elems;
+  if (ordered.some(e => e.type === "image")) {
+    const images = ordered.filter(e => e.type === "image");
+    const rest = ordered.filter(e => e.type !== "image");
+    ordered = [...images, ...rest];
+  }
+  let estTotal = 0;
+  for (const e of ordered) estTotal += estimateElemH(e);
+  const availH = L.maxY - L.cY;
+  const startY = estTotal < availH * 0.5
+    ? L.cY + (availH - estTotal) * 0.3
+    : L.cY;
+  let y = startY;
+  for (let i = 0; i < ordered.length; i++) {
+    let trailing = 0;
+    for (let j = i + 1; j < ordered.length; j++) trailing += estimateElemH(ordered[j]);
+    y = renderElem(slide, ordered[i], x, y, w, trailing);
+  }
+  return y;
+}
+
 function renderStandard(slide, frame) {
   // Title bar and sidebar accent come from CONTENT_MASTER
   addTitleText(slide, frame.title);
-
-  // Estimate total content height to center vertically if sparse
-  const elems = frame.elements || [];
-  let estTotal = 0;
-  for (const e of elems) estTotal += estimateElemH(e);
-  const availH = L.maxY - L.cY;
-  const startY = estTotal < availH * 0.5 ? L.cY + (availH - estTotal) * 0.3 : L.cY;
-
-  let y = startY;
-  for (const elem of elems) {
-    y = renderElem(slide, elem, L.cX, y, L.cW - 0.3);
-  }
+  _stackElements(slide, frame.elements || [], L.cX, L.cW - 0.3);
 }
 
 function renderSingleText(slide, frame) {
@@ -552,48 +572,18 @@ function renderSingleText(slide, frame) {
 
 function renderListOnly(slide, frame) {
   addTitleText(slide, frame.title);
-
-  const elems = frame.elements || [];
-  let estTotal = 0;
-  for (const e of elems) estTotal += estimateElemH(e);
-  const availH = L.maxY - L.cY;
-  const startY = estTotal < availH * 0.5 ? L.cY + (availH - estTotal) * 0.3 : L.cY;
-
-  let y = startY;
-  for (const elem of elems) {
-    y = renderElem(slide, elem, L.cX, y, L.cW - 0.3);
-  }
+  _stackElements(slide, frame.elements || [], L.cX, L.cW - 0.3);
 }
 
 function renderBlocks(slide, frame) {
   addTitleText(slide, frame.title);
-
-  const elems = frame.elements || [];
-  let estTotal = 0;
-  for (const e of elems) estTotal += estimateElemH(e);
-  const availH = L.maxY - L.cY;
-  const startY = estTotal < availH * 0.5 ? L.cY + (availH - estTotal) * 0.3 : L.cY;
-
-  let y = startY;
-  for (const elem of elems) {
-    y = renderElem(slide, elem, L.cX, y, L.cW - 0.3);
-  }
+  _stackElements(slide, frame.elements || [], L.cX, L.cW - 0.3);
 }
 
 function renderCodeSlide(slide, frame) {
   // Title bar and bottom bar come from CONTENT_CODE master
   addTitleText(slide, frame.title);
-
-  const elems = frame.elements || [];
-  let estTotal = 0;
-  for (const e of elems) estTotal += estimateElemH(e);
-  const availH = L.maxY - L.cY;
-  const startY = estTotal < availH * 0.5 ? L.cY + (availH - estTotal) * 0.3 : L.cY;
-
-  let y = startY;
-  for (const elem of elems) {
-    y = renderElem(slide, elem, L.cX, y, L.cW);
-  }
+  _stackElements(slide, frame.elements || [], L.cX, L.cW);
 }
 
 function renderDarkSlide(slide, frame) {
