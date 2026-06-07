@@ -300,6 +300,19 @@ _CITATION_TOKEN_IN_TEXT_RE = _re_for_latex_cleanup.compile(
 # omitted so generated slides are self-contained.
 _GRAPHICSPATH_INSERT = r"\graphicspath{{./}{../}{../../}{../../../}}"
 
+# VLM-extraction markers that leaked verbatim into the writer's output
+# instead of being processed. The writer was supposed to consume
+# [DESCRIPTION: ...] / [INSIGHT: ...] markers (as figure captions) and
+# convert [IMAGE_PATH: ...] markers into \includegraphics calls. When it
+# copy-pastes them as quoted text instead, they show up on the rendered
+# slide as raw "[DESCRIPTION: The figure shows...]" — readable but ugly.
+# Strip these so the slide narrates the surrounding text cleanly.
+_VLM_MARKER_RE = _re_for_latex_cleanup.compile(
+    r"\[(IMAGE_PATH|LATEX|TABLE|ALGORITHM_STEPS|DESCRIPTION|INSIGHT)\s*:"
+    r"\s*([^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*)\]",
+    _re_for_latex_cleanup.IGNORECASE,
+)
+
 # Unicode characters the LaTeX default font (ec-lmss10) cannot render.
 # Replace with LaTeX-native equivalents. Conservative: only swap unicode
 # that frequently appears in writer output and reliably maps to ASCII
@@ -355,6 +368,11 @@ def _clean_latex_artifacts(text):
     text = _FAKE_PATH_INCLUDEGRAPHICS_RE.sub("", text)
     # Fix 2: unwrap \cite{} BibTeX wrapping back to plain brackets
     text = _BIBTEX_WRAPPED_CITE_RE.sub(r"[\1]", text)
+    # Fix 4a: strip VLM-extraction markers the writer should have processed
+    # but copy-pasted as raw text instead. ([DESCRIPTION:], [INSIGHT:],
+    # [IMAGE_PATH:], [LATEX:], [TABLE:], [ALGORITHM_STEPS:]) — all become
+    # invisible so the surrounding narration reads cleanly.
+    text = _VLM_MARKER_RE.sub("", text)
     # Fix 4: replace problem unicode characters with LaTeX equivalents
     for src, dst in _UNICODE_REPLACEMENTS.items():
         if src in text:

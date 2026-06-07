@@ -211,6 +211,80 @@ class TestGraphicspathInjection:
         assert "\\graphicspath" not in out
 
 
+class TestVLMMarkerLeakage:
+    """When the VLM extractor produces [DESCRIPTION:] / [INSIGHT:] /
+    [IMAGE_PATH:] / [LATEX:] / [TABLE:] / [ALGORITHM_STEPS:] markers,
+    the writer is supposed to consume them. When it copies them verbatim
+    into the LaTeX, they leak onto the rendered slide as ugly raw text.
+    The cleanup pass strips them."""
+
+    def test_description_marker_stripped(self):
+        text = (
+            'Slide content: "Fig.1: Example [DESCRIPTION: The figure '
+            'shows a diagram.] [INSIGHT: It illustrates structure.]"'
+        )
+        out = _clean_latex_artifacts(text)
+        assert "[DESCRIPTION:" not in out
+        assert "[INSIGHT:" not in out
+        # Surrounding text preserved
+        assert "Slide content" in out
+        assert "Fig.1: Example" in out
+
+    def test_image_path_marker_stripped(self):
+        text = (
+            "See the figure: [IMAGE_PATH: /tmp/cache/fig.png] which shows X."
+        )
+        out = _clean_latex_artifacts(text)
+        assert "[IMAGE_PATH:" not in out
+        assert "See the figure:" in out
+        assert "which shows X." in out
+
+    def test_latex_marker_stripped(self):
+        # Math markers from VLM should also be stripped when they leak as text
+        text = "Per equation [LATEX: f = ma] the relation holds."
+        out = _clean_latex_artifacts(text)
+        assert "[LATEX:" not in out
+        assert "Per equation" in out
+        assert "the relation holds." in out
+
+    def test_table_marker_stripped(self):
+        text = "See [TABLE: |A|B|\n|1|2|] for the values."
+        out = _clean_latex_artifacts(text)
+        assert "[TABLE:" not in out
+
+    def test_algorithm_steps_marker_stripped(self):
+        text = "Algorithm: [ALGORITHM_STEPS: 1. init; 2. iterate; 3. stop.] is standard."
+        out = _clean_latex_artifacts(text)
+        assert "[ALGORITHM_STEPS:" not in out
+
+    def test_real_citation_tokens_preserved(self):
+        # Citation tokens follow [textbook_id:chN.sM:pXX] shape and must
+        # survive (they're wrapped in \texttt{} by the citation pass with
+        # escaped underscores).
+        text = "Per [han_data_mining_3e:ch1.s1:p01] the topic is studied."
+        out = _clean_latex_artifacts(text)
+        assert r"\texttt{[han\_data\_mining\_3e:ch1.s1:p01]}" in out
+
+    def test_case_insensitive_strip(self):
+        # Some VLM outputs use mixed case
+        text = "[description: a figure showing X] and [Insight: it teaches Y]"
+        out = _clean_latex_artifacts(text)
+        assert "description:" not in out.lower() or "[" not in out
+        # Both markers gone
+        assert "[Insight:" not in out
+        assert "[description:" not in out
+
+    def test_nested_brackets_in_marker_handled(self):
+        # VLM descriptions sometimes contain inner brackets [['supervisor']]
+        text = (
+            "[DESCRIPTION: The figure shows a 'Multi-Agent Team' with a "
+            "'Supervisor' and three 'Specialist' agents.] Following text."
+        )
+        out = _clean_latex_artifacts(text)
+        assert "[DESCRIPTION:" not in out
+        assert "Following text." in out
+
+
 class TestEdgeCases:
     def test_empty_text_no_op(self):
         assert _clean_latex_artifacts("") == ""

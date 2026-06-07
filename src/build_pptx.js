@@ -180,6 +180,7 @@ function estimateElemH(el) {
     case "code": return Math.min((el.content || "").split("\n").length * 0.25 + 0.5, 3.5) + L.gap;
     case "math": return 0.6 + L.gap;
     case "tikz": return 1.2 + L.gap;
+    case "image": return 3.5 + L.gap;
     case "columns": return 2.0 + L.gap;
     default: return 0.5;
   }
@@ -395,6 +396,36 @@ function addMath(slide, elem, x, y, w) {
   return y + h + L.gap;
 }
 
+function addPicture(slide, elem, x, y, w) {
+  // \includegraphics — embed a real image file (PNG/JPG) on the slide.
+  // The Python side has already resolved elem.content to an absolute
+  // path. We sanity-check the file exists and constrain the rendered
+  // box to a sensible aspect ratio. Falls back to a placeholder box
+  // when the file is missing.
+  const fs = require("fs");
+  const path = elem.content;
+  if (!path || !fs.existsSync(path)) {
+    slide.addShape("roundRect", {
+      x, y, w, h: 1.0,
+      fill: { color: PAL.tikzBg },
+      line: { color: PAL.textMuted, width: 1 },
+      rectRadius: 0.08,
+    });
+    slide.addText(`Image not found: ${path || "(no path)"}`, {
+      x: x + 0.1, y: y + 0.3, w: w - 0.2, h: 0.4,
+      fontSize: 11, color: PAL.textMuted, italic: true, align: "center",
+    });
+    return y + 1.0 + L.gap;
+  }
+  // Constrain to ~3.5 inch tall max so multiple images can stack.
+  const maxH = 3.5;
+  // We don't know image dimensions ahead of time without probing —
+  // use sizing: "contain" so pptxgenjs preserves the aspect ratio
+  // inside the bounding box.
+  slide.addImage({ path, x, y, w, h: maxH, sizing: { type: "contain", w, h: maxH } });
+  return y + maxH + L.gap;
+}
+
 function addTikz(slide, x, y, w) {
   const h = 1.2;
   slide.addShape("roundRect", {
@@ -439,6 +470,7 @@ function renderElem(slide, elem, x, y, w) {
     case "math":        return addMath(slide, elem, x, y, w);
     case "tikz":        return addTikz(slide, x, y, w);
     case "columns":     return addColumns(slide, elem, x, y, w);
+    case "image":       return addPicture(slide, elem, x, y, w);
     default:            return y;
   }
 }

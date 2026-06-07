@@ -93,6 +93,52 @@ def strip_latex_formatting(text: str) -> str:
 class LaTeXParser:
     """Parses LaTeX Beamer content into structured FrameData."""
 
+    def __init__(self, source_dir: Optional[Path] = None):
+        # Directory that contains the source .tex file. Used as the
+        # primary search root when resolving \includegraphics paths
+        # like ".grounding_cache/figures/foo.png".
+        self.source_dir = Path(source_dir) if source_dir else None
+
+    def _resolve_image_path(self, raw: str) -> Optional[Path]:
+        """Resolve an \\includegraphics path to an existing file on disk.
+
+        Search order:
+          1. Path as given (absolute or relative to cwd).
+          2. Relative to the .tex source directory.
+          3. Walk up from source_dir to find ``.grounding_cache`` so
+             paths the writer emits as ``.grounding_cache/figures/...``
+             resolve from the project root regardless of where the
+             .tex lives.
+
+        Returns None if nothing on disk matches — caller silently drops
+        the image so the PPTX still renders.
+        """
+        p = Path(raw)
+        # Absolute first
+        if p.is_absolute() and p.exists():
+            return p.resolve()
+        # Relative to current working directory
+        if p.exists():
+            return p.resolve()
+        # Relative to .tex source directory (chapter dir)
+        if self.source_dir is not None:
+            candidate = self.source_dir / p
+            if candidate.exists():
+                return candidate.resolve()
+            # Walk up looking for a directory that contains the
+            # leading segment of the path (commonly ``.grounding_cache``)
+            head = p.parts[0] if p.parts else ''
+            cur = self.source_dir.resolve()
+            for _ in range(6):  # cap the climb
+                if (cur / head).exists():
+                    candidate = cur / p
+                    if candidate.exists():
+                        return candidate.resolve()
+                cur = cur.parent
+                if cur == cur.parent:
+                    break
+        return None
+
     def parse(self, tex_content: str) -> List[FrameData]:
         """Parse a complete .tex file into a list of frames."""
         frames = []
@@ -224,6 +270,24 @@ class LaTeXParser:
                 pos += m.end()
                 continue
 
+            # \includegraphics — embed real image files (PNG/JPG/PDF) into the
+            # PPTX. Resolves the path relative to the chapter directory if
+            # not absolute; falls back to project-root resolution since the
+            # writer's prompts emit ".grounding_cache/figures/..." paths from
+            # the project root.
+            m = re.match(
+                r'\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}',
+                content[pos:],
+            )
+            if m:
+                raw_path = m.group(1).strip()
+                resolved = self._resolve_image_path(raw_path)
+                if resolved:
+                    elements.append(SlideElement(type='image', content=str(resolved)))
+                # If the path doesn't resolve, silently skip (no broken image)
+                pos += m.end()
+                continue
+
             # Columns
             m = re.match(r'\\begin\{columns\}(.*?)\\end\{columns\}', content[pos:], re.DOTALL)
             if m:
@@ -253,8 +317,14 @@ class LaTeXParser:
                 pos += m.end()
                 continue
 
-            # Text paragraph: consume until next \begin or end of content
-            text_match = re.match(r'((?:(?!\\begin\{).)+)', content[pos:], re.DOTALL)
+            # Text paragraph: consume until next \begin{, \includegraphics,
+            # or end of content. \includegraphics needs its own stopper
+            # so multiple images in one frame don't all get swallowed by
+            # the first text run.
+            text_match = re.match(
+                r'((?:(?!\\begin\{)(?!\\includegraphics\b).)+)',
+                content[pos:], re.DOTALL,
+            )
             if text_match:
                 text = text_match.group(1).strip()
                 if text:
@@ -492,6 +562,11 @@ class LaTeXToPPTXConverter:
             output_path = str(tex_path.with_suffix('.pptx'))
 
         tex_content = tex_path.read_text(encoding='utf-8')
+        # Give the parser the .tex file's directory so it can resolve
+        # \includegraphics paths emitted relative to that location or to
+        # an ancestor (typically the project root containing
+        # .grounding_cache/figures/).
+        self.parser.source_dir = tex_path.resolve().parent
         frames = self.parser.parse(tex_content)
 
         if not frames:
