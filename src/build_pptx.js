@@ -422,11 +422,36 @@ function addPicture(slide, elem, x, y, w) {
   // multiple stacked elements stay sane on dense slides.
   const buffer = 0.25;
   const remaining = Math.max(0.8, L.maxY - y - buffer);
-  const h = Math.min(3.2, remaining);
-  // sizing: "contain" preserves aspect ratio inside the box; pptxgenjs
-  // centers the actual image within (w, h).
-  slide.addImage({ path, x, y, w, h, sizing: { type: "contain", w, h } });
-  return y + h + L.gap;
+  const boxH = Math.min(3.2, remaining);
+  const boxW = w;
+  // Read PNG dimensions from header so we can pre-fit instead of relying on
+  // pptxgenjs's sizing:"contain" (which LibreOffice doesn't always honour).
+  let imgW = boxW, imgH = boxH;
+  try {
+    const buf = fs.readFileSync(path);
+    // PNG: width = bytes 16-19 BE, height = bytes 20-23 BE
+    if (buf.length >= 24 && buf[1] === 0x50 && buf[2] === 0x4E) {
+      const nw = buf.readUInt32BE(16);
+      const nh = buf.readUInt32BE(20);
+      if (nw > 0 && nh > 0) {
+        const aspect = nw / nh;          // native aspect (w/h)
+        const boxAspect = boxW / boxH;
+        if (aspect >= boxAspect) {
+          // wider than box → fit by width
+          imgW = boxW;
+          imgH = boxW / aspect;
+        } else {
+          // taller than box → fit by height
+          imgH = boxH;
+          imgW = boxH * aspect;
+        }
+      }
+    }
+  } catch (e) { /* fall back to box dims */ }
+  // Centre horizontally inside the box for a tidy layout.
+  const drawX = x + (boxW - imgW) / 2;
+  slide.addImage({ path, x: drawX, y, w: imgW, h: imgH });
+  return y + imgH + L.gap;
 }
 
 function addTikz(slide, x, y, w) {

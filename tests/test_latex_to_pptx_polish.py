@@ -195,3 +195,74 @@ class TestEmptyItemFiltering:
         frames = parser.parse(tex)
         itemize = next(e for e in frames[0].elements if e.type == "itemize")
         assert len(itemize.items) == 3
+
+
+class TestNestedItemizeBalancedMatch:
+    """Outer itemize parsing must track depth so a nested ``\\end{itemize}``
+    doesn't truncate the outer environment. Previously the non-greedy
+    ``(.*?)\\end{itemize}`` matched the FIRST inner close — the rest of the
+    structure leaked as raw text into the parent item, producing phantom
+    bullet rows in the PPTX render."""
+
+    def test_nested_itemize_produces_subitems(self):
+        tex = (
+            r"\begin{document}\begin{frame}{T}"
+            r"\begin{itemize}"
+            r"\item \textbf{Concept Overview:}"
+            r"\begin{itemize}"
+            r"\item First sub-item."
+            r"\item Second sub-item."
+            r"\item Third sub-item."
+            r"\end{itemize}"
+            r"\end{itemize}"
+            r"\end{frame}\end{document}"
+        )
+        parser = LaTeXParser()
+        frames = parser.parse(tex)
+        itemize = next(e for e in frames[0].elements if e.type == "itemize")
+        assert len(itemize.items) == 1
+        parent = itemize.items[0]
+        assert parent["text"] == "Concept Overview:"
+        subs = parent.get("subitems", [])
+        assert [s["text"] for s in subs] == [
+            "First sub-item.",
+            "Second sub-item.",
+            "Third sub-item.",
+        ]
+
+    def test_nested_enumerate_within_itemize(self):
+        tex = (
+            r"\begin{document}\begin{frame}{T}"
+            r"\begin{itemize}"
+            r"\item Outer"
+            r"\begin{enumerate}"
+            r"\item Inner one"
+            r"\item Inner two"
+            r"\end{enumerate}"
+            r"\end{itemize}"
+            r"\end{frame}\end{document}"
+        )
+        parser = LaTeXParser()
+        frames = parser.parse(tex)
+        itemize = next(e for e in frames[0].elements if e.type == "itemize")
+        assert len(itemize.items) == 1
+        parent = itemize.items[0]
+        assert parent["text"] == "Outer"
+        subs = parent.get("subitems", [])
+        assert [s["text"] for s in subs] == ["Inner one", "Inner two"]
+
+    def test_two_sibling_itemize_blocks_both_parsed(self):
+        # If the outer regex were depth-blind it could swallow content
+        # across sibling blocks. This guards that case too.
+        tex = (
+            r"\begin{document}\begin{frame}{T}"
+            r"\begin{itemize}\item A1\item A2\end{itemize}"
+            r"\begin{itemize}\item B1\item B2\end{itemize}"
+            r"\end{frame}\end{document}"
+        )
+        parser = LaTeXParser()
+        frames = parser.parse(tex)
+        itemizes = [e for e in frames[0].elements if e.type == "itemize"]
+        assert len(itemizes) == 2
+        assert [i["text"] for i in itemizes[0].items] == ["A1", "A2"]
+        assert [i["text"] for i in itemizes[1].items] == ["B1", "B2"]

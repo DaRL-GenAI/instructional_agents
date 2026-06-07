@@ -281,20 +281,23 @@ class LaTeXParser:
             if matched:
                 continue
 
-            # Itemize
-            m = re.match(r'\\begin\{itemize\}(.*?)\\end\{itemize\}', content[pos:], re.DOTALL)
-            if m:
-                items = self._parse_items(m.group(1))
+            # Itemize (depth-aware so nested itemize doesn't get cut at
+            # the inner \end{itemize})
+            consumed = self._match_balanced_env(content, pos, 'itemize')
+            if consumed:
+                inner, end_pos = consumed
+                items = self._parse_items(inner)
                 elements.append(SlideElement(type='itemize', items=items))
-                pos += m.end()
+                pos = end_pos
                 continue
 
-            # Enumerate
-            m = re.match(r'\\begin\{enumerate\}(.*?)\\end\{enumerate\}', content[pos:], re.DOTALL)
-            if m:
-                items = self._parse_items(m.group(1))
+            # Enumerate (same depth-aware match)
+            consumed = self._match_balanced_env(content, pos, 'enumerate')
+            if consumed:
+                inner, end_pos = consumed
+                items = self._parse_items(inner)
                 elements.append(SlideElement(type='enumerate', items=items))
-                pos += m.end()
+                pos = end_pos
                 continue
 
             # Code listing
@@ -471,6 +474,33 @@ class LaTeXParser:
             items.append(item)
 
         return items
+
+    def _match_balanced_env(self, content: str, pos: int, env_name: str):
+        """Match \\begin{env}...\\end{env} starting at content[pos] with
+        balanced depth tracking. Returns (inner_content, end_pos) or None.
+        Used by _parse_content so a nested itemize doesn't get truncated at
+        its inner \\end{itemize}."""
+        m_open = re.match(rf'\\begin\{{{env_name}\}}', content[pos:])
+        if not m_open:
+            return None
+        search_start = pos + m_open.end()
+        depth = 1
+        i = search_start
+        while i < len(content) and depth > 0:
+            m_b = re.match(rf'\\begin\{{{env_name}\}}', content[i:])
+            m_e = re.match(rf'\\end\{{{env_name}\}}', content[i:])
+            if m_b:
+                depth += 1
+                i += m_b.end()
+            elif m_e:
+                depth -= 1
+                if depth == 0:
+                    inner = content[search_start:i]
+                    return (inner, i + m_e.end())
+                i += m_e.end()
+            else:
+                i += 1
+        return None
 
     def _find_nested_env(self, text: str):
         """Find the first nested itemize/enumerate environment, handling balanced nesting.
