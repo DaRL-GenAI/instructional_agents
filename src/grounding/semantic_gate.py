@@ -1,9 +1,11 @@
 """v7 semantic gate — free claim-chunk similarity filter.
 
 Two related gates that filter weak retrieval matches the writer would
-otherwise cite badly. Both use sentence-transformer cosine similarity
-(``all-MiniLM-L6-v2``, ~90MB, CPU-friendly) as a $0 quality signal
-the system currently throws away.
+otherwise cite badly. Both use bi-encoder cosine similarity over the
+``sentence-transformers/all-MiniLM-L6-v2`` model (~90 MB, CPU-friendly)
+as a $0 quality signal the system currently throws away. We load the
+ONNX-exported version via ``fastembed`` so the runtime path stays
+torch-free — onnxruntime + tokenizers only.
 
   * **Gate A (pre-evidence)**: filter retrieval results BEFORE the
     writer sees them. ``sim(slide_query, chunk_text) < threshold`` →
@@ -20,10 +22,9 @@ Gate B alone catches 27 % of bad cites at the cost of dropping 12 %
 of good cites; Gate A on top adds another 5-8 pp on the writer's
 chunk selection (unmeasured, mechanism-bounded).
 
-Both gates degrade safely: if sentence-transformers isn't installed
-or the encoder fails to load, the gate is a no-op and the rest of the
-v6 stack runs unchanged. Vanilla path (no ``--use-textbook``) never
-constructs the gate.
+Both gates degrade safely: if fastembed isn't installed or the encoder
+fails to load, the gate is a no-op and the rest of the v6 stack runs
+unchanged. Vanilla path (no ``--use-textbook``) never constructs the gate.
 """
 
 from __future__ import annotations
@@ -70,12 +71,15 @@ class SemanticGate:
         if self._encoder is not None:
             return True
         try:
-            from sentence_transformers import SentenceTransformer
-            self._encoder = SentenceTransformer(self.model_name)
+            # fastembed runs the ONNX-exported MiniLM bi-encoder via
+            # onnxruntime — same model weights as the sentence-transformers
+            # variant, no torch dep.
+            from fastembed import TextEmbedding
+            self._encoder = TextEmbedding(self.model_name)
             return True
         except Exception as e:
             print(f"[semantic-gate] encoder unavailable ({type(e).__name__}: {e}); "
-                  f"gate is now a no-op. Install sentence-transformers to enable.")
+                  f"gate is now a no-op. Install fastembed to enable.")
             self._encoder = False  # sentinel: failed init
             return False
 
@@ -84,9 +88,15 @@ class SemanticGate:
             return self._embedding_cache[text]
         if not self._ensure_encoder() or self._encoder is False:
             return None
-        vec = self._encoder.encode(
-            text, convert_to_numpy=True, normalize_embeddings=True,
-        )
+        # fastembed's TextEmbedding.embed returns an iterator of numpy
+        # arrays; one element per input string. The vectors are not
+        # L2-normalised, so we normalise here to keep `.similarity()`'s
+        # dot-product == cosine identity intact.
+        import numpy as np
+        vec = next(iter(self._encoder.embed([text])))
+        norm = float(np.linalg.norm(vec))
+        if norm > 0:
+            vec = vec / norm
         self._embedding_cache[text] = vec
         return vec
 

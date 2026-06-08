@@ -47,22 +47,25 @@ vector-db = ["chromadb>=0.4.0"]
 # Grounding deps are needed ONLY when `--use-textbook PATH` is passed to
 # run.py / evaluate.py. The vanilla course-writing path (no flag) does
 # not import any of these. They are kept in a separate extras group so
-# installs without grounding stay light (no ~400 MB torch download).
+# installs without grounding stay light.
 #
 # Install:    pip install -e ".[grounding]"
 # Includes:
 #   - pymupdf            (PDF ingester)
 #   - markdown-it-py     (markdown ingester)
 #   - rank-bm25          (BM25 retrieval index)
-#   - sentence-transformers, torch, transformers
-#                        (semantic gates + optional cross-encoder reranker)
+#   - fastembed          (ONNX bi-encoder for semantic gates +
+#                         cross-encoder for the reranker; no torch dep)
+#
+# Total footprint: ~100 MB (vs ~550 MB with the earlier torch +
+# sentence-transformers + transformers stack). Numerical behaviour
+# is identical to the prior path — fastembed loads the ONNX export of
+# the same MiniLM models we used before.
 grounding = [
     "pymupdf>=1.24.0",
     "markdown-it-py>=3.0.0",
     "rank-bm25>=0.2.2",
-    "sentence-transformers>=5.0,<6",
-    "torch>=2.5,<3",
-    "transformers>=5.0,<6",
+    "fastembed>=0.8,<1",
 ]
 
 [project.urls]

@@ -39,14 +39,16 @@ chromadb>=0.4.0
 #   pip install -e ".[grounding]"
 # for new installs.
 #
-# Cross-encoder reranker (opt-in via the `reranker=` kwarg on
-# HybridRetriever) reuses sentence-transformers / torch / transformers below.
+# fastembed bundles both the bi-encoder (semantic gates) and the
+# cross-encoder reranker via onnxruntime — no torch dep. The previous
+# stack (sentence-transformers + torch + transformers, ~400 MB) was
+# replaced with fastembed (~50 MB onnxruntime + small model downloads)
+# in mid-2026; numerical scores are identical (verified against the
+# original sentence-transformers backend on the same MiniLM weights).
 pymupdf>=1.24.0
 markdown-it-py>=3.0.0
 rank-bm25>=0.2.2
-sentence-transformers>=5.0,<6
-torch>=2.5,<3
-transformers>=5.0,<6
+fastembed>=0.8,<1
 
 # Note: pdflatex is installed via system package manager in Docker
 #

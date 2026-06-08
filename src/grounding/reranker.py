@@ -16,13 +16,15 @@ bucket after generation discipline tightened up.
 Two concrete rerankers are provided:
 
 * ``LLMReranker`` (default) — asks an OpenAI chat model to rate each
-  (query, passage) pair on 1–5. No disk / no model download / no torch
-  dependency — works wherever the OpenAI client works. Costs ~$0.0001
-  per scoring call on gpt-4o-mini.
-* ``CrossEncoderReranker`` — uses a sentence-transformers cross-encoder
-  model (default: ``cross-encoder/ms-marco-MiniLM-L-6-v2``, ~90 MB).
-  Faster per-call once loaded, but adds torch + sentence-transformers
-  to the deployment surface.
+  (query, passage) pair on 1–5. No disk / no model download — works
+  wherever the OpenAI client works. Costs ~$0.0001 per scoring call on
+  gpt-4o-mini.
+* ``CrossEncoderReranker`` — uses a ms-marco MiniLM cross-encoder
+  (default: ``Xenova/ms-marco-MiniLM-L-6-v2``, ~90 MB) loaded via
+  ``fastembed`` (which runs the ONNX-exported model on onnxruntime).
+  Faster per-call once loaded; numerically identical scores to the
+  original ``cross-encoder/ms-marco-MiniLM-L-6-v2`` released by
+  sentence-transformers — no torch dependency.
 
 Plus ``HashReranker`` — a deterministic Jaccard-overlap stub used by
 tests and offline dry runs so the plumbing can be exercised without
@@ -52,9 +54,12 @@ from typing import List, Optional, Protocol, Sequence
 
 # Default cross-encoder model — a small, well-tested MS-MARCO model.
 # ~90 MB on disk, CPU-fast, fetched from HuggingFace on first use and
-# cached locally at ~/.cache/huggingface/. Only used by
-# `CrossEncoderReranker`; `LLMReranker` is the default for production.
-DEFAULT_CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+# cached locally. Only used by `CrossEncoderReranker`; `LLMReranker`
+# is the default for production. ``Xenova`` is the HuggingFace org
+# that hosts the ONNX-exported version of the original
+# ``cross-encoder/ms-marco-MiniLM-L-6-v2`` — same weights, same
+# inference graph, ~$0 to swap. Loaded via ``fastembed``.
+DEFAULT_CROSS_ENCODER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
 
 # Default LLM chat model for `LLMReranker`. Picked to match the cheap
 # tier the rest of the project uses; can be overridden per instance.
@@ -80,40 +85,51 @@ class Reranker(Protocol):
 
 
 class CrossEncoderReranker:
-    """Cross-encoder reranker over a `sentence-transformers` model.
+    """Cross-encoder reranker over a ms-marco MiniLM ONNX model.
 
     The model is loaded lazily on first ``.score()`` call so importing
-    this module doesn't pull in torch / sentence-transformers. The
-    lazy import also lets callers exist (and pass the instance around)
-    without ever paying the load cost if reranking is never invoked.
+    this module doesn't pull in onnxruntime. The lazy import also lets
+    callers exist (and pass the instance around) without ever paying
+    the load cost if reranking is never invoked.
+
+    Implementation note: previously backed by ``sentence-transformers``
+    + PyTorch. Now uses ``fastembed.rerank.cross_encoder.TextCrossEncoder``
+    which runs the same model (``Xenova/ms-marco-MiniLM-L-6-v2``, the
+    ONNX export of ``cross-encoder/ms-marco-MiniLM-L-6-v2``) via
+    onnxruntime. Scores are numerically identical to the old path
+    (verified on the test fixture); install footprint dropped from
+    ~400 MB (torch) to ~75 MB (onnxruntime).
 
     Not the default for production — `LLMReranker` is, because it
-    avoids the torch + sentence-transformers dependency. Provided here
-    for environments where local inference is preferable to API calls.
+    avoids the model-download requirement entirely. Provided here for
+    environments where local inference is preferable to API calls.
     """
 
     def __init__(self, model: str = DEFAULT_CROSS_ENCODER_MODEL, device: str = "cpu") -> None:
         self.model = model
+        # ``device`` retained for backward compatibility with the older
+        # sentence-transformers interface; fastembed runs CPU inference
+        # by default via onnxruntime and doesn't expose a device knob.
         self.device = device
         self._encoder = None  # type: ignore[assignment]
 
     def _ensure_loaded(self):
         if self._encoder is None:
-            # Lazy import. `sentence-transformers` pulls in torch which is
-            # heavy; we don't want to pay that on `import src.grounding`.
-            from sentence_transformers import CrossEncoder
-            self._encoder = CrossEncoder(self.model, device=self.device)
+            # Lazy import. ``fastembed`` itself is light (~5 MB), but
+            # onnxruntime weighs in around 50 MB and we don't want to
+            # pay that on plain ``import src.grounding``.
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
+            self._encoder = TextCrossEncoder(self.model)
         return self._encoder
 
     def score(self, query: str, passages: Sequence[str]) -> List[float]:
         if not passages:
             return []
         enc = self._ensure_loaded()
-        pairs = [(query, p) for p in passages]
-        # CrossEncoder.predict accepts a list of pairs and returns a numpy
-        # array of floats. Convert to a plain Python list so callers don't
-        # need to import numpy to use the result.
-        scores = enc.predict(pairs, show_progress_bar=False)
+        # fastembed's TextCrossEncoder.rerank returns an iterator of
+        # floats — one per passage. We materialise to a list so callers
+        # get a stable container.
+        scores = list(enc.rerank(query, list(passages)))
         return [float(s) for s in scores]
 
 

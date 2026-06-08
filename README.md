@@ -360,8 +360,9 @@ For developers who want to run the system locally from source:
 pip install -e .
 
 # Light install + textbook grounding (`--use-textbook PATH`).
-# Adds pymupdf, markdown-it-py, rank-bm25, sentence-transformers, torch,
-# transformers — together ~400 MB on top of the base install.
+# Adds pymupdf, markdown-it-py, rank-bm25, fastembed (ONNX-based
+# bi-encoder and cross-encoder via onnxruntime; no torch dep).
+# ~100 MB total on top of the base install.
 pip install -e ".[grounding]"
 
 # All-in-one (also installs the optional chromadb extras and any

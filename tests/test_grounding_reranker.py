@@ -180,18 +180,26 @@ class TestLazyModelLoad:
         # the dep doesn't bloat deployments.
         assert "cross-encoder" in rer.model or "ms-marco" in rer.model
 
-    def test_import_does_not_pull_in_torch(self):
-        # Importing the reranker module should not import torch / sentence-transformers.
-        # Verified via sys.modules — heavy deps only appear after a .score() call.
+    def test_import_does_not_pull_in_heavy_deps(self):
+        # Importing the reranker module should not eagerly load the
+        # ONNX runtime or the embedding library. Verified via sys.modules
+        # — heavy deps only appear after a .score() call.
         import sys
-        # If torch is already loaded (e.g. some other test), this test
-        # is non-informative — skip rather than pass meaninglessly.
-        if "torch" in sys.modules:
-            pytest.skip("torch already imported in this session; can't verify")
+        # If the heavy deps are already loaded (e.g. some other test
+        # exercised the reranker), this test is non-informative.
+        if "fastembed" in sys.modules or "onnxruntime" in sys.modules:
+            pytest.skip(
+                "fastembed/onnxruntime already imported in this session; "
+                "can't verify lazy-loading"
+            )
         from src.grounding import reranker as _r  # noqa: F401
-        # After importing src.grounding.reranker alone, torch should not be in sys.modules.
-        assert "torch" not in sys.modules
+        # After importing src.grounding.reranker alone, neither
+        # fastembed nor onnxruntime should be in sys.modules.
+        assert "fastembed" not in sys.modules
+        assert "onnxruntime" not in sys.modules
+        # The retired backend should also stay out.
         assert "sentence_transformers" not in sys.modules
+        assert "torch" not in sys.modules
 
 
 class TestHashRerankerStub:

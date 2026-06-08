@@ -42,17 +42,20 @@ class _StubKB:
 
 
 class _StubEncoder:
-    """Maps text → fake unit-vector by hashing words. Vectors with
-    high word overlap have high cosine similarity, mimicking a
-    sentence-transformer for tests."""
-    def encode(self, text, convert_to_numpy=True, normalize_embeddings=True):
-        # Hash bag-of-words to a deterministic vector
-        words = text.lower().split()
-        v = np.zeros(64)
-        for w in words:
-            v[hash(w) % 64] += 1.0
-        n = np.linalg.norm(v)
-        return v / n if n > 0 else v
+    """Maps text → fake un-normalised vector by hashing words. Mirrors
+    fastembed's ``TextEmbedding.embed(texts)`` interface (returns an
+    iterator of numpy arrays, one per input). The SemanticGate code
+    normalises the result, so the stub returns raw bag-of-words
+    counts. Vectors with high word overlap end up with high cosine
+    similarity, mimicking a real bi-encoder for tests."""
+
+    def embed(self, texts):
+        for text in texts:
+            words = text.lower().split()
+            v = np.zeros(64)
+            for w in words:
+                v[hash(w) % 64] += 1.0
+            yield v
 
 
 def _gate_with_stub(kb_chunks):
