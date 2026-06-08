@@ -355,11 +355,19 @@ For developers who want to run the system locally from source:
 ### 2. Install Dependencies
 
 ```bash
-# Python dependencies
-pip install -r requirements.txt
-
-# Or install in editable mode
+# Vanilla install — minimal footprint, supports the standard
+# course-writing pipeline (no textbook grounding).
 pip install -e .
+
+# Light install + textbook grounding (`--use-textbook PATH`).
+# Adds pymupdf, markdown-it-py, rank-bm25, sentence-transformers, torch,
+# transformers — together ~400 MB on top of the base install.
+pip install -e ".[grounding]"
+
+# All-in-one (also installs the optional chromadb extras and any
+# grounding deps): keeps the prior `requirements.txt`-based workflow
+# working unchanged.
+pip install -r requirements.txt
 
 # Node.js dependencies (for PPTX generation)
 npm install -g pptxgenjs

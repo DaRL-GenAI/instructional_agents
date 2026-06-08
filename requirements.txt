@@ -1,46 +1,49 @@
-# Core dependencies
+# Core dependencies for the vanilla course-writing path.
+# For a light install, prefer:  pip install -e .
+# This file contains BOTH the base deps AND the optional grounding
+# deps (clearly sectioned below) so that
+#   pip install -r requirements.txt
+# still gets every supported feature, matching prior behaviour.
+
+# --- Base (always required) -------------------------------------------------
 openai>=1.0.0
 pandas>=2.0.0
 pathlib2>=2.3.7; python_version < '3.4'
 
-# API server dependencies
+# API server
 fastapi>=0.104.1
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
-# PDF processing dependencies
+# PDF reading for the upstream artifacts pipeline (NOT for the grounding
+# ingester; the grounding ingester uses pymupdf below)
 PyPDF2>=3.0.0
 pdfplumber>=0.10.0
-pymupdf>=1.24.0
 
-# Vector database (optional - for advanced features)
-chromadb>=0.4.0
-
-# Data processing
+# Numerics
 numpy>=1.24.0
 
 # PPTX generation (pptxgenjs via Node.js) + content QA
 markitdown[pptx]>=0.1.0
 
-# Textbook ingestion + grounded retrieval
+# --- Optional: vector database extras --------------------------------------
+# Same as the `vector-db` extras group in pyproject.toml.
+chromadb>=0.4.0
+
+# --- Optional: grounding (textbook ingestion + retrieval + semantic gates) -
+# These are needed ONLY when `--use-textbook PATH` is passed to run.py or
+# evaluate.py. The vanilla path does not import any of them. Mirrors the
+# `[grounding]` extras group in pyproject.toml — prefer
+#   pip install -e ".[grounding]"
+# for new installs.
+#
+# Cross-encoder reranker (opt-in via the `reranker=` kwarg on
+# HybridRetriever) reuses sentence-transformers / torch / transformers below.
+pymupdf>=1.24.0
 markdown-it-py>=3.0.0
 rank-bm25>=0.2.2
-
-# Cross-encoder reranker (optional — opt-in via the `reranker=` kwarg on
-# HybridRetriever; the dense + sparse + RRF stack works without it). CPU
-# inference is fine; the default `cross-encoder/ms-marco-MiniLM-L-6-v2`
-# model is ~90 MB and is fetched from HuggingFace on first use, then
-# cached locally at ~/.cache/huggingface/.
-#
-# Floor pins below are the minimum versions verified to work with
-# Python 3.13 + the default cross-encoder model. Major-version upper
-# bounds lock out the next major (e.g. torch 3.x, transformers 6.x,
-# sentence-transformers 6.x) which may ship breaking ABI changes;
-# ADDIERunner's reranker construction is defensive (try/except → falls
-# back to first-stage retrieval without rerank if the load fails) so
-# the worst case if the pins lapse is a no-op warning.
 sentence-transformers>=5.0,<6
 torch>=2.5,<3
 transformers>=5.0,<6
