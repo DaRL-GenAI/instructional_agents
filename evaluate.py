@@ -484,14 +484,15 @@ class GroundingAgent:
         # cite any page within the chunk and have its citation
         # resolve correctly. Single-page chunks register exactly one
         # entry (identical to the prior behaviour).
-        # v7 AMBIGUOUS-TOKEN-RESCUE — collect ALL chunks per token
-        # (multi-chunk tokens common with OVERLAP_TOKENS-based chunking).
-        # Score-time disambiguator picks the BEST sibling (highest
-        # word-overlap to claim). v6 used first-write-wins setdefault
-        # which collapsed multi-chunk tokens, losing potentially-better
-        # matches; v6 deep-mine showed 75.8% of Han tokens are ambiguous
-        # and the verifier picked the wrong sibling on 62% of bad
-        # ambiguous cites.
+        # AMBIGUOUS-TOKEN-RESCUE — collect ALL chunks per token
+        # (multi-chunk tokens are common with OVERLAP_TOKENS-based
+        # chunking). Score-time disambiguator picks the BEST sibling
+        # (highest word-overlap to claim). An earlier path used
+        # first-write-wins setdefault, which collapsed multi-chunk
+        # tokens and lost potentially-better matches; a forensic replay
+        # showed 75.8% of tokens on the data-mining baseline were
+        # ambiguous and the verifier picked the wrong sibling on 62%
+        # of bad ambiguous cites.
         self._chunk_by_token: Dict[str, Any] = {}
         self._candidate_chunks_by_token: Dict[str, list] = {}
         for c in knowledge_base.chunks:
@@ -500,7 +501,7 @@ class GroundingAgent:
             except AttributeError:
                 tokens = [c.citation_token()]
             for tok in tokens:
-                # Primary mapping (first chunk wins — preserves v6
+                # Primary mapping (first chunk wins — preserves
                 # backward-compatible behavior for callers that only
                 # use _chunk_by_token directly).
                 self._chunk_by_token.setdefault(tok, c)
@@ -509,7 +510,7 @@ class GroundingAgent:
                 self._candidate_chunks_by_token.setdefault(tok, []).append(c)
 
     def _resolve_best_chunk(self, token: str, claim_text: str):
-        """v7 AMBIGUOUS-TOKEN-RESCUE: when a token resolves to multiple
+        """AMBIGUOUS-TOKEN-RESCUE: when a token resolves to multiple
         chunks (multi-chunk overlap), pick the one with the highest
         word-overlap to the claim sentence. Falls back to first-chunk
         if no candidates resolve.
@@ -609,10 +610,10 @@ class GroundingAgent:
 
     def _score_one(self, cite: Dict[str, Any], text: str) -> Dict[str, Any]:
         """Look up the cited chunk, ask the LLM to rate 1-5 + categorise failure."""
-        # v7 AMBIGUOUS-TOKEN-RESCUE: claim-aware chunk lookup. For
+        # AMBIGUOUS-TOKEN-RESCUE: claim-aware chunk lookup. For
         # multi-chunk tokens, pick the sibling with highest word-overlap
-        # to the claim. Falls back to first-chunk for single-chunk tokens
-        # (identical to v6 behavior).
+        # to the claim. Falls back to first-chunk for single-chunk
+        # tokens (identical to the prior behavior).
         claim = self._claim_window(text, cite)
         chunk = self._resolve_best_chunk(cite["token"], claim)
 

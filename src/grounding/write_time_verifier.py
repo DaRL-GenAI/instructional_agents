@@ -1,4 +1,4 @@
-"""v7 Step 9 — LLM write-time citation verifier.
+"""LLM write-time citation verifier.
 
 After the writer commits the final artifacts (slides.tex, script.md,
 assessment.md), every citation token is verified with a single

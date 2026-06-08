@@ -254,7 +254,7 @@ _CITATION_TOKEN_CANONICAL_RE = __import__("re").compile(
 )
 
 
-# v7 LaTeX cleanup: regexes used by _clean_latex_artifacts to catch
+# LaTeX cleanup: regexes used by _clean_latex_artifacts to catch
 # common writer-side LaTeX bugs that break PDF conversion.
 import re as _re_for_latex_cleanup
 
@@ -350,7 +350,7 @@ _UNICODE_REPLACEMENTS = {
 
 
 def _escape_citation_token(match):
-    """v7 Fix 4 helper: wrap a citation token in \\texttt{} so LaTeX
+    """Helper: wrap a citation token in \\texttt{} so LaTeX
     treats the underscores and colons as monospaced inline text rather
     than math operators."""
     token = match.group(1)
@@ -360,7 +360,7 @@ def _escape_citation_token(match):
 
 
 def _clean_latex_artifacts(text):
-    """v7 Step 1 LaTeX cleanup: scrub writer-side LaTeX bugs that
+    """LaTeX cleanup: scrub writer-side LaTeX bugs that
     break PDF conversion. Runs alongside _strip_malformed_citation_tokens
     on the final artifact text. Safe-by-default — only fixes
     well-characterized failure patterns; ambiguous edits left alone.
@@ -593,20 +593,19 @@ class SlidesDeliberation:
         self.retriever = retriever
         self.section_ids = section_ids
         self.textbook_id = textbook_id
-        # v6 Lever A: diversity cap. When set, retrieval results whose
-        # chunks have already been cited cap-many times across the run
-        # are dropped from the evidence block, forcing the writer onto
-        # fresh chunks. Vanilla path leaves this None and behavior is
-        # byte-identical.
+        # Diversity cap. When set, retrieval results whose chunks have
+        # already been cited cap-many times across the run are dropped
+        # from the evidence block, forcing the writer onto fresh chunks.
+        # Vanilla path leaves this None and behavior is byte-identical.
         self.citation_usage_tracker = citation_usage_tracker
-        # v7 Gate A + Gate B: claim-chunk similarity filter. When set,
+        # Gate A + Gate B: claim-chunk similarity filter. When set,
         # Gate A pre-filters retrieval results before evidence block
-        # construction; Gate B post-filters citation tokens after
+        # construction; Gate B post-filters citation tokens after the
         # writer commits. Vanilla path leaves this None.
         self.semantic_gate = semantic_gate
-        # v7 Step 9: LLM write-time citation verifier. Per-citation
-        # YES/NO check after Gate B (semantic) catches the obvious
-        # cases for free. Runs LAST in the strip chain.
+        # LLM write-time citation verifier. Per-citation YES/NO check
+        # after Gate B (semantic) catches the obvious cases for free.
+        # Runs LAST in the strip chain.
         self.write_time_verifier = write_time_verifier
         # Per-chapter top_k tuned by the density of chunks in the
         # chapter's bound sections. Dense chapters (many candidate
@@ -639,16 +638,16 @@ class SlidesDeliberation:
     # READ documents where inline citations don't disrupt the reader.
     # The relaxed rule-set ("script") applies to speaker scripts —
     # SPOKEN narration where back-to-back inline citations and
-    # mandatory direct quotation break narrative flow. The 2026-05-27
+    # mandatory direct quotation break narrative flow. An earlier
     # uplift re-eval showed slide_scripts:alignment + :coherence
-    # dropping monotonically B0 → B1 → v2 (-0.66 vs vanilla on each)
+    # dropping monotonically across baselines (-0.66 vs vanilla on each)
     # while the same metrics held / improved on slides + assessments —
     # the differentiated rule-set is the structural fix.
     _ARTIFACT_TYPES = ("slide", "script", "assessment")
 
     # Inline markers carried by chunks that came through the hybrid
-    # ingester's VLM augmentation (Phase 4 of the v3 work). When any
-    # of these appear in the evidence text, _build_evidence_block adds
+    # ingester's VLM augmentation phase. When any of these appear in
+    # the evidence text, _build_evidence_block adds
     # an extra rule block instructing the LLM how to consume them —
     # reproducing equations as LaTeX, including saved figure images
     # via includegraphics, and rendering tables / algorithms in
@@ -760,13 +759,13 @@ class SlidesDeliberation:
         # case where the start of chunk N+1 equals the end of chunk N).
         results = _dedupe_results(results)
 
-        # v7 COVERAGE DIVERSIFICATION — for chapter-level retrieval
-        # (not per-slide), ensure top-k spans at least 3 distinct
-        # sections when possible. Counters the v6 pattern where
-        # chapter-level evidence over-concentrated on one section,
-        # locking the writer onto a narrow textbook slice for the
-        # entire chapter's slide drafts. Only fires for chapter-level
-        # calls (section_ids_override is None and not cross_chapter).
+        # Coverage diversification — for chapter-level retrieval (not
+        # per-slide), ensure top-k spans at least 3 distinct sections
+        # when possible. Counters the pattern where chapter-level
+        # evidence over-concentrated on one section, locking the writer
+        # onto a narrow textbook slice for the entire chapter's slide
+        # drafts. Only fires for chapter-level calls
+        # (section_ids_override is None and not cross_chapter).
         if (section_ids_override is None and not cross_chapter
                 and len(results) >= 4):
             distinct_sections = {r.chunk.section_id for r in results}
@@ -787,7 +786,7 @@ class SlidesDeliberation:
                         deferred.append(r)
                 results = diverse + deferred
 
-        # v7 Gate A — pre-evidence semantic filter: drop results whose
+        # Gate A — pre-evidence semantic filter: drop results whose
         # chunk text scores below the claim-chunk similarity threshold.
         # Sentence-transformer cosine ($0, CPU). When the gate is None
         # or encoder load failed, this is a no-op.
@@ -795,10 +794,10 @@ class SlidesDeliberation:
         if gate is not None:
             results = gate.gate_a_filter_results(query, results)
 
-        # v6 Lever A — diversity cap: drop results whose chunk has
-        # already been cited cap-many times across the run. When the
-        # tracker is None (vanilla path) this is a no-op. Defensive
-        # ``getattr`` lets bypass-init test skeletons skip the wiring.
+        # Diversity cap: drop results whose chunk has already been
+        # cited cap-many times across the run. When the tracker is None
+        # (vanilla path) this is a no-op. Defensive ``getattr`` lets
+        # bypass-init test skeletons skip the wiring.
         tracker = getattr(self, "citation_usage_tracker", None)
         if tracker is not None:
             results = [r for r in results if not tracker.is_over_cap(r.chunk)]
@@ -807,13 +806,14 @@ class SlidesDeliberation:
                 # behavior rather than emitting an empty evidence block.
                 return "", ""
 
-        # v6 Lever Z — guarantee visual chunk inclusion for slide /
-        # assessment artifacts. v4 → v5 lost 9 of 11 \includegraphics:
-        # the deep-mine traced it to visual chunks being crowded out of
-        # the top-k by prose chunks that ranked higher. Lever Z scans
-        # the bound section_ids for any visual-marker chunks and ensures
-        # at least one reaches the writer by replacing the lowest-ranked
-        # prose chunk if needed. Script artifacts skip this (they don't
+        # Guarantee visual chunk inclusion for slide / assessment
+        # artifacts. An earlier baseline lost 9 of 11 \includegraphics
+        # tokens: the forensic replay traced it to visual chunks being
+        # crowded out of the top-k by prose chunks that ranked higher.
+        # This pass scans the bound section_ids for any visual-marker
+        # chunks and ensures at least one reaches the writer by
+        # replacing the lowest-ranked prose chunk if needed. Script
+        # artifacts skip this (they don't
         # render figures, they narrate them).
         if artifact != "script":
             results = self._inject_visual_chunk_if_available(
@@ -977,8 +977,8 @@ class SlidesDeliberation:
             "must be escaped in LaTeX output (e.g. \\& \\% \\_).\n"
         )
 
-        # ---- v3 visual-content rules: only added when the evidence
-        # ---- actually contains hybrid-ingester markers. Vanilla and v2
+        # ---- Visual-content rules: only added when the evidence
+        # ---- actually contains hybrid-ingester markers. Vanilla
         # ---- chunks contain none of these, so the rules block is empty
         # ---- and the prompt is byte-identical to the prior behavior.
         joined_text = "\n".join(blocks)
@@ -989,26 +989,26 @@ class SlidesDeliberation:
         return evidence_block, citation_rules
 
     def _record_emitted_citations(self, text) -> None:
-        """v6 Lever A: scan an LLM output for emitted citation tokens
-        and bump the diversity-cap counter. No-op on vanilla path
-        (tracker is None) or when text is empty. Defensive ``getattr``
-        lets bypass-init test skeletons skip the wiring."""
+        """Scan an LLM output for emitted citation tokens and bump the
+        diversity-cap counter. No-op on vanilla path (tracker is None)
+        or when text is empty. Defensive ``getattr`` lets bypass-init
+        test skeletons skip the wiring."""
         tracker = getattr(self, "citation_usage_tracker", None)
         if tracker is None or not text:
             return
         tracker.scan_and_increment(text)
 
-    # v6 Lever D — per-slide section binding.
+    # Per-slide section binding.
     _PER_SLIDE_TOP_SECTIONS = 2
     _PER_SLIDE_RETRIEVE_K = 8
     _PER_SLIDE_RRF_K = 60
 
     def _pick_per_slide_sections(self, slide_query: str):
-        """v6 Lever D: narrow the chapter's bound section_ids to the
-        top-K sections for THIS specific slide's query. Returns None
-        when no retriever or no chapter binding (vanilla path) — caller
-        keeps the chapter-wide filter. A short retrieval pass within
-        the chapter's bound sections picks the best per-slide subset.
+        """Narrow the chapter's bound section_ids to the top-K sections
+        for THIS specific slide's query. Returns None when no retriever
+        or no chapter binding (vanilla path) — caller keeps the
+        chapter-wide filter. A short retrieval pass within the chapter's
+        bound sections picks the best per-slide subset.
         """
         from collections import defaultdict
         if self.retriever is None or not self.section_ids:
@@ -1032,22 +1032,22 @@ class SlidesDeliberation:
         return [sid for sid, _ in ranked[:self._PER_SLIDE_TOP_SECTIONS]]
 
     def _build_per_slide_evidence(self, slide_query: str, artifact: str = "slide") -> tuple:
-        """v6 Lever D wrapper: narrow the section filter to this
-        slide's best-matched sections before building the evidence
-        block. Falls back to chapter-wide retrieval when no narrowing
-        is possible (vanilla path or thin chapter)."""
+        """Wrapper: narrow the section filter to this slide's
+        best-matched sections before building the evidence block. Falls
+        back to chapter-wide retrieval when no narrowing is possible
+        (vanilla path or thin chapter)."""
         per_slide = self._pick_per_slide_sections(slide_query)
         return self._build_evidence_block(
             slide_query, artifact=artifact, section_ids_override=per_slide,
         )
 
     def _inject_visual_chunk_if_available(self, results, section_ids):
-        """v6 Lever Z: guarantee at least one visual chunk surfaces in
-        the evidence block when one exists in scope. Looks for a chunk
-        carrying a visual marker (IMAGE_PATH/LATEX/TABLE/ALGORITHM)
-        within the bound section_ids. If results already contain a
-        visual chunk, returns ``results`` unchanged. Otherwise replaces
-        the LOWEST-ranked prose chunk with a visual chunk from scope.
+        """Guarantee at least one visual chunk surfaces in the evidence
+        block when one exists in scope. Looks for a chunk carrying a
+        visual marker (IMAGE_PATH/LATEX/TABLE/ALGORITHM) within the
+        bound section_ids. If results already contain a visual chunk,
+        returns ``results`` unchanged. Otherwise replaces the
+        LOWEST-ranked prose chunk with a visual chunk from scope.
         """
         if not results:
             return results
@@ -1097,11 +1097,11 @@ class SlidesDeliberation:
     def _build_visual_content_rules(self, evidence_text: str, artifact: str) -> str:
         """Return an extra rule block for hybrid-ingester visual markers.
 
-        Detects which v3 visual markers are present in the evidence
+        Detects which visual markers are present in the evidence
         excerpts and emits artifact-specific instructions telling the
         LLM how to consume each. Returns an empty string when no
-        markers are present (vanilla and v2 path) so the rules block
-        is fully opt-in.
+        markers are present (vanilla path) so the rules block is fully
+        opt-in.
 
         Markers and their artifact-conditioned handling:
 
@@ -1442,17 +1442,17 @@ class SlidesDeliberation:
         assessment_md = _strip_malformed_citation_tokens(
             assessment_md, self.textbook_id, valid_tokens=valid_tokens,
         )
-        # v7 Step 1: LaTeX cleanup pass — fixes hallucinated
-        # \includegraphics paths, BibTeX-wrapped citations, and
-        # ampersand-escape bugs that broke v6 PDF compilation. Only
-        # affects LaTeX output (slides.tex); markdown unchanged.
+        # LaTeX cleanup pass — fixes hallucinated \includegraphics
+        # paths, BibTeX-wrapped citations, and ampersand-escape bugs
+        # that broke PDF compilation in earlier baselines. Only affects
+        # LaTeX output (slides.tex); markdown unchanged.
         latex_source = _clean_latex_artifacts(latex_source)
 
-        # v7 Gate B — post-emit semantic strip. For each citation token
+        # Gate B — post-emit semantic strip. For each citation token
         # remaining in the final artifacts, computes claim-chunk
         # similarity and strips tokens below the gentle threshold (0.30).
         # Catches "wrong-section-named" cites the writer committed to
-        # despite Gate A's pre-filter — different signal than Lever A's
+        # despite Gate A's pre-filter — different signal than the
         # diversity cap and the malformed-token strip.
         gate = getattr(self, "semantic_gate", None)
         if gate is not None:
@@ -1460,10 +1460,10 @@ class SlidesDeliberation:
             slides_script_md = gate.gate_b_strip_low_similarity(slides_script_md)
             assessment_md = gate.gate_b_strip_low_similarity(assessment_md)
 
-        # v7 Step 9 — LLM write-time verifier. Runs LAST after malformed
-        # strip + Gate B semantic strip have caught the cheap-to-detect
-        # cases. For each remaining citation, asks gpt-4o-mini "does
-        # this excerpt support this claim? YES/NO" and strips on NO.
+        # LLM write-time verifier. Runs LAST after malformed strip +
+        # Gate B semantic strip have caught the cheap-to-detect cases.
+        # For each remaining citation, asks gpt-4o-mini "does this
+        # excerpt support this claim? YES/NO" and strips on NO.
         # Cost: ~$0.0001/cite × ~1000 surviving cites ≈ $0.10-0.15/run.
         verifier = getattr(self, "write_time_verifier", None)
         if verifier is not None:
@@ -1841,9 +1841,9 @@ class SlidesDeliberation:
             }
             ]"""
         
-        # v6 Lever E — assessments draw on cross-chapter context
-        # (review questions span the syllabus). Use the full KB instead
-        # of the chapter's bound section_ids. No-op when off.
+        # Assessments draw on cross-chapter context (review questions
+        # span the syllabus). Use the full KB instead of the chapter's
+        # bound section_ids. No-op when off.
         evidence_block, citation_rules = self._build_evidence_block(
             f"{chapter['title']}. {chapter.get('description', '')}",
             artifact="assessment",
@@ -1966,9 +1966,9 @@ class SlidesDeliberation:
         if not teaching_faculty:
             raise ValueError("Teaching Faculty agent not found")
 
-        # Grounding: v6 Lever D — per-slide retrieval narrowed to the
-        # slide's best-matched sections within the chapter binding
-        # (no-op when self.retriever is None — vanilla path).
+        # Grounding: per-slide retrieval narrowed to the slide's
+        # best-matched sections within the chapter binding (no-op when
+        # self.retriever is None — vanilla path).
         evidence_block, citation_rules = self._build_per_slide_evidence(
             f"{slide['title']}. {slide.get('description', '')}"
         )
@@ -2001,12 +2001,12 @@ class SlidesDeliberation:
         Note: Your output length needs to be kept within a reasonable range so that it can fit on a single PPT slide.
         """
         
-        # v7: Lever G (multi-draft + best-pick) DISABLED — v6 measurement
-        # showed Lever G's citation-count score function rewarded volume
-        # over quality. The $0.30/run cost is reclaimed for v7's
-        # semantic-gate stack which targets the same wrong-section-named
-        # failure mode more directly. _generate_best_of_n_draft kept as
-        # documentation; use --enable-lever-g flag to opt back in.
+        # Multi-draft best-pick path DISABLED — measurement showed the
+        # citation-count score function rewarded volume over quality.
+        # The $0.30/run cost is reclaimed for the semantic-gate stack
+        # which targets the same wrong-section-named failure mode more
+        # directly. _generate_best_of_n_draft kept as documentation; use
+        # the --enable-best-of-n flag to opt back in.
         teaching_faculty.reset_history()
         print(f"Generating detailed content for slide: {slide['title']}...")
         response, elapsed_time, token_usage = teaching_faculty.generate_response(
@@ -2021,11 +2021,11 @@ class SlidesDeliberation:
         return response
 
     def _generate_best_of_n_draft(self, agent, prompt: str, n: int = 2) -> str:
-        """v6 Lever G: generate ``n`` drafts and return the one with the
-        most resolvable citation tokens (proxy for grounding density).
-        Increments the diversity-cap counter using ONLY the chosen
-        draft so over-cap state stays consistent with what landed in
-        the final artifact.
+        """Generate ``n`` drafts and return the one with the most
+        resolvable citation tokens (proxy for grounding density).
+        Increments the diversity-cap counter using ONLY the chosen draft
+        so over-cap state stays consistent with what landed in the final
+        artifact.
         """
         tracker = getattr(self, "citation_usage_tracker", None)
         candidates = []
@@ -2062,8 +2062,8 @@ class SlidesDeliberation:
         return winner["response"]
 
     def _decrement_tracker_for_text(self, tracker, text) -> None:
-        """v6 Lever G helper: roll back tracker counts for a discarded
-        draft. Used after multi-draft pick to keep cap state accurate."""
+        """Roll back tracker counts for a discarded draft. Used after
+        multi-draft pick to keep cap state accurate."""
         if not text:
             return
         import re
@@ -2093,8 +2093,8 @@ class SlidesDeliberation:
             max_frames=3
         )
 
-        # Grounding: v6 Lever D — wrap with per-slide narrowed evidence
-        # (no-op when self.retriever is None — vanilla path).
+        # Grounding: wrap with per-slide narrowed evidence (no-op when
+        # self.retriever is None — vanilla path).
         evidence_block, citation_rules = self._build_per_slide_evidence(
             f"{slide['title']}. {slide.get('description', '')}"
         )
@@ -2174,8 +2174,8 @@ class SlidesDeliberation:
             for i, frame in enumerate(self.latex_dict[slide_idx]["frames"]):
                 frames_info += f"Frame {i+1}:\n```latex\n{frame['full_frame']}\n```\n\n"
 
-        # Grounding: v6 Lever D — per-slide narrowed retrieval
-        # (no-op when self.retriever is None — vanilla path).
+        # Grounding: per-slide narrowed retrieval (no-op when
+        # self.retriever is None — vanilla path).
         # Script artifact uses softer rules — spoken narration, not text.
         evidence_block, citation_rules = self._build_per_slide_evidence(
             f"{slide['title']}. {slide.get('description', '')}",
@@ -2250,9 +2250,9 @@ class SlidesDeliberation:
         # Get the current assessment template for this slide
         template = self.assessment_template.get(slide_idx, {})
 
-        # Grounding: v6 Lever E — per-slide assessments use cross-chapter
-        # retrieval (review questions span the course). Skip Lever D's
-        # per-slide narrowing here. No-op when self.retriever is None.
+        # Grounding: per-slide assessments use cross-chapter retrieval
+        # (review questions span the course). Skip per-slide narrowing
+        # here. No-op when self.retriever is None.
         evidence_block, citation_rules = self._build_evidence_block(
             f"{slide['title']}. {slide.get('description', '')}",
             artifact="assessment",

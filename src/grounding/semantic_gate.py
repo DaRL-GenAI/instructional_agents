@@ -1,29 +1,30 @@
-"""v7 semantic gate — free claim-chunk similarity filter.
+"""Semantic gates — free claim-chunk similarity filter.
 
 Two related gates that filter weak retrieval matches the writer would
 otherwise cite badly. Both use bi-encoder cosine similarity over the
 ``sentence-transformers/all-MiniLM-L6-v2`` model (~90 MB, CPU-friendly)
-as a $0 quality signal the system currently throws away. We load the
+as a $0 quality signal that would otherwise be discarded. We load the
 ONNX-exported version via ``fastembed`` so the runtime path stays
 torch-free — onnxruntime + tokenizers only.
 
   * **Gate A (pre-evidence)**: filter retrieval results BEFORE the
     writer sees them. ``sim(slide_query, chunk_text) < threshold`` →
     drop the chunk. Writer literally cannot cite chunks it never
-    receives. Threshold tuned to 0.32 against v6 ground-truth data.
+    receives. Threshold tuned to 0.32 against ground-truth grounding
+    scores on a previously-measured baseline run.
 
   * **Gate B (post-emit)**: scan generated text AFTER the LLM commits;
     for each citation token, compute ``sim(claim_sentence, chunk_text)``
     and strip the citation if below threshold. Threshold tuned to 0.30
     (slightly looser — Gate A already filtered the weakest matches).
 
-Tuning data: v6 1,369-citation grounding scores. At t=0.32 / t=0.30
-Gate B alone catches 27 % of bad cites at the cost of dropping 12 %
-of good cites; Gate A on top adds another 5-8 pp on the writer's
-chunk selection (unmeasured, mechanism-bounded).
+On the tuning baseline (~1,369 citations from the prior generation
+pipeline), Gate B alone caught 27% of bad cites at the cost of dropping
+12% of good cites; Gate A on top added another 5-8 percentage points
+on the writer's chunk selection (mechanism-bounded estimate).
 
 Both gates degrade safely: if fastembed isn't installed or the encoder
-fails to load, the gate is a no-op and the rest of the v6 stack runs
+fails to load, the gate is a no-op and the rest of the pipeline runs
 unchanged. Vanilla path (no ``--use-textbook``) never constructs the gate.
 """
 
@@ -114,7 +115,7 @@ class SemanticGate:
         return float((va * vb).sum())
 
     def gate_a_filter_results(self, query: str, results, threshold: Optional[float] = None):
-        """v7 Gate A — pre-evidence filter.
+        """Gate A — pre-evidence filter.
 
         Given the slide/chapter query and the retriever's results,
         drop results whose chunk text scores below the threshold.
@@ -138,7 +139,7 @@ class SemanticGate:
         return survivors
 
     def gate_b_strip_low_similarity(self, text: str, threshold: Optional[float] = None) -> str:
-        """v7 Gate B — post-emit strip.
+        """Gate B — post-emit strip.
 
         Scan generated text for citation tokens; for each token, compute
         similarity between the surrounding claim sentence (last ~25

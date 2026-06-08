@@ -5,7 +5,7 @@ markdown chunk per source page, then builds the Textbook IR with REAL
 per-paragraph page numbers (the synthetic word-count-based pagination
 used by the markdown ingester is bypassed entirely).
 
-This module is the "workhorse" half of the v3 hybrid extraction
+This module is the "workhorse" half of the hybrid extraction
 pipeline. It handles prose pages cleanly (markdown preserves headings,
 tables, code blocks better than plain-text extraction). Pages flagged
 as complex by :mod:`src.textbook.spatial_router` will additionally be
@@ -146,7 +146,7 @@ def _extract_blocks_with_page(md_text: str, page_num: int,
     the heading normaliser as well (previously the normaliser reset
     the flag every call, causing one chapter per page on PDFs whose
     pymupdf4llm output has unnumbered ``##`` headings throughout —
-    the chapter-inflation bug observed at v4 measurement time).
+    the chapter-inflation bug observed at an earlier measurement).
     """
     md_normalised, next_seen = _normalize_pdf_markdown_headings(
         md_text, seen_chapter=seen_chapter,

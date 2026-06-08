@@ -248,7 +248,7 @@ class VlmExtractor:
         textbook_id: str,
         page_num: int,
     ) -> ExtractedPage:
-        """v7.1 — retry transient VLM failures (rate limits, timeouts).
+        """Retry transient VLM failures (rate limits, timeouts).
 
         Returns an empty ExtractedPage only when ALL retries fail.
         Stays defensive — never raises so the caller's ingestion loop

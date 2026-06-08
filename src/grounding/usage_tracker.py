@@ -1,4 +1,4 @@
-"""Citation diversity cap (v6 Lever A).
+"""Citation diversity cap.
 
 Tracks per-chunk citation counts across a single course-generation run.
 When a chunk's emitted-citation count reaches ``cap``, retrieval results
