@@ -179,15 +179,13 @@ class SemanticGate:
 
     @staticmethod
     def _extract_claim_window(preceding: str, n_words: int = 25) -> str:
-        """Pull the last n_words from the text preceding a citation
-        token. Used as the 'claim sentence' for similarity scoring."""
-        # Prefer the last sentence (split on . ! ? \n) but cap at n_words
-        for sep in [". ", "! ", "? ", "\n"]:
-            idx = preceding.rfind(sep)
-            if idx > 0:
-                tail = preceding[idx + len(sep):]
-                if tail.strip():
-                    preceding = tail
-                    break
-        words = preceding.split()
-        return " ".join(words[-n_words:]) if words else ""
+        """Return the claim sentence ending at the citation token.
+
+        Delegates to :func:`src.grounding.claim_window.extract_claim_sentence`,
+        which uses a regex sentence-end detector with abbreviation
+        suppression (``e.g.``, ``i.e.``, ``Fig.`` etc.) so the
+        similarity score is computed against the actual surrounding
+        sentence rather than a heuristically truncated tail.
+        """
+        from src.grounding.claim_window import extract_claim_sentence
+        return extract_claim_sentence(preceding, fallback_word_cap=n_words)

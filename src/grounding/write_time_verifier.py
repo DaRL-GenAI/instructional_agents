@@ -160,16 +160,15 @@ class WriteTimeVerifier:
 
     @staticmethod
     def _extract_claim_window(preceding: str, n_words: int = 30) -> str:
-        """Last n_words of the text preceding a citation."""
-        for sep in [". ", "! ", "? ", "\n"]:
-            idx = preceding.rfind(sep)
-            if idx > 0:
-                tail = preceding[idx + len(sep):]
-                if tail.strip():
-                    preceding = tail
-                    break
-        words = preceding.split()
-        return " ".join(words[-n_words:]) if words else ""
+        """Return the claim sentence ending at the citation token.
+
+        Delegates to :func:`src.grounding.claim_window.extract_claim_sentence`
+        so the verifier's prompt receives the actual surrounding
+        sentence (with abbreviation suppression for ``e.g.``, ``Fig.``,
+        etc.) rather than a heuristically truncated tail.
+        """
+        from src.grounding.claim_window import extract_claim_sentence
+        return extract_claim_sentence(preceding, fallback_word_cap=n_words)
 
     def report(self) -> str:
         return (

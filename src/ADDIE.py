@@ -950,6 +950,13 @@ class ADDIE:
             try:
                 from src.grounding.reranker import CrossEncoderReranker
                 reranker = CrossEncoderReranker()
+                # Warmup: actually trigger the ONNX model load now (the
+                # constructor is lazy). Catches model-download / load
+                # failures at init time so we surface them once with a
+                # clear message, instead of letting the failure repeat
+                # silently on every per-query rerank call later.
+                reranker.score("warmup query", ["warmup passage"])
+                print("[grounding] Cross-encoder reranker loaded.", flush=True)
             except Exception as e:
                 print(
                     f"[grounding] Cross-encoder reranker unavailable "

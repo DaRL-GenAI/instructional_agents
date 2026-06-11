@@ -512,19 +512,36 @@ class GroundingAgent:
     def _resolve_best_chunk(self, token: str, claim_text: str):
         """AMBIGUOUS-TOKEN-RESCUE: when a token resolves to multiple
         chunks (multi-chunk overlap), pick the one with the highest
-        word-overlap to the claim sentence. Falls back to first-chunk
-        if no candidates resolve.
+        content-word overlap to the claim sentence. Falls back to
+        first-chunk if no candidates resolve.
+
+        Filters out the same lightweight stopword list the retriever
+        uses (`src.grounding.retriever._STOP`). Without the filter the
+        score is dominated by common filler ("the", "of", "in") that
+        appears in almost every passage, blunting the rescue's ability
+        to discriminate between topically similar siblings.
         """
         candidates = self._candidate_chunks_by_token.get(token, [])
         if len(candidates) <= 1:
             return self._chunk_by_token.get(token)
-        # Word-overlap (Jaccard-like) scoring
-        claim_words = set(w.lower() for w in claim_text.split() if len(w) > 3)
+        try:
+            from src.grounding.retriever import _STOP as _STOPWORDS
+        except Exception:
+            _STOPWORDS = frozenset()
+        # Content-word overlap (Jaccard-like) scoring. Lowercased,
+        # stop-filtered, >3 chars to ignore short noise tokens.
+        claim_words = {
+            w.lower() for w in claim_text.split()
+            if len(w) > 3 and w.lower() not in _STOPWORDS
+        }
         if not claim_words:
             return candidates[0]
         best, best_score = candidates[0], -1.0
         for c in candidates:
-            chunk_words = set(w.lower() for w in c.text.split() if len(w) > 3)
+            chunk_words = {
+                w.lower() for w in c.text.split()
+                if len(w) > 3 and w.lower() not in _STOPWORDS
+            }
             if not chunk_words:
                 continue
             overlap = len(claim_words & chunk_words) / max(1, len(claim_words))
