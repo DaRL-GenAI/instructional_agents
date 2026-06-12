@@ -29,6 +29,21 @@ from src.textbook.schema import Chapter, Paragraph, Section, Textbook
 TARGET_TOKENS = 512
 OVERLAP_TOKENS = 64
 
+# Hard ceiling on chunk text size, enforced AFTER the paragraph-aware
+# packing above. Most chunks stay well under TARGET_TOKENS; this ceiling
+# only fires on edge cases where a SINGLE source paragraph is already
+# huge — long visual captions with embedded descriptions, bibliography-
+# style lists emitted whole by the ingester, or pre-formatted blocks that
+# the PDF parser couldn't subdivide.
+#
+# 24000 characters ≈ 6000 tokens of English prose, which sits safely
+# under OpenAI's 8192-token-per-input limit on the embedding models
+# we use (text-embedding-3-small / -large). Oversized chunks get split
+# into sub-chunks on real sentence boundaries (no information loss,
+# citation tokens unchanged — sub-chunks share their parent's section
+# and page span). See `_split_chunk_if_oversized` below.
+MAX_CHUNK_CHARS = 24000
+
 
 # Inline markers carried by paragraphs that came through the hybrid
 # ingester's VLM augmentation. A paragraph containing any of these is
@@ -106,6 +121,84 @@ def _word_count(text: str) -> int:
     return len(text.split())
 
 
+def _split_chunk_if_oversized(
+    chunk: "Chunk", max_chars: int = MAX_CHUNK_CHARS
+) -> List["Chunk"]:
+    """Split a chunk's text on sentence boundaries when it exceeds
+    ``max_chars``. Sub-chunks inherit the parent's section / page /
+    chapter metadata, so their citation tokens are identical to the
+    parent's — the ambiguous-token rescue in ``evaluate.py`` picks the
+    best sibling at score time.
+
+    Used as a final pass inside :func:`_paragraph_chunks` to guarantee
+    every emitted chunk fits the embedder's per-input size limit
+    (8192 tokens on OpenAI's embedding-3 family). Most calls return
+    ``[chunk]`` unchanged; only outsized inputs get split.
+
+    No information is dropped:
+      - sentence-boundary splitting (via
+        :func:`src.grounding.claim_window.split_into_sentences`) so we
+        never break a sentence mid-clause;
+      - if a SINGLE sentence is itself longer than ``max_chars`` (very
+        rare — would have to be a single sentence > ~4000 words), we
+        fall back to a hard slice as the absolute last resort and
+        emit it with a marker so downstream code can flag the case.
+    """
+    if len(chunk.text) <= max_chars:
+        return [chunk]
+
+    from src.grounding.claim_window import split_into_sentences
+
+    sentences = split_into_sentences(chunk.text)
+    sub_chunks: List["Chunk"] = []
+
+    def _new_sub(text: str, sub_idx: int) -> "Chunk":
+        return Chunk(
+            chunk_id=f"{chunk.chunk_id}_s{sub_idx:02d}",
+            text=text,
+            textbook_id=chunk.textbook_id,
+            chapter_id=chunk.chapter_id,
+            chapter_title=chunk.chapter_title,
+            section_id=chunk.section_id,
+            section_title=chunk.section_title,
+            para_ids=list(chunk.para_ids),
+            page_start=chunk.page_start,
+            page_end=chunk.page_end,
+            kinds=list(chunk.kinds),
+        )
+
+    buf: List[str] = []
+    buf_len = 0
+    sub_idx = 0
+    for s in sentences:
+        # If a single sentence is larger than max_chars on its own,
+        # split it at max_chars boundaries — last-resort hard slice.
+        # Adds a "[truncated]" marker only to flag the rare case in
+        # downstream logs; the text itself is fully preserved across
+        # the resulting slices.
+        if len(s) > max_chars:
+            if buf:
+                sub_chunks.append(_new_sub(" ".join(buf), sub_idx))
+                sub_idx += 1
+                buf, buf_len = [], 0
+            for start in range(0, len(s), max_chars):
+                slice_text = s[start : start + max_chars]
+                sub_chunks.append(_new_sub(slice_text, sub_idx))
+                sub_idx += 1
+            continue
+        if buf and buf_len + len(s) + 1 > max_chars:
+            sub_chunks.append(_new_sub(" ".join(buf), sub_idx))
+            sub_idx += 1
+            buf = [s]
+            buf_len = len(s)
+        else:
+            buf.append(s)
+            buf_len += len(s) + 1
+    if buf:
+        sub_chunks.append(_new_sub(" ".join(buf), sub_idx))
+    return sub_chunks
+
+
 def _paragraph_chunks(section: Section, chapter: Chapter, textbook_id: str) -> Iterable[Chunk]:
     """Pack a section's paragraphs into chunks with two distinct shapes.
 
@@ -151,7 +244,7 @@ def _paragraph_chunks(section: Section, chapter: Chapter, textbook_id: str) -> I
     while i < len(paras):
         # Visual paragraphs get their own one-paragraph chunk.
         if _is_visual_paragraph(paras[i]):
-            yield _emit([paras[i]])
+            yield from _split_chunk_if_oversized(_emit([paras[i]]))
             i += 1
             continue
 
@@ -169,7 +262,7 @@ def _paragraph_chunks(section: Section, chapter: Chapter, textbook_id: str) -> I
             j += 1
 
         if buf:
-            yield _emit(buf)
+            yield from _split_chunk_if_oversized(_emit(buf))
 
         if j >= len(paras):
             break
@@ -276,6 +369,21 @@ class TextbookKnowledgeBase:
         for chapter in textbook.chapters:
             for section in chapter.sections:
                 chunks.extend(_paragraph_chunks(section, chapter, derived_id))
+
+        # Operational diagnostic: how many chunks were split for the
+        # embedder size limit, and what was the largest original input?
+        # Surfaces silently-handled edge cases (long visual captions,
+        # bibliography blocks) without forcing the operator to dig
+        # through logs.
+        split_count = sum(1 for c in chunks if "_s" in c.chunk_id.rsplit(":", 1)[-1])
+        if split_count:
+            max_len = max(len(c.text) for c in chunks)
+            print(
+                f"[grounding] {split_count} sub-chunks emitted from "
+                f"oversized parent chunks (max chunk size after split: "
+                f"{max_len} chars, ceiling: {MAX_CHUNK_CHARS}).",
+                flush=True,
+            )
 
         return cls(textbook=textbook, chunks=chunks)
 

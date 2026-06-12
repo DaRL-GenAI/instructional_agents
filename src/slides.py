@@ -742,8 +742,41 @@ class SlidesDeliberation:
                 section_ids=effective_section_ids,
             )
         except Exception as e:
-            print(f"[grounding] retrieval failed ({e}); falling back to vanilla prompt")
+            # Defense-in-depth cost protection: if retrieval has failed
+            # the same way many times in a row, the run is no longer
+            # producing grounded output but is still spending money on
+            # writer + verifier calls. Abort cleanly rather than letting
+            # the loop drift indefinitely. Threshold is intentionally
+            # generous (allows real transient blips like brief rate
+            # limits) but short enough to catch genuinely-broken
+            # retrieval before it racks up cost.
+            cls = type(self)
+            count_attr = "_consecutive_retrieval_failures"
+            last_attr = "_last_retrieval_error_type"
+            err_type = type(e).__name__
+            prev_err = getattr(cls, last_attr, None)
+            if prev_err == err_type:
+                setattr(cls, count_attr, getattr(cls, count_attr, 0) + 1)
+            else:
+                setattr(cls, count_attr, 1)
+                setattr(cls, last_attr, err_type)
+            n = getattr(cls, count_attr, 0)
+            print(f"[grounding] retrieval failed ({e}); falling back to vanilla prompt "
+                  f"(consecutive {err_type} failures: {n})")
+            if n >= 10:
+                raise RuntimeError(
+                    f"Grounding retrieval failed {n} times in a row with the "
+                    f"same error class ({err_type}). Aborting run to prevent "
+                    f"further cost (writer + verifier calls keep running even "
+                    f"though no grounded evidence is reaching the prompt). "
+                    f"Last error: {e!r}"
+                )
             return "", ""
+        # Successful retrieval — reset the consecutive-failure counter so
+        # transient blips earlier in the run don't accumulate spuriously.
+        cls = type(self)
+        setattr(cls, "_consecutive_retrieval_failures", 0)
+        setattr(cls, "_last_retrieval_error_type", None)
         if not results:
             return "", ""
 

@@ -55,6 +55,38 @@ _ABBREV_NO_BREAK = frozenset(
 )
 
 
+def split_into_sentences(text: str) -> list:
+    """Split ``text`` into sentences using the same regex and
+    abbreviation-suppression list as :func:`extract_claim_sentence`.
+
+    Used by the chunker (:mod:`src.grounding.knowledge_base`) when a
+    chunk is too long for the embedder's per-input limit; the chunk is
+    re-emitted as a sequence of sub-chunks split on REAL sentence
+    boundaries (not on every period that follows ``e.g.`` or ``Fig.``)
+    so each sub-chunk is independently coherent.
+
+    Returns a list of trimmed sentence strings. Empty input → empty list.
+    A text with no detected sentence end returns a single-element list
+    (the whole text), so callers can always assume the list is non-empty
+    when input is non-empty.
+    """
+    if not text:
+        return []
+    split_indices = [0]
+    for m in _SENTENCE_END_RE.finditer(text):
+        head = text[: m.start()].rstrip()
+        last_word = head.rsplit(None, 1)[-1].lower() if head.split() else ""
+        if last_word in _ABBREV_NO_BREAK:
+            continue
+        split_indices.append(m.end())
+    sentences = []
+    for a, b in zip(split_indices, split_indices[1:] + [len(text)]):
+        piece = text[a:b].strip()
+        if piece:
+            sentences.append(piece)
+    return sentences or [text.strip()]
+
+
 def extract_claim_sentence(
     preceding: str,
     *,

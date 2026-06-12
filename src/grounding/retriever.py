@@ -32,6 +32,13 @@ SPARSE_FETCH_K = 32
 COSINE_FLOOR = 0.20         # discard dense matches below this (clearly off-topic)
 EMBED_BATCH = 64            # how many chunks to embed per API call
 EMBED_MODEL = "text-embedding-3-large"
+# Hard input ceiling enforced by OpenAI's embedding-3 models. Single
+# inputs longer than this throw a 400 and reject the whole batch.
+# `OpenAIEmbedder.embed()` splits any input larger than this on sentence
+# boundaries, embeds the pieces, and mean-pools the results — a
+# defense-in-depth layer behind the chunker's own size cap in
+# `knowledge_base._split_chunk_if_oversized`.
+EMBED_INPUT_CHAR_CEILING = 24000  # ≈6000 tokens, ~25% headroom under 8192
 EMBED_DIM_BY_MODEL = {"text-embedding-3-small": 1536, "text-embedding-3-large": 3072}
 # Note on model choice: `text-embedding-3-large` produces 3072-dim vectors
 # (vs `-small`'s 1536) and reportedly improves disambiguation between
@@ -83,12 +90,73 @@ class OpenAIEmbedder:
 
     def embed(self, texts: Sequence[str]) -> np.ndarray:
         client = self._ensure_client()
-        vecs: List[List[float]] = []
-        for i in range(0, len(texts), EMBED_BATCH):
-            batch = list(texts[i : i + EMBED_BATCH])
+        vecs: List[np.ndarray] = []
+        # Pass 1: per-text. For each input, either embed it whole (fits)
+        # or split it on sentence boundaries, embed the pieces, and
+        # mean-pool the resulting vectors into one slot. Mean-pooling
+        # over sentence sub-embeddings is what bi-encoders do internally
+        # for long passages, so semantically it's defensible — and it
+        # keeps the output shape (one vector per input) unchanged for
+        # downstream code that assumes that contract.
+        normalised: List[List[str]] = []
+        for t in texts:
+            if len(t) <= EMBED_INPUT_CHAR_CEILING:
+                normalised.append([t])
+            else:
+                from src.grounding.claim_window import split_into_sentences
+                sentences = split_into_sentences(t)
+                # Re-pack sentences into pieces ≤ ceiling. A single
+                # sentence longer than ceiling (rare) falls back to a
+                # hard slice.
+                pieces: List[str] = []
+                buf: List[str] = []
+                buf_len = 0
+                for s in sentences:
+                    if len(s) > EMBED_INPUT_CHAR_CEILING:
+                        if buf:
+                            pieces.append(" ".join(buf))
+                            buf, buf_len = [], 0
+                        for start in range(0, len(s), EMBED_INPUT_CHAR_CEILING):
+                            pieces.append(s[start : start + EMBED_INPUT_CHAR_CEILING])
+                        continue
+                    if buf and buf_len + len(s) + 1 > EMBED_INPUT_CHAR_CEILING:
+                        pieces.append(" ".join(buf))
+                        buf = [s]
+                        buf_len = len(s)
+                    else:
+                        buf.append(s)
+                        buf_len += len(s) + 1
+                if buf:
+                    pieces.append(" ".join(buf))
+                normalised.append(pieces)
+
+        # Pass 2: flatten the per-input piece-lists into one batch
+        # stream, embed, then reduce each input's pieces back into one
+        # vector by mean-pooling.
+        flat: List[str] = []
+        boundaries: List[int] = [0]
+        for pieces in normalised:
+            flat.extend(pieces)
+            boundaries.append(len(flat))
+
+        flat_vecs: List[List[float]] = []
+        for start in range(0, len(flat), EMBED_BATCH):
+            batch = list(flat[start : start + EMBED_BATCH])
             resp = client.embeddings.create(model=self.model, input=batch)
-            vecs.extend(item.embedding for item in resp.data)
-        return np.asarray(vecs, dtype=np.float32)
+            flat_vecs.extend(item.embedding for item in resp.data)
+        flat_arr = np.asarray(flat_vecs, dtype=np.float32)
+
+        for a, b in zip(boundaries, boundaries[1:]):
+            piece_vecs = flat_arr[a:b]
+            if piece_vecs.shape[0] == 1:
+                vecs.append(piece_vecs[0])
+            else:
+                # Mean-pool sub-embeddings for this input. L2-renormalise
+                # so cosine downstream stays meaningful.
+                avg = piece_vecs.mean(axis=0)
+                n = float(np.linalg.norm(avg))
+                vecs.append(avg / n if n > 0 else avg)
+        return np.stack(vecs).astype(np.float32)
 
 
 class HashEmbedder:
