@@ -160,15 +160,27 @@ class WriteTimeVerifier:
 
     @staticmethod
     def _extract_claim_window(preceding: str, n_words: int = 30) -> str:
-        """Return the claim sentence ending at the citation token.
+        """Last n_words of the text preceding a citation.
 
-        Delegates to :func:`src.grounding.claim_window.extract_claim_sentence`
-        so the verifier's prompt receives the actual surrounding
-        sentence (with abbreviation suppression for ``e.g.``, ``Fig.``,
-        etc.) rather than a heuristically truncated tail.
+        Earlier experiment (Tier 1.2) routed this through a regex
+        sentence-end detector. That change correlated with a
+        precision regression on the math-heavy Han corpus, so the
+        baseline ``rfind`` heuristic stays in place here pending a
+        cleaner isolation experiment. The sentence-end regex still
+        lives in :mod:`src.grounding.claim_window` and is used by the
+        chunker (`_split_chunk_if_oversized`) and the embedder size
+        guard — both benefit from clean sentence boundaries
+        regardless of textbook.
         """
-        from src.grounding.claim_window import extract_claim_sentence
-        return extract_claim_sentence(preceding, fallback_word_cap=n_words)
+        for sep in [". ", "! ", "? ", "\n"]:
+            idx = preceding.rfind(sep)
+            if idx > 0:
+                tail = preceding[idx + len(sep):]
+                if tail.strip():
+                    preceding = tail
+                    break
+        words = preceding.split()
+        return " ".join(words[-n_words:]) if words else ""
 
     def report(self) -> str:
         return (

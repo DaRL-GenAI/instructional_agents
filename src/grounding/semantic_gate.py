@@ -179,13 +179,28 @@ class SemanticGate:
 
     @staticmethod
     def _extract_claim_window(preceding: str, n_words: int = 25) -> str:
-        """Return the claim sentence ending at the citation token.
+        """Pull the last n_words from the text preceding a citation
+        token. Used as the 'claim sentence' for similarity scoring.
 
-        Delegates to :func:`src.grounding.claim_window.extract_claim_sentence`,
-        which uses a regex sentence-end detector with abbreviation
-        suppression (``e.g.``, ``i.e.``, ``Fig.`` etc.) so the
-        similarity score is computed against the actual surrounding
-        sentence rather than a heuristically truncated tail.
+        An earlier experiment (Tier 1.2) routed this through a regex
+        sentence-end detector with abbreviation suppression; that
+        change regressed precision on the math-heavy Han corpus
+        (-3.84 pp on the 6-chapter subset, with only ~7% citation
+        overlap between runs suggesting the divergence reaches far
+        upstream). Until we understand the cross-textbook effect, the
+        baseline ``rfind`` heuristic stays in place here. The
+        sentence-end regex still lives in
+        :mod:`src.grounding.claim_window` and is used by the chunker
+        (`_split_chunk_if_oversized`) and the embedder size guard,
+        which DO benefit from clean sentence boundaries regardless of
+        textbook.
         """
-        from src.grounding.claim_window import extract_claim_sentence
-        return extract_claim_sentence(preceding, fallback_word_cap=n_words)
+        for sep in [". ", "! ", "? ", "\n"]:
+            idx = preceding.rfind(sep)
+            if idx > 0:
+                tail = preceding[idx + len(sep):]
+                if tail.strip():
+                    preceding = tail
+                    break
+        words = preceding.split()
+        return " ".join(words[-n_words:]) if words else ""
