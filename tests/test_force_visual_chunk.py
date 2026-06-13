@@ -79,11 +79,14 @@ class TestInjectVisualChunkIfAvailable:
         out = d._inject_visual_chunk_if_available(
             [_StubResult(c) for c in prose], None,
         )
-        # Lowest-ranked prose (idx 2) replaced with visual chunk
-        assert "[IMAGE_PATH:" in out[-1].chunk.text
-        # Top two prose preserved
-        assert out[0].chunk.text == "prose 1"
-        assert out[1].chunk.text == "prose 2"
+        # Visual chunk is hoisted to the FRONT so its IMAGE_PATH marker
+        # survives the downstream block-builder's word budget. The lowest-
+        # ranked prose chunk is dropped to keep the result count stable.
+        assert "[IMAGE_PATH:" in out[0].chunk.text
+        # Top two prose preserved (their original ranks 1, 2 stay in
+        # positions 1, 2 — only the lowest-ranked got displaced)
+        assert out[1].chunk.text == "prose 1"
+        assert out[2].chunk.text == "prose 2"
 
     def test_visual_must_be_in_scope(self):
         prose = [_StubChunk("ch1.s1", text="prose")]
@@ -119,8 +122,9 @@ class TestInjectVisualChunkIfAvailable:
         out = d._inject_visual_chunk_if_available(
             [_StubResult(c) for c in prose], None,
         )
-        # Should prefer ch1 (top-section match) even though ch2 came first in KB
-        assert "/a.png" in out[-1].chunk.text
+        # Visual chunk is hoisted to the FRONT; should prefer ch1
+        # (top-section match) even though ch2 came first in the KB scan.
+        assert "/a.png" in out[0].chunk.text
 
     def test_vanilla_path_no_retriever_no_op(self):
         d = SlidesDeliberation.__new__(SlidesDeliberation)

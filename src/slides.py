@@ -197,6 +197,14 @@ Use LaTeX features like:
 - \\begin{{block}}{{Title}} for highlighted blocks
 - \\begin{{lstlisting}} for code snippets
 - \\begin{{equation}} for mathematical formulas
+- \\includegraphics[width=0.55\\textwidth]{{/absolute/path/to/figure.png}} for figures from the textbook
+- \\begin{{tabular}} for comparison tables from the textbook
+
+PRESERVE FIGURES AND TABLES FROM THE DRAFT: if the Detailed Content above contains
+a \\includegraphics{{...}} command pointing to a real file path, you MUST keep it
+in the corresponding frame. Do NOT strip or replace it with prose. Same for any
+\\begin{{tabular}} blocks. These come from the textbook's figure and table
+extraction and are the only way the student sees the actual visual content.
 
 Your response should contain all the frames for this slide, each from \\begin{{frame}}[fragile] to \\end{{frame}}.
 Separate multiple frames with blank lines.
@@ -1124,8 +1132,19 @@ class SlidesDeliberation:
         class _VisualInjected:
             chunk: object
         injected = _VisualInjected(chunk=visual_chunk)
-        # Replace the lowest-ranked prose chunk with the visual one
-        return list(results[:-1]) + [injected]
+        # Hoist the visual chunk to the FRONT of results, replacing the
+        # lowest-ranked prose chunk. The block-building loop downstream
+        # consumes a fixed word budget (~1800) per chunk in rank order;
+        # large prose chunks in math-heavy chapters can exhaust the
+        # budget in 4-5 iterations. Appending the visual chunk to the
+        # tail meant its IMAGE_PATH/LATEX/TABLE markers never reached
+        # the writer's evidence_text, and the visual-content rule block
+        # never engaged — producing zero \includegraphics in the slides
+        # despite the VLM having extracted a real figure for the page.
+        # Putting the visual chunk first guarantees its marker survives
+        # into evidence_text even when later prose chunks get truncated
+        # or skipped.
+        return [injected] + list(results[:-1])
 
     def _build_visual_content_rules(self, evidence_text: str, artifact: str) -> str:
         """Return an extra rule block for hybrid-ingester visual markers.
