@@ -506,29 +506,53 @@ def _strip_malformed_citation_tokens(text: str, textbook_id, valid_tokens=None):
     return "".join(out_parts)
 
 
+_SECTION_TITLE_DECOR_RE = re.compile(
+    r"\*+|`+|\[|\]|^\s*\d+(?:\.\d+)*\s+"  # bold/italic/code, brackets, leading "N.N "
+)
+
+
+def _normalize_section_title(title):
+    """Strip markdown decoration and leading section numbers from a
+    raw IR section title so it reads as a clean topic name.
+
+    Input: ``"10.2 **[Partitioning Methods]**"``  →  ``"Partitioning Methods"``
+    Input: ``"3.4 Data Reduction"``               →  ``"Data Reduction"``
+    Input: ``"Bibliographic Notes"``              →  ``"Bibliographic Notes"``
+
+    The ingester preserves textbook formatting verbatim; outline-prompt
+    consumers want a clean topic phrase the LLM treats as a coverage
+    requirement.
+    """
+    if not title:
+        return ""
+    cleaned = title.strip()
+    # Drop leading section number like "10.2 " or "3.4.1 "
+    cleaned = re.sub(r"^\s*\d+(?:\.\d+)*\s+", "", cleaned)
+    # Strip markdown markers and bracket decoration
+    cleaned = re.sub(r"\*+|`+", "", cleaned)
+    cleaned = cleaned.replace("[", "").replace("]", "")
+    # Drop a trailing book-page-number remnant like " 444" pymupdf4llm
+    # sometimes glues onto a heading.
+    cleaned = re.sub(r"\s+\d+\s*$", "", cleaned)
+    return cleaned.strip()
+
+
 def _extract_topic_names(chunks):
-    """Return the ordered list of distinct ``section_title`` values
-    across the supplied chunks.
+    """Return the ordered list of distinct, normalized ``section_title``
+    values across the supplied chunks.
 
     Textbook section titles are the textbook author's own naming for
-    every covered topic — for a clustering-analysis chapter that means
-    K-Means, K-Medoids, AGNES, BIRCH, OPTICS, etc. lifted from the IR
-    without any
-    domain-specific regex. Works on any textbook the ingester can
-    parse: clustering chapters surface clustering algorithms, Python
-    chapters surface Python topics, agentic-pattern chapters surface
-    pattern names. No hardcoded vocabulary, no overfit risk.
-
-    Used by the slide-outline prompt to inject required coverage so
-    the outline agent doesn't improvise generic "Introduction Part N"
-    titles in place of the actual textbook topics.
+    every covered topic. Lifting them from the IR — after normalizing
+    out the markdown bold / bracket / section-number decoration the
+    ingester preserves — gives the outline agent a clean coverage
+    requirement. Works on any textbook the ingester can parse.
     """
     if not chunks:
         return []
     seen = []
     seen_set = set()
     for c in chunks:
-        title = (getattr(c, "section_title", "") or "").strip()
+        title = _normalize_section_title(getattr(c, "section_title", ""))
         if title and title not in seen_set:
             seen.append(title)
             seen_set.add(title)
@@ -549,6 +573,23 @@ def _section_word_counts(chunks):
             continue
         counts[sid] = counts.get(sid, 0) + len((c.text or "").split())
     return counts
+
+
+_INCLUDEGRAPHICS_RE = re.compile(
+    r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}"
+)
+
+
+def _extract_includegraphics(text):
+    """Return the list of full ``\\includegraphics[..]{path}`` commands
+    that appear in ``text``. Used to detect figure references the
+    Teaching Faculty's slide_draft emitted so the orchestrator can
+    re-inject them into the Teaching Assistant's frames if the TA
+    dropped them during the LaTeX rewrite (a recurring attention-budget
+    failure)."""
+    if not text:
+        return []
+    return _INCLUDEGRAPHICS_RE.findall(text)
 
 
 _CITATION_TOKEN_ANY_RE = re.compile(
@@ -2307,7 +2348,33 @@ class SlidesDeliberation:
         
         # Use utility function to extract frames
         frame_matches = SlideUtils.extract_latex_frames(response)
-        
+
+        # Backstop the TA's attention-budget failure on figure preservation.
+        # The Teaching Faculty's slide_draft often contains real
+        # ``\includegraphics{...}`` commands sourced from the textbook's
+        # VLM-extracted figures. The TA's prompt asks for preservation,
+        # but with seven competing instructions the TA frequently drops
+        # them. When the draft carries figures the rewritten frames lack,
+        # append the missing commands to the last frame deterministically
+        # so the visual content reaches slides.tex.
+        draft_paths = _extract_includegraphics(slide_draft)
+        if draft_paths and frame_matches:
+            kept_paths = set(_extract_includegraphics("\n".join(frame_matches)))
+            missing = [p for p in draft_paths if p not in kept_paths]
+            if missing:
+                last = frame_matches[-1]
+                injection = "\n    " + "\n    ".join(
+                    f"\\includegraphics[width=0.55\\textwidth]{{{p}}}"
+                    for p in missing
+                )
+                frame_matches[-1] = last.replace(
+                    "\\end{frame}", injection + "\n\\end{frame}", 1,
+                )
+                print(
+                    f"[grounding] re-injected {len(missing)} draft figure(s) "
+                    f"the TA dropped: {[p.rsplit('/',1)[-1] for p in missing]}"
+                )
+
         if frame_matches:
             # Initialize slide entry if it doesn't exist
             if slide_idx not in self.latex_dict:
