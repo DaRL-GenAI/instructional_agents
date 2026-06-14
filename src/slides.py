@@ -501,6 +501,36 @@ def _strip_malformed_citation_tokens(text: str, textbook_id, valid_tokens=None):
     return "".join(out_parts)
 
 
+_CITATION_TOKEN_ANY_RE = re.compile(
+    r"\s*\[[A-Za-z][A-Za-z0-9_]*:ch\d+(?:\.s\d+)?:p\d+\]"
+)
+
+
+def _strip_all_citation_tokens(text):
+    """Drop every well-formed citation token from a user-facing artifact.
+
+    Runs LAST in the strip chain — after the malformed-strip /
+    Gate B / write-time-verifier passes have already removed the bad
+    tokens. Author-curated lecture decks do not surface inline source
+    tags; carrying them through to slides / script / assessment
+    clutters the reader and the surrounding claim text stays intact
+    after the token is removed.
+
+    Matches the canonical ``[textbook_id:ch{N}(.s{M})?:p{N}]`` shape
+    only. Any malformed token that survived earlier passes also gets
+    cleaned here because the regex enforces the canonical shape.
+
+    The pattern absorbs a leading whitespace character so a removed
+    token does not leave a double space behind. Returns the original
+    string unchanged when no tokens are present (vanilla path).
+    """
+    if not text:
+        return text
+    if "[" not in text:
+        return text
+    return _CITATION_TOKEN_ANY_RE.sub("", text)
+
+
 def _dedupe_results(results):
     """Drop later results whose chunk overlaps a kept earlier chunk.
 
@@ -1524,6 +1554,18 @@ class SlidesDeliberation:
             slides_script_md = verifier.strip_unsupported(slides_script_md)
             assessment_md = verifier.strip_unsupported(assessment_md)
             print(f"[grounding] {verifier.report()}")
+        # Final pass: drop every surviving citation token from the
+        # user-facing artifacts. The writer used citations during
+        # generation to anchor claims; the verifier used them to score;
+        # the malformed-strip / Gate B / write-time-verifier stack
+        # already removed the bad ones. Everything that remains is a
+        # supported citation that the reader does not need to see —
+        # author-curated lecture decks do not show inline source tags
+        # and they cluttered the slides in earlier baselines. The
+        # underlying claims stay intact.
+        latex_source = _strip_all_citation_tokens(latex_source)
+        slides_script_md = _strip_all_citation_tokens(slides_script_md)
+        assessment_md = _strip_all_citation_tokens(assessment_md)
         with open(latex_path, "w") as f:
             f.write(latex_source)
         with open(script_path, "w") as f:
