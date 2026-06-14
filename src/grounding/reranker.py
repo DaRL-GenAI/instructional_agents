@@ -13,17 +13,13 @@ the textbook but missed the exact chunk" failure — the verifier's
 ``retrieval_bad`` slice. Targets the largest sub-100 % failure-mode
 bucket after generation discipline tightened up.
 
-Two concrete rerankers are provided:
+The production reranker is:
 
-* ``LLMReranker`` (default) — asks an OpenAI chat model to rate each
-  (query, passage) pair on 1–5. No disk / no model download — works
-  wherever the OpenAI client works. Costs ~$0.0001 per scoring call on
-  gpt-4o-mini.
 * ``CrossEncoderReranker`` — uses a ms-marco MiniLM cross-encoder
   (default: ``Xenova/ms-marco-MiniLM-L-6-v2``, ~90 MB) loaded via
   ``fastembed`` (which runs the ONNX-exported model on onnxruntime).
-  Faster per-call once loaded; numerically identical scores to the
-  original ``cross-encoder/ms-marco-MiniLM-L-6-v2`` released by
+  Numerically identical scores to the original
+  ``cross-encoder/ms-marco-MiniLM-L-6-v2`` released by
   sentence-transformers — no torch dependency.
 
 Plus ``HashReranker`` — a deterministic Jaccard-overlap stub used by
@@ -35,11 +31,10 @@ Design rules:
 * **Opt-in.** The default ``HybridRetriever.search`` path stays
   reranker-free. A reranker only fires when explicitly passed in.
 * **Lazy heavy imports.** Importing this module pulls in nothing heavy.
-  The OpenAI client / sentence-transformers model are loaded on first
-  ``.score()``. Lets callers exist without paying the cost.
+  The cross-encoder model is loaded on first ``.score()``. Lets callers
+  exist without paying the cost.
 * **Injectable interface.** ``Reranker`` is a `Protocol`; tests can pass
-  a deterministic stub (``HashReranker``) without needing weights or
-  the API.
+  a deterministic stub (``HashReranker``) without needing weights.
 * **Graceful degradation.** Library / network errors fall back to the
   original RRF order — never lose the candidate set.
 """
@@ -47,23 +42,16 @@ Design rules:
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 import re
 from typing import List, Optional, Protocol, Sequence
 
 # Default cross-encoder model — a small, well-tested MS-MARCO model.
 # ~90 MB on disk, CPU-fast, fetched from HuggingFace on first use and
-# cached locally. Only used by `CrossEncoderReranker`; `LLMReranker`
-# is the default for production. ``Xenova`` is the HuggingFace org
-# that hosts the ONNX-exported version of the original
+# cached locally. ``Xenova`` is the HuggingFace org that hosts the
+# ONNX-exported version of the original
 # ``cross-encoder/ms-marco-MiniLM-L-6-v2`` — same weights, same
 # inference graph, ~$0 to swap. Loaded via ``fastembed``.
 DEFAULT_CROSS_ENCODER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
-
-# Default LLM chat model for `LLMReranker`. Picked to match the cheap
-# tier the rest of the project uses; can be overridden per instance.
-DEFAULT_LLM_RERANKER_MODEL = "gpt-4o-mini"
 
 # How many first-stage candidates to send to the reranker per query.
 # Bigger = better recall before reranking, but slower. 20 is the sweet
@@ -131,115 +119,6 @@ class CrossEncoderReranker:
         # get a stable container.
         scores = list(enc.rerank(query, list(passages)))
         return [float(s) for s in scores]
-
-
-class LLMReranker:
-    """LLM-based reranker — asks an OpenAI chat model to score each
-    (query, passage) pair on 1–5 relevance.
-
-    Why this is the production default:
-      * No model weights / no disk / no torch dependency. Works in any
-        environment that has an OpenAI client.
-      * Argument for natural-language reasoning > a small distilled
-        cross-encoder on textbook-style prose, especially for queries
-        that are HyDE-expanded paragraphs.
-      * Single-tier deployment surface — the rest of the project
-        already uses the OpenAI API; one less moving part.
-
-    Cost note:
-      * One LLM call PER (query, passage) pair. With top_k=20 candidates
-        per query and ~12 grounded retrievals per chapter, that's ~240
-        scoring calls per chapter. At gpt-4o-mini's blended ~$0.0003 / 1k
-        tokens for ~150 tokens / call, that is ~$0.01 per chapter —
-        small relative to the ~$0.05 / chapter generation cost.
-      * The model + temperature can be overridden per instance.
-    """
-
-    # Each scoring call is structured (short JSON in / short integer out)
-    # so it stays tight in token count. Three retries on a transient
-    # parse / network failure; on persistent failure we return 3 (the
-    # neutral midpoint) for that passage so apply_rerank's overall
-    # ordering still works.
-    _MAX_RETRIES = 3
-    _NEUTRAL_SCORE = 3.0
-
-    def __init__(
-        self,
-        model: str = DEFAULT_LLM_RERANKER_MODEL,
-        client=None,
-        temperature: float = 0.0,
-        seed: Optional[int] = 42,
-    ) -> None:
-        self.model = model
-        self._client = client
-        self.temperature = temperature
-        self.seed = seed
-
-    def _ensure_client(self):
-        if self._client is None:
-            # Lazy import + lazy construction — lets the module be imported
-            # without an OpenAI key in env (e.g. by the test suite using
-            # the hash stub).
-            from openai import OpenAI
-            self._client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-        return self._client
-
-    def score(self, query: str, passages: Sequence[str]) -> List[float]:
-        if not passages:
-            return []
-        out: List[float] = []
-        for passage in passages:
-            out.append(self._score_one(query, passage))
-        return out
-
-    def _score_one(self, query: str, passage: str) -> float:
-        """Score a single (query, passage) pair. Returns float 1.0–5.0."""
-        client = self._ensure_client()
-        # Truncate very long passages — the reranker only needs to read
-        # enough to judge relevance, not the full chunk. Keeps token cost
-        # tight.
-        passage_excerpt = passage[:1500]
-        prompt = (
-            "Rate how relevant the textbook PASSAGE is to the QUERY on a "
-            "1.0-5.0 scale:\n"
-            "  5.0 = directly answers / defines the query topic\n"
-            "  4.0 = closely related, same concept area\n"
-            "  3.0 = adjacent topic, mentions the query topic in passing\n"
-            "  2.0 = different topic but same broad field\n"
-            "  1.0 = unrelated\n\n"
-            f"QUERY: {query}\n\n"
-            f"PASSAGE: {passage_excerpt}\n\n"
-            "Respond with STRICT JSON only: "
-            '{"SCORE": <float 1.0-5.0>}'
-        )
-        messages = [
-            {"role": "system",
-             "content": "You score passage relevance to queries. Output only the JSON object."},
-            {"role": "user", "content": prompt},
-        ]
-        for _ in range(self._MAX_RETRIES):
-            try:
-                kwargs = {
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": self.temperature,
-                }
-                if self.seed is not None:
-                    kwargs["seed"] = self.seed
-                resp = client.chat.completions.create(**kwargs)
-                text = resp.choices[0].message.content or ""
-                m = re.search(r'\{[^{}]*"SCORE"[^{}]*\}', text, re.DOTALL)
-                if not m:
-                    continue
-                obj = json.loads(m.group(0))
-                score = float(obj.get("SCORE", self._NEUTRAL_SCORE))
-                if 1.0 <= score <= 5.0:
-                    return score
-            except Exception:
-                continue
-        # Persistent failure — return neutral so this passage doesn't
-        # dominate or sink the ranking.
-        return self._NEUTRAL_SCORE
 
 
 # ---------------------------------------------------------------------------

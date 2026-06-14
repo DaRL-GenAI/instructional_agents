@@ -14,7 +14,6 @@ from src.grounding.knowledge_base import Chunk, TextbookKnowledgeBase
 from src.grounding.reranker import (
     CrossEncoderReranker,
     HashReranker,
-    LLMReranker,
     Reranker,
     apply_rerank,
 )
@@ -33,7 +32,6 @@ __all__ = [
     "HashEmbedder",
     "HashReranker",
     "HybridRetriever",
-    "LLMReranker",
     "OpenAIEmbedder",
     "Reranker",
     "ScoredChunk",

@@ -934,13 +934,10 @@ class ADDIE:
             # cases where dense and sparse retrieval agreed on a chunk
             # that wasn't actually about the query.
             #
-            # An earlier LLM-based reranker (LLMReranker) was tried and
-            # measured no improvement (89.3 % vs 90.2 % precision); the
-            # cross-encoder is a different signal entirely (offline BERT
-            # vs LLM-as-judge). Defensive code in HybridRetriever.search
-            # keeps the first-stage order on any reranker failure, so
-            # the caller is never worse off than the no-reranker
-            # baseline. Generic across textbooks — no per-source tuning.
+            # Defensive code in HybridRetriever.search keeps the
+            # first-stage order on any reranker failure, so the caller
+            # is never worse off than the no-reranker baseline. Generic
+            # across textbooks — no per-source tuning.
             # Defensive construction: the cross-encoder pulls in
             # sentence-transformers / torch which can fail on bleeding-edge
             # versions (SIGBUS / NaN scores observed historically). If

@@ -2052,13 +2052,7 @@ class SlidesDeliberation:
         Focus on making the content educational, engaging, and aligned with the chapter's learning objectives.
         Note: Your output length needs to be kept within a reasonable range so that it can fit on a single PPT slide.
         """
-        
-        # Multi-draft best-pick path DISABLED — measurement showed the
-        # citation-count score function rewarded volume over quality.
-        # The $0.30/run cost is reclaimed for the semantic-gate stack
-        # which targets the same wrong-section-named failure mode more
-        # directly. _generate_best_of_n_draft kept as documentation; use
-        # the --enable-best-of-n flag to opt back in.
+
         teaching_faculty.reset_history()
         print(f"Generating detailed content for slide: {slide['title']}...")
         response, elapsed_time, token_usage = teaching_faculty.generate_response(
@@ -2071,59 +2065,6 @@ class SlidesDeliberation:
         self._record_emitted_citations(response)
 
         return response
-
-    def _generate_best_of_n_draft(self, agent, prompt: str, n: int = 2) -> str:
-        """Generate ``n`` drafts and return the one with the most
-        resolvable citation tokens (proxy for grounding density).
-        Increments the diversity-cap counter using ONLY the chosen draft
-        so over-cap state stays consistent with what landed in the final
-        artifact.
-        """
-        tracker = getattr(self, "citation_usage_tracker", None)
-        candidates = []
-        for i in range(n):
-            agent.reset_history()
-            resp, elapsed_time, token_usage = agent.generate_response(
-                prompt=prompt,
-                stream=True,
-                save_to_history=False,
-            )
-            self.time_slides += elapsed_time
-            self.token_slides += token_usage
-            # Score by resolvable citation count if a tracker is present;
-            # otherwise by raw count of well-formed tokens in text.
-            score = (
-                tracker.scan_and_increment(resp) if tracker is not None else 0
-            )
-            # We just incremented the tracker for THIS draft; we'll roll
-            # back the losers' increments after we pick the winner. Store
-            # the increment amount alongside the response.
-            candidates.append({"response": resp, "score": score})
-            print(f"  draft {i+1}/{n}: {score} resolvable citation tokens")
-        # Pick the winner — highest score; ties broken by earlier draft.
-        winner = max(candidates, key=lambda c: c["score"])
-        # Roll back losers' tracker increments. We rescanned each draft
-        # against the tracker (incrementing each time). Undo the losers
-        # so only the winner's citations count toward the cap.
-        if tracker is not None:
-            losers = [c for c in candidates if c is not winner]
-            for loser in losers:
-                # Re-scan loser to identify which tokens were emitted,
-                # then decrement those.
-                self._decrement_tracker_for_text(tracker, loser["response"])
-        return winner["response"]
-
-    def _decrement_tracker_for_text(self, tracker, text) -> None:
-        """Roll back tracker counts for a discarded draft. Used after
-        multi-draft pick to keep cap state accurate."""
-        if not text:
-            return
-        import re
-        for m in re.finditer(r"\[([^:\[\]]+):(ch\d+(?:\.s\d+)?):p(\d+)\]", text):
-            tok = m.group(0)
-            key = tracker._token_to_chunk_key.get(tok)
-            if key is not None and tracker._counts[key] > 0:
-                tracker._counts[key] -= 1
 
     def _generate_slide_latex(self, slide_idx: int, slide: Dict[str, str], slide_draft: str):
         """Generate LaTeX code for a slide using Teaching Assistant agent - can generate multiple frames"""
