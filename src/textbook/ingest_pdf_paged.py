@@ -32,6 +32,59 @@ from .ingest_pdf import _file_sort_key, _normalize_pdf_markdown_headings, _renum
 from .schema import Chapter, PageSpan, Textbook
 
 
+# Math signal regex — Greek letters, calculus operators, comparison
+# operators paired with symbols, subscript/superscript patterns. A
+# paragraph that hits >= 3 distinct signals OR carries the keyword
+# "equation"/"formula" is tagged kind=equation so the writer's
+# evidence block surfaces it via the KIND field. Generic across
+# textbooks: any domain whose source PDF describes formulas in
+# notation will trigger.
+_MATH_SIGNAL_RE = re.compile(
+    r"[Α-ω]"               # Greek capitals + lowercase
+    r"|[∀-⋿]"              # mathematical operators
+    r"|\bsum_\{|\bsum_\b"
+    r"|\\frac|\\sum|\\int|\\sqrt|\\lVert|\\partial"
+    r"|\\\[|\\\]"
+    r"|\b\w+_\{[^}]+\}"              # subscript pattern x_{i}
+    r"|\b\w+\^\{?[^\s}]+\}?"         # superscript pattern x^2
+)
+_MATH_KEYWORD_RE = re.compile(
+    r"\b(?:equation|formula|theorem|lemma|proof|kernel function|"
+    r"objective function|distance metric)\b",
+    re.IGNORECASE,
+)
+
+
+def _tag_equation_paragraphs(textbook: Textbook) -> int:
+    """Re-tag prose paragraphs that contain dense math notation with
+    ``kind='equation'`` so the slide writer's KIND field surfaces them.
+
+    Returns the count of paragraphs re-tagged. Idempotent and safe to
+    call repeatedly — already-tagged paragraphs are left alone.
+
+    Triggers on: 3+ distinct math signals (Greek letters, calculus
+    operators, sub/superscript patterns) OR explicit math keywords
+    (equation / formula / kernel function / etc.). The detector is
+    domain-agnostic — any source PDF that describes equations in
+    notation will surface them.
+    """
+    retagged = 0
+    for chapter in textbook.chapters:
+        for section in chapter.sections:
+            for para in section.paragraphs:
+                if para.kind and para.kind != "prose":
+                    continue
+                text = para.text or ""
+                if not text:
+                    continue
+                signal_matches = _MATH_SIGNAL_RE.findall(text)
+                has_keyword = bool(_MATH_KEYWORD_RE.search(text))
+                if len(set(signal_matches)) >= 3 or has_keyword:
+                    para.kind = "equation"
+                    retagged += 1
+    return retagged
+
+
 def _assign_real_pages(textbook: Textbook) -> None:
     """Fill in Section.pages and Chapter.pages from per-paragraph pages.
 
@@ -298,6 +351,7 @@ def ingest_pdf_file_paged(
         chapters=chapters,
     )
     _assign_real_pages(textbook)
+    _tag_equation_paragraphs(textbook)
     return textbook
 
 
