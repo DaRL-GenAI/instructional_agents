@@ -23,6 +23,7 @@ pagination).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -163,6 +164,7 @@ def ingest_pdf_file_paged(
     title: str = "Untitled",
     authors: Optional[List[str]] = None,
     edition: Optional[str] = None,
+    figures_dir: Optional[Path] = None,
 ) -> Textbook:
     """Ingest a single PDF via PyMuPDF4LLM with per-page granularity.
 
@@ -170,6 +172,12 @@ def ingest_pdf_file_paged(
         path: PDF file path.
         textbook_id / title / authors / edition: Forwarded to the
             Textbook IR. Caller-supplied identifiers.
+        figures_dir: When set, pymupdf4llm extracts embedded image
+            XObjects from the PDF as tight cropped PNGs into this
+            directory, and the ingester emits
+            ``[IMAGE_PATH: ...]`` markers on the corresponding pages.
+            When None (default), no image files are written and no
+            image markers appear in the IR — vanilla preservation.
 
     Returns:
         A :class:`Textbook` with REAL per-paragraph page numbers
@@ -188,9 +196,54 @@ def ingest_pdf_file_paged(
         )
 
     path = Path(path)
-    pages = pymupdf4llm.to_markdown(
-        str(path), page_chunks=True, show_progress=False,
-    )
+
+    # When figures_dir is set, route through pymupdf4llm's native image
+    # extraction. The library writes embedded image XObjects from the
+    # PDF as tight cropped PNGs — the actual figure region, not a
+    # full-page screenshot. Vanilla path (figures_dir=None) skips this.
+    md_kwargs = {"page_chunks": True, "show_progress": False}
+    figures_dir_p = Path(figures_dir) if figures_dir is not None else None
+    if figures_dir_p is not None:
+        figures_dir_p.mkdir(parents=True, exist_ok=True)
+        md_kwargs.update({
+            "write_images": True,
+            "image_path": str(figures_dir_p),
+            "image_format": "png",
+            "image_size_limit": 0.05,
+        })
+
+    pages = pymupdf4llm.to_markdown(str(path), **md_kwargs)
+
+    # pymupdf4llm names extracted images as ``{pdf_stem}.pdf-{page:04d}-
+    # {idx:02d}.png``. Walk the directory once after extraction and
+    # build a page → list[(idx, renamed_path)] map. We rename each
+    # file to ``{textbook_id}_p{page:04d}_{idx:02d}.png`` so the
+    # citation surface uses our short textbook_id, not the PDF stem
+    # (which can be arbitrary). Renaming is cheap and one-shot.
+    images_by_page: dict[int, list[Path]] = {}
+    if figures_dir_p is not None:
+        pdf_stem = path.stem
+        # Regex captures the page number + per-page image index out of
+        # pymupdf4llm's default filename convention. Stem is escaped to
+        # cope with dots/underscores in real-world PDF names.
+        pattern = re.compile(
+            rf'^{re.escape(pdf_stem)}\.pdf-(\d+)-(\d+)\.png$'
+        )
+        for f in sorted(figures_dir_p.iterdir()):
+            if not f.is_file():
+                continue
+            m = pattern.match(f.name)
+            if not m:
+                continue
+            page_num = int(m.group(1))
+            img_idx = int(m.group(2))
+            new_name = f"{textbook_id}_p{page_num:04d}_{img_idx:02d}.png"
+            new_path = figures_dir_p / new_name
+            if new_path != f:
+                if new_path.exists():
+                    new_path.unlink()
+                f.rename(new_path)
+            images_by_page.setdefault(page_num, []).append(new_path)
 
     all_blocks: list[dict] = []
     seen_chapter = False
@@ -198,15 +251,29 @@ def ingest_pdf_file_paged(
         # pymupdf4llm returns a list of either dicts (with 'text', etc.)
         # or bare strings depending on the version. Handle both.
         md_text = page["text"] if isinstance(page, dict) else page
-        if not md_text or not md_text.strip():
-            continue
         # PyMuPDF page numbers are 1-based externally; we report
         # page_idx + 1 to align with what the verifier expects.
         page_num = page_idx + 1
-        blocks, seen_chapter = _extract_blocks_with_page(
-            md_text, page_num, seen_chapter,
-        )
-        all_blocks.extend(blocks)
+        if md_text and md_text.strip():
+            blocks, seen_chapter = _extract_blocks_with_page(
+                md_text, page_num, seen_chapter,
+            )
+            all_blocks.extend(blocks)
+        # Emit one figure_cap paragraph per image extracted from this
+        # page so the downstream chunker can surface visual chunks.
+        # Each paragraph carries an [IMAGE_PATH: ...] marker pointing
+        # at the saved PNG; the writer's visual-content rules turn it
+        # into ``\includegraphics`` on the slide.
+        for img_idx, img_path in enumerate(images_by_page.get(page_num, []), start=1):
+            all_blocks.append({
+                "type": "paragraph",
+                "kind": "figure_cap",
+                "text": (
+                    f"Figure (p{page_num}, item {img_idx}): "
+                    f"[IMAGE_PATH: {img_path.resolve()}]"
+                ),
+                "page": page_num,
+            })
 
     # Cross-page sentence stitching: merge dangling-end paragraphs on
     # page N with continuing-start paragraphs on page N+1 so a sentence
@@ -240,13 +307,16 @@ def ingest_pdf_directory_paged(
     title: str = "Untitled",
     authors: Optional[List[str]] = None,
     edition: Optional[str] = None,
+    figures_dir: Optional[Path] = None,
 ) -> Textbook:
     """Ingest a directory of per-chapter PDFs via PyMuPDF4LLM paged path.
 
     Mirrors :func:`src.textbook.ingest_pdf.ingest_pdf_directory` but
     routes each PDF through :func:`ingest_pdf_file_paged` so chapters
     keep real per-page numbering inside each PDF. Top-level chapter
-    numbers are reassigned in directory order.
+    numbers are reassigned in directory order. ``figures_dir`` is
+    forwarded to each per-chapter ingestion so image extraction works
+    across the whole directory.
     """
     path = Path(path)
     pdf_files = sorted(
@@ -257,6 +327,7 @@ def ingest_pdf_directory_paged(
     for pf in pdf_files:
         sub = ingest_pdf_file_paged(
             pf, textbook_id=textbook_id, title=title,
+            figures_dir=figures_dir,
         )
         all_chapters.extend(sub.chapters)
     for idx, chapter in enumerate(all_chapters, start=1):

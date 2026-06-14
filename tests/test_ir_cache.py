@@ -108,7 +108,7 @@ class TestFromPathUsesIrCache:
     """End-to-end: TextbookKnowledgeBase.from_path uses the cache on
     the second call so the underlying ingester is NOT invoked twice."""
 
-    @patch("src.textbook.ingest_pdf.ingest_pdf_file")
+    @patch("src.grounding.knowledge_base._ingest")
     def test_second_call_loads_from_cache(self, mock_ingest, tmp_path):
         from src.grounding.knowledge_base import TextbookKnowledgeBase
 
@@ -135,7 +135,7 @@ class TestFromPathUsesIrCache:
         assert kb2.textbook.textbook_id == "cached_textbook"
         assert len(kb2.chunks) == len(kb1.chunks)
 
-    @patch("src.textbook.ingest_pdf.ingest_pdf_file")
+    @patch("src.grounding.knowledge_base._ingest")
     def test_use_ir_cache_false_bypasses_cache(self, mock_ingest, tmp_path):
         from src.grounding.knowledge_base import TextbookKnowledgeBase
 

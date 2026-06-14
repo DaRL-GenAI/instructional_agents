@@ -357,7 +357,17 @@ class TextbookKnowledgeBase:
                     f"({len(textbook.chapters)} chapters)."
                 )
         if textbook is None:
-            textbook = _ingest(p, derived_id, derived_title, vlm_extractor=vlm_extractor)
+            # The figures sub-directory of the cache root is where
+            # pymupdf4llm writes tight cropped image XObjects when the
+            # paged ingester is used. Pre-create it so the ingester
+            # finds a stable path even on a fresh checkout.
+            figures_dir = ir_cache_dir / "figures"
+            figures_dir.mkdir(parents=True, exist_ok=True)
+            textbook = _ingest(
+                p, derived_id, derived_title,
+                vlm_extractor=vlm_extractor,
+                figures_dir=figures_dir,
+            )
             if use_ir_cache:
                 save_ir(ir_cache_dir, derived_id, textbook)
                 print(
@@ -388,7 +398,9 @@ class TextbookKnowledgeBase:
         return cls(textbook=textbook, chunks=chunks)
 
 
-def _ingest(p: Path, textbook_id: str, title: str, *, vlm_extractor=None) -> Textbook:
+def _ingest(p: Path, textbook_id: str, title: str, *,
+            vlm_extractor=None,
+            figures_dir: Optional[Path] = None) -> Textbook:
     # Lazy imports so importing this module doesn't pay PyMuPDF startup
     # cost when no textbook is in play.
     if p.is_file() and p.suffix.lower() == ".pdf":
@@ -398,8 +410,16 @@ def _ingest(p: Path, textbook_id: str, title: str, *, vlm_extractor=None) -> Tex
                 p, textbook_id=textbook_id, title=title,
                 vlm_extractor=vlm_extractor,
             )
-        from src.textbook.ingest_pdf import ingest_pdf_file
-        return ingest_pdf_file(p, textbook_id=textbook_id, title=title)
+        # Default path: pymupdf4llm paged ingester with native image
+        # extraction. Produces tight cropped figure PNGs (the embedded
+        # XObjects from the PDF), not full-page screenshots — solves the
+        # "figures look like whole pages" complaint at the source. When
+        # figures_dir is None the ingester still works in text-only mode.
+        from src.textbook.ingest_pdf_paged import ingest_pdf_file_paged
+        return ingest_pdf_file_paged(
+            p, textbook_id=textbook_id, title=title,
+            figures_dir=figures_dir,
+        )
     if p.is_file() and p.suffix.lower() in {".md", ".markdown"}:
         from src.textbook.ingest_md import ingest_file as ingest_md_file
         return ingest_md_file(p, textbook_id=textbook_id, title=title)
@@ -413,8 +433,15 @@ def _ingest(p: Path, textbook_id: str, title: str, *, vlm_extractor=None) -> Tex
                     p, textbook_id=textbook_id, title=title,
                     vlm_extractor=vlm_extractor,
                 )
-            from src.textbook.ingest_pdf import ingest_pdf_directory
-            return ingest_pdf_directory(p, textbook_id=textbook_id, title=title)
+            # Default directory path: pymupdf4llm-paged, same as the
+            # single-file case. Tight cropped figures land in
+            # figures_dir; image markers attach to the right page within
+            # each per-chapter PDF.
+            from src.textbook.ingest_pdf_paged import ingest_pdf_directory_paged
+            return ingest_pdf_directory_paged(
+                p, textbook_id=textbook_id, title=title,
+                figures_dir=figures_dir,
+            )
         if mds and not pdfs:
             from src.textbook.ingest_md import ingest_directory as ingest_md_directory
             return ingest_md_directory(p, textbook_id=textbook_id, title=title)
