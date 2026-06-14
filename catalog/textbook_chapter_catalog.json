@@ -1,0 +1,35 @@
+{
+    "student_profile": {
+        "student_background": "Graduate students reading a single textbook chapter for a research-level course; comfortable with mathematical notation and pseudocode.",
+        "aggregate_academic_performance": "Strong analytical readiness.",
+        "anticipated_learner_needs_and_barriers": "Benefits from worked examples on small datasets and explicit equations alongside prose explanations."
+    },
+    "instructor_preferences": {
+        "instructor_emphasis_intent": "Textbook-faithful coverage. Every named algorithm in the chapter gets at least one dedicated slide. Every formula in the chapter is rendered as LaTeX, not paraphrased as prose. Depth over breadth.",
+        "instructor_style_preferences": "Definition then formula then algorithm steps then worked example then trade-offs. Match the textbook's depth allocation: if Han spends 9 slides on BIRCH, devote multiple slides to BIRCH. Use figures and equations from the source whenever a chunk supplies them.",
+        "instructor_focus_for_assessment": "Algorithm understanding only. No hands-on coding sessions, no group projects, no business case studies, no software-tooling slides, no Q&A wrap. These belong elsewhere."
+    },
+    "course_structure": {
+        "course_learning_outcomes": "Master the chapter's core algorithms by stating their objectives, tracing their iterations on small examples, and comparing their trade-offs.",
+        "total_number_of_weeks": "1 week — single-chapter deep dive.",
+        "weekly_schedule_outline": "Walk the textbook chapter section by section in order. Every numbered subsection (e.g., 10.2.1 K-Means, 10.2.2 K-Medoids, 10.3.4 BIRCH) becomes at least one slide. Equations are first-class slide content."
+    },
+    "assessment_design": {
+        "assessment_format_preferences": "One conceptual quiz aligned with the chapter's algorithm definitions and trade-offs.",
+        "assessment_delivery_constraints": "PDF submission."
+    },
+    "teaching_constraints": {
+        "platform_policy_constraints": "Standard LMS.",
+        "ta_support_availability": "No TA.",
+        "instructional_delivery_context": "Single graduate-level lecture covering one textbook chapter.",
+        "max_slide_count": "80"
+    },
+    "institutional_requirements": {
+        "program_learning_outcomes": "MS-level competence with the chapter's named methods.",
+        "academic_policies_and_institutional_standards": "Standard policies.",
+        "department_syllabus_requirements": "Coverage must mirror the source textbook chapter's section structure."
+    },
+    "prior_feedback": {
+        "historical_course_evaluation_results": "Students requested more equations rendered as LaTeX rather than paraphrased in prose, and more worked examples on algorithm internals."
+    }
+}
