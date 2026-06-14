@@ -5,8 +5,8 @@ reconstructing chapter / section structure from text patterns and font-size
 cues — a PDF has no explicit heading markup the way markdown does.
 
 Handles two layouts:
-  - a whole-book PDF with "Chapter N" headings inside (e.g. Agentic Design Patterns)
-  - one-chapter-per-file PDFs combined via ingest_pdf_directory (e.g. Han chapters)
+  - a whole-book PDF with "Chapter N" headings inside
+  - one-chapter-per-file PDFs combined via ingest_pdf_directory
 
 Heading detection needs BOTH cues to agree: a heading must be visually
 heading-sized (font larger than body text) AND either match a heading pattern

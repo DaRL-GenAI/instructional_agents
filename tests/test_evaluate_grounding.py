@@ -48,7 +48,7 @@ def fake_kb():
     kb = MagicMock()
     kb.chunks = [chunk_a, chunk_b]
     kb.textbook = MagicMock()
-    kb.textbook.title = "Han 3e (fixture)"
+    kb.textbook.title = "Fixture Textbook"
     kb.textbook_id = "han_data_mining_3e"
     return kb
 

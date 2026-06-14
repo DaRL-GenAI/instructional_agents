@@ -3,8 +3,8 @@
 Layer 1 — a small labeled PDF fixture (tests/fixtures/mini_textbook.pdf) with
 known structure, plus unit tests of the heading / classification helpers.
 
-Layer 2 — optional smoke tests against the real eval PDFs (Agentic Design
-Patterns, Han 3rd ed.) if present locally; these skip cleanly when absent.
+Layer 2 — optional smoke tests against the real eval PDFs if present
+locally; these skip cleanly when absent.
 """
 
 import re
@@ -206,24 +206,24 @@ class TestIngestAgentic:
 
 @pytest.mark.skipif(not HAN_DIR.exists(), reason="Han chapter PDFs not present")
 class TestIngestHanDirectory:
-    """Layer 2 — real one-chapter-per-file PDFs (Han 3rd ed.)."""
+    """Layer 2 — real one-chapter-per-file PDFs from the local data dir."""
 
     def test_six_chapters(self):
-        tb = ingest_pdf_directory(HAN_DIR, textbook_id="han", title="Han 3e")
+        tb = ingest_pdf_directory(HAN_DIR, textbook_id="han", title="External Textbook")
         assert len(tb.chapters) == 6
 
     def test_chapters_in_numeric_order(self):
-        tb = ingest_pdf_directory(HAN_DIR, textbook_id="han", title="Han 3e")
+        tb = ingest_pdf_directory(HAN_DIR, textbook_id="han", title="External Textbook")
         # filenames lead with 2,3,6,8,9,10 — chapter titles should start likewise
         leading = [c.title.split()[0] for c in tb.chapters]
         assert leading == ["2", "3", "6", "8", "9", "10"]
 
     def test_every_chapter_has_sections(self):
-        tb = ingest_pdf_directory(HAN_DIR, textbook_id="han", title="Han 3e")
+        tb = ingest_pdf_directory(HAN_DIR, textbook_id="han", title="External Textbook")
         for c in tb.chapters:
             assert len(c.sections) >= 1
 
     def test_paragraph_ids_unique(self):
-        tb = ingest_pdf_directory(HAN_DIR, textbook_id="han", title="Han 3e")
+        tb = ingest_pdf_directory(HAN_DIR, textbook_id="han", title="External Textbook")
         ids = [p.para_id for c in tb.chapters for s in c.sections for p in s.paragraphs]
         assert len(ids) == len(set(ids))

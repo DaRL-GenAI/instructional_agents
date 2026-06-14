@@ -258,7 +258,7 @@ class EvaluationAgent:
 
 
 # Citation tokens emitted by the grounded generation pipeline look like
-# `[textbook_id:section_id:p<page>]`, e.g. `[han_data_mining_3e:ch6.s3:p15]`.
+# `[textbook_id:section_id:p<page>]`, e.g. `[my_textbook:ch6.s3:p15]`.
 # textbook_id and section_id are restricted to [A-Za-z0-9._] by the IR builders,
 # so the regex below matches everything well-formed and nothing else.
 CITATION_TOKEN_RE = re.compile(r"\[([A-Za-z0-9_]+):([A-Za-z0-9._]+):p(\d+)\]")
@@ -636,8 +636,8 @@ class GroundingAgent:
 
         if chunk is None:
             # Token doesn't resolve. Could be a typo, hallucinated section
-            # ID, or a truncated token (we saw `[han_data_mining_3e:c]`
-            # in real B1 output). Flag but don't score.
+            # ID, or a truncated token (e.g. `[my_textbook:c]` where the
+            # section ID was cut off mid-word). Flag but don't score.
             return {
                 **cite,
                 "malformed": True,

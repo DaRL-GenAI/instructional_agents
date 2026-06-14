@@ -272,7 +272,7 @@ class TestRetrievalOnHan:
 
     def test_returns_results_in_reasonable_time(self, tmp_path: Path):
         import time as _time
-        kb = TextbookKnowledgeBase.from_path(HAN_DIR, textbook_id="han", title="Han 3e")
+        kb = TextbookKnowledgeBase.from_path(HAN_DIR, textbook_id="han", title="External Textbook")
         retriever = HybridRetriever(kb, embedder=HashEmbedder(dim=128),
                                     cache_dir=tmp_path)
         retriever.ensure_indexed()
@@ -284,7 +284,7 @@ class TestRetrievalOnHan:
         assert elapsed < 1.0  # numpy cosine on ~1k chunks should be sub-second
 
     def test_section_filter_narrows_results(self, tmp_path: Path):
-        kb = TextbookKnowledgeBase.from_path(HAN_DIR, textbook_id="han", title="Han 3e")
+        kb = TextbookKnowledgeBase.from_path(HAN_DIR, textbook_id="han", title="External Textbook")
         retriever = HybridRetriever(kb, embedder=HashEmbedder(dim=128),
                                     cache_dir=tmp_path)
         # Pick the first available section id from the loaded textbook.
