@@ -180,9 +180,14 @@ IMPORTANT: You can create multiple frames for this slide if needed (maximum {max
 
 Each frame should be structured as follows:
 \\begin{{frame}}[fragile]
-    \\frametitle{{Slide Title - Part X}}
+    \\frametitle{{<distinct topical subtitle for this frame>}}
     % Content goes here
 \\end{{frame}}
+
+If you produce multiple frames for one slide, give each frame a DISTINCT topical
+subtitle reflecting its specific content (e.g. "K-Means Algorithm",
+"K-Means Complexity", "K-Means Limitations") — NOT generic "Part 1",
+"Part 2", "Part 3" suffixes.
 
 Guidelines:
 1. Don't use non-English characters directly, e.g. use $\\gamma$ instead of γ, $\\epsilon$ instead of ε
@@ -276,9 +281,9 @@ _FAKE_PATH_INCLUDEGRAPHICS_RE = _re_for_latex_cleanup.compile(
 )
 
 # Citation tokens accidentally wrapped in \cite{}. The writer emitted
-# \cite{han_data_mining_3e:ch1.s1:p01} (BibTeX syntax) which needs a
+# \cite{textbook_id:ch1.s1:p01} (BibTeX syntax) which needs a
 # bibliography file to compile. Rewrite to the canonical plain-bracket
-# form [han_data_mining_3e:ch1.s1:p01].
+# form [textbook_id:ch1.s1:p01].
 _BIBTEX_WRAPPED_CITE_RE = _re_for_latex_cleanup.compile(
     r"\\cite\{([^}]+_data_mining_3e:ch\d+(?:\.s\d+)?:p\d+)\}"
 )
@@ -377,8 +382,8 @@ def _clean_latex_artifacts(text):
       1. \\includegraphics{/path/to/file.png} (hallucinated path) →
          remove the entire \\includegraphics line so the slide still
          compiles.
-      2. \\cite{han_data_mining_3e:ch1.s1:p01} → bare bracket form
-         [han_data_mining_3e:ch1.s1:p01] (BibTeX → inline citation).
+      2. \\cite{textbook_id:ch1.s1:p01} → bare bracket form
+         [textbook_id:ch1.s1:p01] (BibTeX → inline citation).
       3. Bare ampersands in slide text outside tabular/align → \\&.
       4. Unicode em-dash, en-dash, curly quotes, ellipsis →
          LaTeX-native ASCII equivalents (---, --, ``...'', \\ldots{})
@@ -449,10 +454,10 @@ def _strip_malformed_citation_tokens(text: str, textbook_id, valid_tokens=None):
     ``textbook_id`` followed by ``:`` but FAIL to match the canonical
     citation shape (textbook_id : section_id : p<page>). Common cases:
 
-      * ``[han_data_mining_3e:c]`` — section truncated mid-word
-      * ``[han_data_mining_3e]`` — section + page missing
-      * ``[han_data_mining_3e:ch1.s1]`` — page missing
-      * ``[han_data_mining_3e:ch99.s99:p01]`` — well-formed but the
+      * ``[textbook_id:c]`` — section truncated mid-word
+      * ``[textbook_id]`` — section + page missing
+      * ``[textbook_id:ch1.s1]`` — page missing
+      * ``[textbook_id:ch99.s99:p01]`` — well-formed but the
         section/page combination doesn't resolve to any chunk in the
         knowledge base. When ``valid_tokens`` is supplied (a set of
         every token the KB recognises), well-formed tokens that
@@ -499,6 +504,51 @@ def _strip_malformed_citation_tokens(text: str, textbook_id, valid_tokens=None):
     if last == 0:
         return text  # no malformed found; return original
     return "".join(out_parts)
+
+
+def _extract_topic_names(chunks):
+    """Return the ordered list of distinct ``section_title`` values
+    across the supplied chunks.
+
+    Textbook section titles are the textbook author's own naming for
+    every covered topic — for a clustering-analysis chapter that means
+    K-Means, K-Medoids, AGNES, BIRCH, OPTICS, etc. lifted from the IR
+    without any
+    domain-specific regex. Works on any textbook the ingester can
+    parse: clustering chapters surface clustering algorithms, Python
+    chapters surface Python topics, agentic-pattern chapters surface
+    pattern names. No hardcoded vocabulary, no overfit risk.
+
+    Used by the slide-outline prompt to inject required coverage so
+    the outline agent doesn't improvise generic "Introduction Part N"
+    titles in place of the actual textbook topics.
+    """
+    if not chunks:
+        return []
+    seen = []
+    seen_set = set()
+    for c in chunks:
+        title = (getattr(c, "section_title", "") or "").strip()
+        if title and title not in seen_set:
+            seen.append(title)
+            seen_set.add(title)
+    return seen
+
+
+def _section_word_counts(chunks):
+    """Return {section_id: total word count} across the supplied chunks.
+
+    Used by the slide-outline prompt to allocate the slide budget
+    proportional to each section's coverage in the textbook (so BIRCH —
+    9 author slides — gets more outline slots than K-Modes, which gets 1).
+    """
+    counts: dict = {}
+    for c in chunks:
+        sid = c.section_id
+        if not sid:
+            continue
+        counts[sid] = counts.get(sid, 0) + len((c.text or "").split())
+    return counts
 
 
 _CITATION_TOKEN_ANY_RE = re.compile(
@@ -915,12 +965,20 @@ class SlidesDeliberation:
                 page_label = r.chunk.page_range_label()
             except AttributeError:
                 page_label = f"p{r.chunk.page_start}"
+            # Surface the chunk's kind tag so the writer knows whether
+            # an excerpt is a worked example, an equation, a figure
+            # caption, or plain prose. Used by RULE 6 (example
+            # preservation) and RULE 7 (visual marker handling) in the
+            # slide rule set; harmless when the kind is plain prose.
+            kinds = getattr(r.chunk, "kinds", None) or ["prose"]
+            kind_label = "+".join(kinds)
             block = (
                 f"━━ EXCERPT {idx} of {len(results)} "
                 f"{'━' * max(0, 50 - len(str(idx)) - len(str(len(results))))}\n"
                 f"  TOKEN   : {r.chunk.citation_token()}\n"
                 f"  SOURCE  : {source_line}\n"
                 f"  PAGE    : {page_label}\n"
+                f"  KIND    : {kind_label}\n"
                 f"  PASSAGE :\n"
                 f"  «{text}»"
             )
@@ -1022,11 +1080,26 @@ class SlidesDeliberation:
             "the excerpts do not support.\n\n"
             "  RULE 4 (EXACT TOKENS ONLY). Each citation token must appear EXACTLY "
             "as printed in the excerpt header — no truncation, no modification, "
-            "never invented. A token like \"[han_data_mining_3e:c]\" is wrong and "
+            "never invented. A token like \"[textbook_id:c]\" is wrong and "
             "will be flagged.\n\n"
             "  RULE 5 (CITE THE CORRECT EXCERPT). If a claim is supported by "
             "Excerpt 2, cite Excerpt 2's token — not Excerpt 1's. The cited "
             "excerpt must be the one that actually supports the claim.\n\n"
+            "  RULE 6 (PRESERVE WORKED EXAMPLES). If an excerpt's KIND "
+            "header contains \"example\", preserve the concrete trace — "
+            "specific data points, iteration steps, intermediate values. "
+            "Do NOT reduce it to an abstract definition. Author-curated "
+            "decks rely on worked examples to teach algorithm internals; "
+            "stripping the numbers loses the lesson.\n\n"
+            "  RULE 7 (PRESERVE MATH NOTATION). If an excerpt's KIND "
+            "header contains \"equation\", the passage carries math "
+            "symbols extractable from the source PDF. Preserve them in "
+            "the slide using inline LaTeX ``$\\alpha$``, ``$\\sum_i$``, "
+            "``$x_i$`` etc., or as display math ``\\[ ... \\]`` for "
+            "stand-alone formulas. Do NOT paraphrase math symbols into "
+            "prose (\"the sum of squared distances\") when the source "
+            "shows them in notation — preserving the notation is what "
+            "makes the slide pedagogically equivalent to the textbook.\n\n"
             "Example of a well-formed claim drawn from Excerpt 1:\n"
             f"  \"{example_snippet}\" {first_token}\n\n"
             "═══════════════════════════ EXCERPTS ═══════════════════════════\n\n"
@@ -1507,7 +1580,7 @@ class SlidesDeliberation:
         # Build the set of EVERY citation token the KB recognises so
         # the stripper can drop well-formed-but-non-resolving tokens
         # the writer occasionally hallucinates (e.g. plausible-looking
-        # [han_data_mining_3e:ch99.s99:p01] that doesn't exist).
+        # [textbook_id:ch99.s99:p01] that doesn't exist).
         valid_tokens = None
         if self.retriever is not None:
             try:
@@ -1609,42 +1682,90 @@ class SlidesDeliberation:
         )
     
     def _generate_slides_outline(self, chapter: Dict[str, str]):
-        """Generate slides outline using Instructional Designer agent"""
+        """Generate slides outline using Instructional Designer agent.
+
+        Augments the outline prompt with textbook-derived signals when a
+        retriever is wired in:
+          * Algorithm names extracted from the chapter's bound chunks
+            become required slide topics (gap 1).
+          * Per-section word counts seed budget hints so heavier
+            sections get more outline slots than thin ones (gap 3).
+          * Comparison-slide pattern hints force "X vs Y" coverage where
+            adjacent algorithms naturally pair (gap 10).
+        """
         instructional_designer = self.agents.get("instructional_designer")
         if not instructional_designer:
             raise ValueError("Instructional Designer agent not found")
-        
-        # Create a simple outline template example
+
         outline_template = """[
-            {
-                "slide_id": 1,
-                "title": "Introduction to Topic",
-                "description": "Brief overview of the main topic"
-            },
-            {
-                "slide_id": 2,
-                "title": "Key Concepts",
-                "description": "Explanation of key concepts"
-            }
+            {"slide_id": 1, "title": "<concrete topic from the textbook chapter>",
+             "description": "<one-sentence specific summary>"}
             ]"""
-        
-        # Create the prompt for the agent
+
+        target_count = int(self.catalog_dict.get("slides_length", 30)) // 3
+
+        textbook_hints = ""
+        if self.retriever is not None and self.section_ids:
+            try:
+                kb_chunks = self.retriever.kb.chunks
+                bound = [c for c in kb_chunks if c.section_id in self.section_ids]
+            except AttributeError:
+                bound = []
+            topics = _extract_topic_names(bound)
+            section_words = _section_word_counts(bound)
+            if section_words:
+                total_words = sum(section_words.values())
+                allocations = []
+                for sid, w in sorted(section_words.items(), key=lambda kv: -kv[1]):
+                    share = w / total_words if total_words else 0
+                    slots = max(1, round(share * target_count))
+                    allocations.append(f"  - {sid}: ~{slots} slides ({w} source words)")
+                budget_block = (
+                    "BUDGET HINTS (allocate slides proportionally — heavier "
+                    "sections deserve more depth):\n" + "\n".join(allocations)
+                )
+            else:
+                budget_block = ""
+            if topics:
+                topic_block = (
+                    "REQUIRED TOPIC COVERAGE — every textbook topic below "
+                    "MUST have at least one dedicated slide with that "
+                    "topic's name in the title. Improvising generic "
+                    "\"Introduction Part 1/2/3\" titles in place of these "
+                    "named topics is a defect:\n  "
+                    + ", ".join(topics)
+                )
+            else:
+                topic_block = ""
+            if len(topics) >= 2:
+                comparison_block = (
+                    "COMPARISON SLIDES — for any pair of related topics, "
+                    "include a side-by-side comparison slide. Author-"
+                    "curated decks rely on these to highlight trade-offs."
+                )
+            else:
+                comparison_block = ""
+            textbook_hints = "\n\n".join(
+                b for b in (topic_block, comparison_block, budget_block) if b
+            )
+
         prompt = f"""
-        Based on the following chapter information, create a detailed slides outline in JSON format.
-        
+        Create a slides outline in JSON for the chapter below.
+
         Chapter Title: {chapter['title']}
         Chapter Description: {chapter['description']}
-        
+
         User Feedback:
         {json.dumps(self.user_feedback, indent=2)}
 
-        Please generate a comprehensive slides outline with about {self.catalog_dict['slides_length'] / 3} slides covering all important aspects of this chapter.
-        The outline should be in JSON format with the following structure:
-        
+        {textbook_hints}
+
+        Generate about {target_count} slides covering the chapter in depth.
+        Output strict JSON in this shape:
+
         {outline_template}
-        
-        Please try to use the simple and common latex grammer to guarantee the LaTeX code can be compiled successfully.
-        Your response must be valid JSON that can be parsed programmatically.
+
+        Use simple, common LaTeX. Your response must be parseable JSON.
         """
         
         # Reset agent history to ensure clean context
@@ -2144,7 +2265,31 @@ class SlidesDeliberation:
         evidence_block, citation_rules = self._build_per_slide_evidence(
             f"{slide['title']}. {slide.get('description', '')}"
         )
-        prompt = f"{evidence_block}\n{base_prompt}\n{citation_rules}"
+        # Adjacent-slide context — only injected on the grounded path
+        # so the vanilla pipeline (no --use-textbook flag) stays
+        # byte-identical to upstream behavior.
+        adjacency_block = ""
+        if self.retriever is not None:
+            prev_outline = self.slides_outline[slide_idx - 1] if slide_idx > 0 else None
+            next_outline = self.slides_outline[slide_idx + 1] if slide_idx + 1 < len(self.slides_outline) else None
+            adjacency_lines = []
+            if prev_outline:
+                adjacency_lines.append(
+                    f"Previous slide: {prev_outline.get('title', '')} — "
+                    f"{prev_outline.get('description', '')[:120]}"
+                )
+            if next_outline:
+                adjacency_lines.append(
+                    f"Next slide:     {next_outline.get('title', '')} — "
+                    f"{next_outline.get('description', '')[:120]}"
+                )
+            if adjacency_lines:
+                adjacency_block = (
+                    "\nAdjacent-slide context (for narrative continuity — feel free to "
+                    "reference \"as discussed earlier\" / \"we will see next\"):\n  "
+                    + "\n  ".join(adjacency_lines) + "\n"
+                )
+        prompt = f"{evidence_block}\n{base_prompt}{adjacency_block}\n{citation_rules}"
         
         # Reset agent history to ensure clean context
         teaching_assistant.reset_history()
@@ -2175,12 +2320,18 @@ class SlidesDeliberation:
                 self.latex_dict[slide_idx]["frames"] = []
                 self.latex_dict[slide_idx]["slide_title"] = slide['title']
             
-            # Add all frames for this slide
+            # Extract the writer's actual \frametitle when available so
+            # the metadata title reflects the distinct subtitle the TA
+            # chose for each frame (e.g. "K-Means Algorithm", "K-Means
+            # Complexity") rather than a mechanical "Slide - Part N"
+            # suffix that read as draft artifacts in earlier baselines.
             for i, frame_code in enumerate(frame_matches):
+                m = re.search(r"\\frametitle\{([^}]+)\}", frame_code)
+                title = m.group(1).strip() if m else slide['title']
                 self.latex_dict[slide_idx]["frames"].append({
                     "full_frame": frame_code,
                     "content": frame_code.replace("\\begin{frame}", "").replace("\\end{frame}", "").strip(),
-                    "title": slide['title'] + (f" - Part {i+1}" if len(frame_matches) > 1 else ""),
+                    "title": title,
                     "frame_index": i
                 })
             
@@ -2228,6 +2379,36 @@ class SlidesDeliberation:
             artifact="script",
         )
 
+        # Grounded path adds the "expand, don't paraphrase" directive so
+        # the script complements the slide instead of reading it aloud.
+        # Vanilla path keeps the upstream-style enumerated guidance to
+        # preserve byte-identical output without --use-textbook.
+        if self.retriever is not None:
+            script_directive = (
+                "The audience can SEE the slide bullets in front of them — your job\n"
+                "is to ADD value the slide can't carry on its own:\n"
+                "1. Domain insight / why-this-matters framing the bullets don't spell out\n"
+                "2. Real-world parallels or analogies that ground abstract definitions\n"
+                "3. Smooth transitions between frames and to / from adjacent slides\n"
+                "4. Where students typically stumble on this topic — what to flag\n"
+                "5. Rhetorical prompts that pull the audience into the next slide\n\n"
+                "Do NOT paraphrase the bullets back at the audience — that wastes\n"
+                "their attention. Reading the slide out loud is the failure mode this\n"
+                "script must avoid."
+            )
+        else:
+            script_directive = (
+                "Please generate a comprehensive speaking script for this slide that:\n"
+                "1. Introduces the slide topic\n"
+                "2. Explains all key points clearly and thoroughly\n"
+                "3. If multiple frames exist, provides smooth transitions between frames\n"
+                "4. Provides relevant examples or analogies\n"
+                "5. Connects to previous or upcoming content\n"
+                "6. Includes rhetorical questions or engagement points for students\n\n"
+                "The script should be detailed enough for someone else to present effectively from it.\n"
+                "If there are multiple frames, clearly indicate when to advance to the next frame."
+            )
+
         # Create the prompt for the agent
         prompt = f"""
         {evidence_block}
@@ -2252,17 +2433,8 @@ class SlidesDeliberation:
         [For script]{json.dumps(self.user_feedback['script'], indent=2)}
         [For overall]{json.dumps(self.user_feedback['overall'], indent=2)}
 
-        Please generate a comprehensive speaking script for this slide that:
-        1. Introduces the slide topic
-        2. Explains all key points clearly and thoroughly
-        3. If multiple frames exist, provides smooth transitions between frames
-        4. Provides relevant examples or analogies
-        5. Connects to previous or upcoming content
-        6. Includes rhetorical questions or engagement points for students
+        {script_directive}
         {citation_rules}
-
-        The script should be detailed enough for someone else to present effectively from it.
-        If there are multiple frames, clearly indicate when to advance to the next frame.
         """
         
         # Reset agent history to ensure clean context
