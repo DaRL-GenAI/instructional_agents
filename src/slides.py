@@ -1112,69 +1112,80 @@ class SlidesDeliberation:
             slide_query, artifact=artifact, section_ids_override=per_slide,
         )
 
+    _VISUAL_INJECT_CAP = 4
+
     def _inject_visual_chunk_if_available(self, results, section_ids):
-        """Guarantee at least one visual chunk surfaces in the evidence
-        block when one exists in scope. Looks for a chunk carrying a
-        visual marker (IMAGE_PATH/LATEX/TABLE/ALGORITHM) within the
-        bound section_ids. If results already contain a visual chunk,
-        returns ``results`` unchanged. Otherwise replaces the
-        LOWEST-ranked prose chunk with a visual chunk from scope.
+        """Hoist in-scope visual chunks (IMAGE_PATH / LATEX / TABLE /
+        ALGORITHM_STEPS markers) to the FRONT of ``results`` up to
+        ``_VISUAL_INJECT_CAP`` chunks per call.
+
+        The block-builder loop downstream consumes a fixed word budget
+        per chunk in rank order; putting visual chunks first guarantees
+        their markers survive into the evidence text even when later
+        prose chunks get truncated.
+
+        Multi-figure slides emerge naturally when several visual chunks
+        sit in the bound section_ids — matches author-deck style where
+        a single concept slide carries 3-5 panels. Prefers chunks in
+        the same section as the top retrieved result so the figures
+        align with the slide topic; falls back to any in-scope visual
+        chunk after exhausting the preferred section. Lower-ranked
+        prose chunks are dropped to keep the result count stable.
+
+        Returns ``results`` unchanged when retrieval is empty, the
+        retriever is None (vanilla path), or no visual chunks exist in
+        scope.
         """
-        if not results:
+        if not results or self.retriever is None:
             return results
-        retriever = self.retriever
-        if retriever is None:
-            return results
-        # Already have a visual chunk? Done.
-        for r in results:
-            if any(m in r.chunk.text for m in self._VISUAL_MARKERS):
-                return results
-        # Search the KB for an in-scope visual chunk
         try:
-            kb_chunks = retriever.kb.chunks
+            kb_chunks = self.retriever.kb.chunks
         except AttributeError:
             return results
+
+        cap = self._VISUAL_INJECT_CAP
+
+        def has_marker(c):
+            return any(m in c.text for m in self._VISUAL_MARKERS)
+
+        existing_visuals = sum(1 for r in results if has_marker(r.chunk))
+        if existing_visuals >= cap:
+            return results
+
         wanted_sections = (
             set(section_ids) if section_ids is not None
             else {c.section_id for c in kb_chunks}
         )
-        # Pick the first visual chunk in scope (prefer the same section
-        # as the top result so the figure aligns with the topic)
-        top_section = results[0].chunk.section_id if results else None
-        preferred = [
-            c for c in kb_chunks
-            if c.section_id == top_section
-            and any(m in c.text for m in self._VISUAL_MARKERS)
-        ]
-        any_in_scope = [
-            c for c in kb_chunks
-            if c.section_id in wanted_sections
-            and any(m in c.text for m in self._VISUAL_MARKERS)
-        ]
-        visual_chunk = preferred[0] if preferred else (
-            any_in_scope[0] if any_in_scope else None
-        )
-        if visual_chunk is None:
+        top_section = results[0].chunk.section_id
+        seen = {id(r.chunk) for r in results}
+
+        # Rank candidates: same-section visuals first, then any
+        # in-scope visual, skipping anything already in results.
+        candidates: list = []
+        for c in kb_chunks:
+            if (c.section_id == top_section and has_marker(c)
+                    and id(c) not in seen):
+                candidates.append(c)
+        for c in kb_chunks:
+            if (c.section_id in wanted_sections and c.section_id != top_section
+                    and has_marker(c) and id(c) not in seen):
+                candidates.append(c)
+
+        to_inject = candidates[:cap - existing_visuals]
+        if not to_inject:
             return results
-        # Build a ScoredChunk-like wrapper carrying the visual chunk
+
         from dataclasses import dataclass
+
         @dataclass
         class _VisualInjected:
             chunk: object
-        injected = _VisualInjected(chunk=visual_chunk)
-        # Hoist the visual chunk to the FRONT of results, replacing the
-        # lowest-ranked prose chunk. The block-building loop downstream
-        # consumes a fixed word budget (~1800) per chunk in rank order;
-        # large prose chunks in math-heavy chapters can exhaust the
-        # budget in 4-5 iterations. Appending the visual chunk to the
-        # tail meant its IMAGE_PATH/LATEX/TABLE markers never reached
-        # the writer's evidence_text, and the visual-content rule block
-        # never engaged — producing zero \includegraphics in the slides
-        # despite the VLM having extracted a real figure for the page.
-        # Putting the visual chunk first guarantees its marker survives
-        # into evidence_text even when later prose chunks get truncated
-        # or skipped.
-        return [injected] + list(results[:-1])
+
+        injected = [_VisualInjected(chunk=c) for c in to_inject]
+        # Drop the lowest-ranked prose chunks so the result count is
+        # stable; injected visuals go to the front.
+        kept_prose = list(results[: max(0, len(results) - len(to_inject))])
+        return injected + kept_prose
 
     def _build_visual_content_rules(self, evidence_text: str, artifact: str) -> str:
         """Return an extra rule block for hybrid-ingester visual markers.
