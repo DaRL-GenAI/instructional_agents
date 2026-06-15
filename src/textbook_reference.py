@@ -87,7 +87,7 @@ class TextbookReferenceBuilder:
                 "platform_policy_constraints": "Generated content should avoid quoting long textbook passages verbatim.",
                 "ta_support_availability": "No additional teaching assistant support is assumed for this prototype.",
                 "instructional_delivery_context": "Textbook-guided course generation prototype.",
-                "max_slide_count": "50",
+                "max_slide_count": "10",
             },
             "institutional_requirements": {
                 "program_learning_outcomes": "Materials should align textbook concepts with practical learning outcomes.",
