@@ -200,18 +200,18 @@ class TestArtifactModeDifferentiation:
         # Script rule 2: paraphrase naturally; direct quotation is RESERVED.
         assert "PARAPHRASE NATURALLY" in evidence
         assert "spoken narration" in evidence.lower()
-        # Strict-slide rule-2 ("ANCHOR-THEN-PARAPHRASE") must NOT be in
+        # Read-document rule-2 ("TEACH IN YOUR OWN WORDS") must NOT be in
         # the script's directive block (different framing entirely).
-        assert "ANCHOR-THEN-PARAPHRASE" not in evidence
+        assert "TEACH IN YOUR OWN WORDS" not in evidence
 
     def test_assessment_artifact_uses_strict_rules(self, deliberation):
         # Assessments are READ documents (like slides), not spoken —
-        # they get the strict rule-set.
+        # they get the read-document rule-set.
         evidence, _ = deliberation._build_evidence_block(
             "numbers", artifact="assessment",
         )
         assert "CITE EVERY SOURCED CLAIM" in evidence
-        assert "ANCHOR-THEN-PARAPHRASE" in evidence
+        assert "TEACH IN YOUR OWN WORDS" in evidence
         assert "SPOKEN SCRIPT" not in evidence
 
     def test_unknown_artifact_falls_back_to_slide(self, deliberation):

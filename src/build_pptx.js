@@ -154,8 +154,15 @@ function addIconCircle(slide, y, color) {
 function estH(text, w, pt) {
   if (!text) return 0.4;
   const cpl = Math.max(1, Math.floor(w * (pt <= 12 ? 7 : 5)));
-  const lines = Math.max(1, Math.ceil(text.length / cpl));
-  return lines * (pt / 55) + 0.15;
+  // Height must account for EXPLICIT newlines (paragraph breaks), not just
+  // wrapped character count — the text parser packs several paragraphs into
+  // one element, and ignoring the breaks underestimated the box height so
+  // its content overflowed onto the next element.
+  let lines = 0;
+  for (const para of String(text).split("\n")) {
+    lines += Math.max(1, Math.ceil(para.length / cpl));
+  }
+  return Math.max(1, lines) * (pt / 52) + 0.18;
 }
 
 // ─── Rough element height estimator (for vertical centering) ────────────────
@@ -166,9 +173,14 @@ function estimateElemH(el) {
     case "text": return estH(el.content, L.cW, 16) + L.gap;
     case "itemize":
     case "enumerate": {
-      let n = (el.items || []).length;
-      (el.items || []).forEach(it => { n += (it.subitems || []).length; });
-      return n * 0.35 + L.gap;
+      let h = 0.15;
+      (el.items || []).forEach(it => {
+        h += estH(it.text || "", L.cW, 16) + 0.06;
+        (it.subitems || []).forEach(s => {
+          h += estH(s.text || "", L.cW - 0.4, 14) + 0.06;
+        });
+      });
+      return h + L.gap;
     }
     case "block":
     case "alertblock":
@@ -181,6 +193,7 @@ function estimateElemH(el) {
     case "math": return 0.6 + L.gap;
     case "tikz": return 1.2 + L.gap;
     case "image": return 3.2 + L.gap;
+    case "caption": return estH(el.content, L.cW, 12) + 0.05 + L.gap;
     case "columns": return 2.0 + L.gap;
     default: return 0.5;
   }
@@ -241,6 +254,20 @@ function addText(slide, text, x, y, w) {
   return y + h + L.gap;
 }
 
+function addCaption(slide, text, x, y, w) {
+  if (!text) return y;
+  // Avoid a redundant "Figure. Figure 10.2: …" — skip the label prefix
+  // when the caption already opens with "Figure".
+  const hasFigurePrefix = /^figure\b/i.test(text.trim());
+  const label = hasFigurePrefix ? "" : "Figure. ";
+  const h = estH(label + text, w, 12) + 0.05;
+  const runs = [];
+  if (label) runs.push({ text: label, options: { fontFace: FONT.body, fontSize: 12, color: PAL.textMuted, italic: true, bold: true } });
+  runs.push({ text, options: { fontFace: FONT.body, fontSize: 12, color: PAL.textMuted, italic: true } });
+  slide.addText(runs, { x, y, w, h, valign: "top", align: "center", margin: 0 });
+  return y + h + L.gap;
+}
+
 function addList(slide, items, x, y, w, numbered) {
   if (!items || !items.length) return y;
 
@@ -272,9 +299,15 @@ function addList(slide, items, x, y, w, numbered) {
   });
   if (rows.length) delete rows[rows.length - 1].options.breakLine;
 
-  let chars = 0;
-  rows.forEach(r => { chars += (r.text || "").length + 20; });
-  const h = Math.min(estH("x".repeat(chars), w, 16), 5.5);
+  // Sum each row's wrapped height — every item starts a new line, so a
+  // single-block estimate underestimated multi-item lists and let them
+  // overflow onto the next element.
+  let h = 0.15;
+  rows.forEach(r => {
+    const pt = (r.options && r.options.fontSize) || 16;
+    h += estH(r.text || "", w - ((r.options && r.options.indentLevel) ? 0.4 : 0), pt) + 0.06;
+  });
+  h = Math.min(h, 5.5);
 
   slide.addText(rows, { x, y, w, h, valign: "top", margin: 0 });
   return y + h + L.gap;
@@ -504,6 +537,7 @@ function renderElem(slide, elem, x, y, w, trailingH) {
     case "tikz":        return addTikz(slide, x, y, w);
     case "columns":     return addColumns(slide, elem, x, y, w);
     case "image":       return addPicture(slide, elem, x, y, w, trailingH);
+    case "caption":     return addCaption(slide, elem.content, x, y, w);
     default:            return y;
   }
 }
@@ -532,15 +566,36 @@ function classifyFrame(frame) {
 function _stackElements(slide, elems, x, w) {
   let ordered = elems;
   if (ordered.some(e => e.type === "image")) {
-    const images = ordered.filter(e => e.type === "image");
-    const rest = ordered.filter(e => e.type !== "image");
-    ordered = [...images, ...rest];
+    // Lift images to the top so they aren't squeezed below text — but
+    // keep each image's trailing caption attached to it, otherwise the
+    // caption renders at the bottom and overflows off a full slide.
+    const lifted = [];
+    const rest = [];
+    for (let i = 0; i < ordered.length; i++) {
+      if (ordered[i].type === "image") {
+        lifted.push(ordered[i]);
+        if (i + 1 < ordered.length && ordered[i + 1].type === "caption") {
+          lifted.push(ordered[i + 1]);
+          i++;
+        }
+      } else {
+        rest.push(ordered[i]);
+      }
+    }
+    ordered = [...lifted, ...rest];
   }
   let estTotal = 0;
   for (const e of ordered) estTotal += estimateElemH(e);
   const availH = L.maxY - L.cY;
-  const startY = estTotal < availH * 0.5
-    ? L.cY + (availH - estTotal) * 0.3
+  // Vertically center sparse slides so content doesn't cling to the top
+  // with a large empty bottom. Kicks in below ~two-thirds fill; nudges
+  // toward (but not all the way to) center so the title still has air.
+  // Vertically center sparse slides; the sparser the content, the closer
+  // to true center (a one-paragraph slide shouldn't cling to the top with
+  // an empty lower half).
+  const fill = estTotal / availH;
+  const startY = fill < 0.65
+    ? L.cY + (availH - estTotal) * (fill < 0.35 ? 0.5 : 0.42)
     : L.cY;
   let y = startY;
   for (let i = 0; i < ordered.length; i++) {

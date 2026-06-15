@@ -334,3 +334,211 @@ class TestEdgeCases:
         assert "\\cite{" not in out
         assert "A \\& B" in out
         assert "\\includegraphics" not in out
+
+
+class TestMarkdownItalicUnderscore:
+    def test_single_underscore_pair_to_emph(self):
+        out = _clean_latex_artifacts("The _k_-means algorithm")
+        assert "_k_" not in out
+        assert r"\emph{k}" in out
+
+    def test_multiword_italic(self):
+        out = _clean_latex_artifacts("an object is a _core object_ here")
+        assert r"\emph{core object}" in out
+
+    def test_real_subscript_untouched(self):
+        text = "the value $x_i$ and $C_{ij}$"
+        assert _clean_latex_artifacts(text) == text
+
+    def test_path_underscores_untouched(self):
+        text = ".grounding_cache/figures/data_mining_p01.png"
+        assert _clean_latex_artifacts(text) == text
+
+    def test_escaped_underscore_untouched(self):
+        text = r"already escaped \_ stays"
+        assert _clean_latex_artifacts(text) == text
+
+
+class TestGuillemetAndEmptyMath:
+    def test_guillemets_stripped(self):
+        out = _clean_latex_artifacts('<<"a quote">> follows')
+        assert "<<" not in out and ">>" not in out
+        assert '"a quote"' in out
+
+    def test_nonempty_display_math_preserved(self):
+        # Non-empty $$…$$ is left intact in the .tex — the PPTX converter
+        # flattens its content to readable unicode. Stripping the fences
+        # here would feed bare \frac{…} to the command-stripper.
+        text = "the formula $$s(o) = \\frac{a}{b}$$ holds"
+        out = _clean_latex_artifacts(text)
+        assert "\\frac{a}{b}" in out
+
+    def test_empty_display_math_stripped(self):
+        out = _clean_latex_artifacts("text \\[  \\] more")
+        assert "\\[" not in out and "\\]" not in out
+
+    def test_orphan_display_delim_stripped(self):
+        out = _clean_latex_artifacts("line\n    \\[\n\n    \\]\nmore")
+        assert "\\[" not in out and "\\]" not in out
+
+
+class TestDanglingFigurePromise:
+    def test_promise_without_figure_dropped(self):
+        from src.slides import _strip_dangling_figure_promises
+        frame = (
+            "\\begin{frame}\n\\frametitle{T}\n"
+            "\\begin{itemize}\n"
+            "\\item The steps can be illustrated graphically:\n"
+            "\\end{itemize}\n\\end{frame}"
+        )
+        out = _strip_dangling_figure_promises(frame)
+        assert "illustrated graphically" not in out
+
+    def test_caption_with_resolving_figure_kept(self, tmp_path):
+        from src.slides import _strip_dangling_figure_promises
+        img = tmp_path / "real.png"
+        img.write_bytes(b"\x89PNG\r\n")
+        frame = (
+            "\\begin{frame}\n\\frametitle{T}\n"
+            "\\item Core objects are shown below:\n"
+            f"\\includegraphics[width=0.5\\textwidth]{{{img}}}\n"
+            "\\end{frame}"
+        )
+        # A figure that resolves on disk → promise text is preserved.
+        assert _strip_dangling_figure_promises(frame) == frame
+
+    def test_promise_stripped_when_figure_missing(self):
+        from src.slides import _strip_dangling_figure_promises
+        frame = (
+            "\\begin{frame}\n\\frametitle{T}\n"
+            "This figure highlights the cluster formations.\n"
+            "\\includegraphics[width=0.5\\textwidth]{/no/such.png}\n"
+            "\\end{frame}"
+        )
+        # Figure path doesn't resolve → dangling reference is stripped.
+        assert "This figure highlights" not in _strip_dangling_figure_promises(frame)
+
+    def test_genuine_as_follows_list_kept(self):
+        from src.slides import _strip_dangling_figure_promises
+        frame = (
+            "\\begin{frame}\nThe procedure is as follows:\n"
+            "\\begin{enumerate}\n\\item Select k points\n"
+            "\\end{enumerate}\n\\end{frame}"
+        )
+        # "as follows:" is followed by a real list, no figure-promise verb
+        assert _strip_dangling_figure_promises(frame) == frame
+
+
+class TestContentTokensAndSectionOrder:
+    def test_content_tokens_drop_filler(self):
+        from src.slides import _content_tokens
+        toks = _content_tokens("The clustering method shows density reachable points")
+        assert "density" in toks and "reachable" in toks
+        # generic filler dropped
+        assert "clustering" not in toks and "method" not in toks and "the" not in toks
+
+    def test_section_order_numeric(self):
+        from src.slides import _section_order_key
+        secs = ["13.1 Notes", "10.2 Partitioning", "10.1 Cluster Analysis", "11.1 Advanced"]
+        ordered = sorted(enumerate(secs), key=lambda kv: _section_order_key(kv[1], kv[0]))
+        assert [s for _, s in ordered][0] == "10.1 Cluster Analysis"
+        assert [s for _, s in ordered][-1] == "13.1 Notes"
+
+    def test_unnumbered_section_sorts_last(self):
+        from src.slides import _section_order_key
+        assert _section_order_key("References", 0) > _section_order_key("10.6 Eval", 99)
+
+
+class TestFigureCaptionInjection:
+    def test_caption_map_from_chunks(self):
+        from src.slides import _build_figure_caption_map
+        class _C:
+            def __init__(self, text, page): self.text = text; self.page_start = page
+        chunks = [_C("Figure 10.2 The k-means partitioning algorithm. More text.", 491)]
+        m = _build_figure_caption_map(chunks)
+        assert 491 in m
+        assert m[491][0][0] == "10.2"
+        assert "k-means partitioning algorithm" in m[491][0][1]
+
+    def test_caption_for_path_by_page(self):
+        from src.slides import _caption_for_figure_path
+        cmap = {491: [("10.2", "The k-means partitioning algorithm")]}
+        cap = _caption_for_figure_path("x/data_mining_p0491_09.png", cmap)
+        assert cap == "Figure 10.2: The k-means partitioning algorithm"
+
+    def test_caption_for_path_nearby_page(self):
+        from src.slides import _caption_for_figure_path
+        cmap = {510: [("10.14", "Density-reachability")]}
+        # path page 511 should match page 510 (±1 window)
+        assert "10.14" in _caption_for_figure_path("a/han_p0511_01.png", cmap)
+
+    def test_inject_only_when_missing(self, tmp_path):
+        from src.slides import _inject_missing_figure_captions
+        cmap = {491: [("10.2", "The k-means partitioning algorithm")]}
+        img = tmp_path / "data_mining_p0491_01.png"
+        img.write_bytes(b"\x89PNG\r\n")
+        # bare figure that resolves on disk → caption injected
+        bare = f"\\includegraphics[width=0.5\\textwidth]{{{img}}}\n"
+        out = _inject_missing_figure_captions(bare, cmap)
+        assert "\\caption{Figure 10.2: The k-means partitioning algorithm}" in out
+        # already-captioned figure → untouched
+        capd = (f"\\includegraphics{{{img}}}\n\\caption{{Writer's own caption}}\n")
+        out2 = _inject_missing_figure_captions(capd, cmap)
+        assert out2.count("\\caption{") == 1
+        assert "Writer's own caption" in out2
+
+    def test_no_caption_for_missing_image(self):
+        from src.slides import _inject_missing_figure_captions
+        cmap = {491: [("10.2", "The k-means partitioning algorithm")]}
+        # path doesn't resolve → no caption (avoids orphan caption)
+        bare = "\\includegraphics{/no/such/data_mining_p0491_01.png}\n"
+        assert "\\caption" not in _inject_missing_figure_captions(bare, cmap)
+
+    def test_no_caption_for_equation_crop(self, tmp_path):
+        from src.slides import _inject_missing_figure_captions
+        cmap = {491: [("10.2", "The k-means partitioning algorithm")]}
+        img = tmp_path / "data_mining_p0491_01.png"
+        img.write_bytes(b"\x89PNG\r\n")
+        bare = f"\\includegraphics{{{img}}}\n"
+        # filename NOT in the real-figure allowlist → treated as equation
+        out = _inject_missing_figure_captions(bare, cmap, figure_filenames=set())
+        assert "\\caption" not in out
+
+    def test_inject_noop_without_map(self):
+        from src.slides import _inject_missing_figure_captions
+        text = "\\includegraphics{x/p0491_01.png}\n"
+        assert _inject_missing_figure_captions(text, {}) == text
+
+
+class TestOutlineDedupe:
+    def test_drops_duplicate_titles(self):
+        from src.slides import _dedupe_outline_titles
+        outline = [
+            {"title": "Applications of Cluster Analysis", "description": "a"},
+            {"title": "K-Means Algorithm", "description": "b"},
+            {"title": "applications of cluster analysis!", "description": "c"},
+        ]
+        out = _dedupe_outline_titles(outline)
+        assert len(out) == 2
+        assert [o["title"] for o in out] == [
+            "Applications of Cluster Analysis", "K-Means Algorithm"]
+
+    def test_keeps_distinct_titles(self):
+        from src.slides import _dedupe_outline_titles
+        outline = [{"title": "A"}, {"title": "B"}, {"title": "C"}]
+        assert len(_dedupe_outline_titles(outline)) == 3
+
+    def test_real_figure_filenames_excludes_equations(self):
+        from src.slides import _build_real_figure_filenames
+
+        class _C:
+            def __init__(self, text, kinds):
+                self.text = text
+                self.kinds = set(kinds)
+        chunks = [
+            _C("[IMAGE_PATH: a/fig_p01_01.png]", {"figure_cap"}),
+            _C("[IMAGE_PATH: a/eq_p02_01.png]", {"equation"}),
+        ]
+        names = _build_real_figure_filenames(chunks)
+        assert "fig_p01_01.png" in names
+        assert "eq_p02_01.png" not in names

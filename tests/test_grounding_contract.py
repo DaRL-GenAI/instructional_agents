@@ -397,3 +397,34 @@ class TestCoverageGating:
         )
         # Single-query path (no LLM): rationale should reflect "1 queries".
         assert "1 queries" in contract.topic_to_textbook[0].rationale
+
+
+class TestRelativeScoreFloor:
+    def test_drops_weak_off_topic_straggler(self):
+        from src.grounding.contract import _apply_relative_score_floor
+        # top clustering sections score comparably; a PCA straggler is low
+        ranked = [("ch10.s2", 0.083), ("ch10.s3", 0.050), ("ch10.s4", 0.040),
+                  ("ch3.s1", 0.015)]  # off-topic, ~0.18 of top
+        kept = _apply_relative_score_floor(ranked, top_n=10, floor_fraction=0.35)
+        assert "ch3.s1" not in kept
+        assert set(kept) == {"ch10.s2", "ch10.s3", "ch10.s4"}
+
+    def test_preserves_genuinely_spread_binding(self):
+        from src.grounding.contract import _apply_relative_score_floor
+        ranked = [("a", 0.05), ("b", 0.04), ("c", 0.03), ("d", 0.025)]
+        # all >= 0.35 * 0.05 = 0.0175 → all kept
+        kept = _apply_relative_score_floor(ranked, top_n=10, floor_fraction=0.35)
+        assert kept == ["a", "b", "c", "d"]
+
+    def test_always_keeps_top_section(self):
+        from src.grounding.contract import _apply_relative_score_floor
+        # pathological: everything below the top is under the floor
+        ranked = [("top", 1.0), ("x", 0.01)]
+        kept = _apply_relative_score_floor(ranked, top_n=10, floor_fraction=0.35)
+        assert kept == ["top"]
+
+    def test_respects_top_n_cap(self):
+        from src.grounding.contract import _apply_relative_score_floor
+        ranked = [("a", 0.05), ("b", 0.049), ("c", 0.048)]
+        kept = _apply_relative_score_floor(ranked, top_n=2, floor_fraction=0.35)
+        assert kept == ["a", "b"]

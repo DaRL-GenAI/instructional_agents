@@ -189,6 +189,13 @@ subtitle reflecting its specific content (e.g. "K-Means Algorithm",
 "K-Means Complexity", "K-Means Limitations") — NOT generic "Part 1",
 "Part 2", "Part 3" suffixes.
 
+FORBIDDEN frametitles — these read as placeholders and are a defect.
+NEVER emit any of: "Visual Content", "Supporting Visual", "Visual Aid",
+"Visual Representation", "Comparison Figures", "Illustration", "Diagram",
+or any bare "Figure" / "Image" title. If the primary content of a frame
+is a figure, title the frame after WHAT THE FIGURE SHOWS (e.g.
+"K-Means: Cluster Assignment by Iteration", not "Visual Content").
+
 Guidelines:
 1. Don't use non-English characters directly, e.g. use $\\gamma$ instead of γ, $\\epsilon$ instead of ε
 2. If any symbol has a special meaning, add a backslash. e.g. use \\& instead of &
@@ -205,11 +212,14 @@ Use LaTeX features like:
 - \\includegraphics[width=0.55\\textwidth]{{/absolute/path/to/figure.png}} for figures from the textbook
 - \\begin{{tabular}} for comparison tables from the textbook
 
-PRESERVE FIGURES AND TABLES FROM THE DRAFT: if the Detailed Content above contains
-a \\includegraphics{{...}} command pointing to a real file path, you MUST keep it
-in the corresponding frame. Do NOT strip or replace it with prose. Same for any
-\\begin{{tabular}} blocks. These come from the textbook's figure and table
-extraction and are the only way the student sees the actual visual content.
+PRESERVE FIGURES, CAPTIONS AND TABLES FROM THE DRAFT: if the Detailed Content
+above contains a \\includegraphics{{...}} command pointing to a real file path,
+you MUST keep it in the corresponding frame. Do NOT strip or replace it with
+prose. If a \\caption{{...}} line follows the figure in the draft, KEEP it
+immediately after the \\includegraphics — it tells the student what the figure
+shows. Same for any \\begin{{tabular}} blocks. These come from the textbook's
+figure and table extraction and are the only way the student sees the actual
+visual content.
 
 Your response should contain all the frames for this slide, each from \\begin{{frame}}[fragile] to \\end{{frame}}.
 Separate multiple frames with blank lines.
@@ -346,6 +356,46 @@ _MARKDOWN_BOLD_IN_TEX_RE = _re_for_latex_cleanup.compile(
     r"\*\*([^*\n]+?)\*\*"
 )
 
+# Markdown _italic_ (single-underscore pairs) the writer emitted into the
+# .tex body. In LaTeX a bare ``_`` is a subscript operator and errors in
+# text mode; in the PPTX path it leaks as literal "_k_". Convert to
+# \emph{...}. The lookbehind excludes a preceding backslash (already
+# escaped ``\_``) or word character (real subscripts like ``x_i`` and
+# path underscores like ``data_mining``); the lookahead excludes a
+# trailing word character so ``C_{ij}`` is left untouched.
+_MARKDOWN_ITALIC_USCORE_IN_TEX_RE = _re_for_latex_cleanup.compile(
+    r"(?<![\\\w])_([A-Za-z][A-Za-z0-9 ()'.,/+-]{0,40}?)_(?![\w])"
+)
+
+# Guillemet-style quote markers (<<"quote">>) the writer emits instead of
+# plain quotes. Not valid LaTeX text; strip the angle pairs, keep content.
+_GUILLEMET_IN_TEX_RE = _re_for_latex_cleanup.compile(r"<<+\s*|\s*>>+")
+
+# Empty display math the writer left behind — ``\[ \]`` or an orphaned
+# ``\[`` / ``\]`` on its own line. Renders as visible noise; strip it.
+# Non-empty $$…$$ / \[…\] display math is intentionally NOT stripped here
+# (the PPTX converter flattens its content to readable unicode).
+_EMPTY_DISPLAY_MATH_RE = _re_for_latex_cleanup.compile(r"\\\[\s*\\\]")
+
+# Broken cross-references — the writer emits ``\ref{fig:...}`` but the
+# pipeline never ``\label{}``s anything, so the reference resolves to
+# nothing (rendering "Figure ?? " or, after a naive strip, "Figure
+# provides …"). "Figure \ref{...}" → "the figure"; a bare \ref → "".
+_FIGURE_REF_RE = _re_for_latex_cleanup.compile(
+    r"\b(Figure|Table|Equation|Eq\.?)\s*~?\s*\\(?:eqref|ref)\{[^}]*\}",
+    _re_for_latex_cleanup.IGNORECASE,
+)
+_BARE_REF_RE = _re_for_latex_cleanup.compile(r"\\(?:eqref|ref)\{[^}]*\}")
+
+
+def _figure_ref_replacement(match):
+    word = match.group(1).lower().rstrip(".")
+    word = "equation" if word in ("eq", "equation") else word
+    return "the " + word
+_ORPHAN_DISPLAY_DELIM_RE = _re_for_latex_cleanup.compile(
+    r"(?m)^[ \t]*\\[\[\]][ \t]*$"
+)
+
 # Unicode characters the LaTeX default font (ec-lmss10) cannot render.
 # Replace with LaTeX-native equivalents. Conservative: only swap unicode
 # that frequently appears in writer output and reliably maps to ASCII
@@ -414,6 +464,23 @@ def _clean_latex_artifacts(text):
     # asterisks and they leak as raw "**...**" to any downstream PPTX
     # or HTML render.
     text = _MARKDOWN_BOLD_IN_TEX_RE.sub(r"\\textbf{\1}", text)
+    # Fix 4c: convert markdown _italic_ (single-underscore pairs) into
+    # \emph{...} so it renders italic in LaTeX and clean text in PPTX
+    # rather than leaking as literal "_k_".
+    text = _MARKDOWN_ITALIC_USCORE_IN_TEX_RE.sub(r"\\emph{\1}", text)
+    # Fix 4d: strip guillemet quote markers (<<"...">>) and empty /
+    # orphaned display-math delimiters — writer artifacts that render as
+    # visible noise. Non-empty $$…$$ / \[…\] display math is left intact:
+    # the PPTX converter flattens its content to readable unicode, and
+    # stripping the fences here would feed bare \frac{…} to the
+    # converter's command-stripper, which erases it (leaving "s(o) =").
+    text = _GUILLEMET_IN_TEX_RE.sub("", text)
+    text = _EMPTY_DISPLAY_MATH_RE.sub("", text)
+    text = _ORPHAN_DISPLAY_DELIM_RE.sub("", text)
+    # Fix 4e: rewrite broken figure/table cross-references so they read
+    # naturally instead of leaving "Figure  provides …".
+    text = _FIGURE_REF_RE.sub(_figure_ref_replacement, text)
+    text = _BARE_REF_RE.sub("", text)
     # Fix 4: replace problem unicode characters with LaTeX equivalents
     for src, dst in _UNICODE_REPLACEMENTS.items():
         if src in text:
@@ -537,6 +604,45 @@ def _normalize_section_title(title):
     return cleaned.strip()
 
 
+_CONTENT_TOKEN_STOP = frozenset({
+    "the", "and", "for", "are", "with", "this", "that", "from", "into",
+    "based", "such", "which", "each", "their", "these", "those", "other",
+    "using", "used", "can", "may", "also", "where", "when", "data",
+    "method", "methods", "cluster", "clusters", "clustering", "figure",
+    "shows", "show", "example", "section", "chapter", "objects", "object",
+}, )
+
+
+def _content_tokens(text):
+    """Lowercased content tokens (≥3 chars, stopwords + generic
+    domain filler dropped). Used to score figure-to-slide relevance by
+    term overlap. Empty input → empty set."""
+    if not text:
+        return set()
+    raw = re.findall(r"[a-z][a-z\-]{2,}", text.lower())
+    return {t for t in raw if t not in _CONTENT_TOKEN_STOP and len(t) >= 4}
+
+
+_SECTION_NUMBER_RE = re.compile(r"\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?")
+
+
+def _section_order_key(title, fallback_idx):
+    """Sort key that orders sections by the numeric prefix in their
+    title (``10.1`` < ``10.2`` < ``10.6`` < ``11.1``) so the outline
+    follows the textbook's section sequence rather than chunk-arrival
+    order. Sections with no leading number (references, bibliographic
+    notes) sort last, then fall back to first-seen order for stability."""
+    m = _SECTION_NUMBER_RE.match(title or "")
+    if m and m.group(1):
+        return (
+            int(m.group(1)),
+            int(m.group(2) or 0),
+            int(m.group(3) or 0),
+            fallback_idx,
+        )
+    return (9999, 9999, 9999, fallback_idx)
+
+
 def _extract_topic_names(chunks):
     """Return the ordered list of distinct, normalized ``section_title``
     values across the supplied chunks.
@@ -575,6 +681,89 @@ def _section_word_counts(chunks):
     return counts
 
 
+_EXAMPLE_ID_RE = re.compile(
+    r"\bExample\s+(\d+\.\d+)\b[^.]{0,180}",
+    re.IGNORECASE,
+)
+
+
+def _extract_example_identifiers(chunks):
+    """Return ordered ``[(identifier, topic_summary), ...]`` for every
+    distinct ``Example N.M`` found in the supplied chunks.
+
+    The PDF ingester tags chunks containing an ``Example N.M`` header as
+    ``kind='example'``; this helper pulls the explicit identifier plus
+    a short topic descriptor straight out of the chunk text so the
+    outline prompt can list them as concrete required slides (versus
+    just naming the parent section, which the agent treats as more of
+    the same topic). Dedup preserves first-seen order.
+
+    Returns at most one entry per ``Example`` identifier; the topic
+    string is the trailing text from the same paragraph, lightly
+    cleaned.
+    """
+    seen = {}
+    order = []
+    for c in chunks:
+        if "example" not in (getattr(c, "kinds", set()) or set()):
+            continue
+        text = c.text or ""
+        for m in _EXAMPLE_ID_RE.finditer(text):
+            ident = f"Example {m.group(1)}"
+            if ident in seen:
+                continue
+            trailing = m.group(0)[len(m.group(0).split(None, 2)[0]) + 1 + len(m.group(1)) + 1:]
+            topic = re.sub(r"^[\s.:—\-_]+", "", trailing).strip()
+            topic = re.sub(r"[*_]+", "", topic).strip()
+            topic = re.sub(r"\s+", " ", topic)
+            if len(topic) > 110:
+                topic = topic[:110].rsplit(" ", 1)[0] + "…"
+            seen[ident] = topic or "(see textbook)"
+            order.append(ident)
+    return [(ident, seen[ident]) for ident in order]
+
+
+def _section_depth_signals(chunks):
+    """Return per-section richness signals for the outline prompt.
+
+    Returns {section_id: {title, words, chunks, examples, equations,
+    figures, order_idx}} where order_idx preserves the first-seen
+    section order so the outline can render in source order rather
+    than by descending size.
+
+    Beyond raw word count, the writer's depth allocation should react
+    to the count of distinct teachable artifacts each section carries
+    (each example deserves a slide; each equation block deserves a
+    slot; each figure anchors a visual slide). Word count alone
+    under-weights dense algorithm sections that pack many short
+    paragraphs.
+    """
+    out: dict = {}
+    for idx, c in enumerate(chunks):
+        sid = c.section_id
+        if not sid:
+            continue
+        entry = out.setdefault(sid, {
+            "title": _normalize_section_title(getattr(c, "section_title", "")),
+            "words": 0,
+            "chunks": 0,
+            "examples": 0,
+            "equations": 0,
+            "figures": 0,
+            "order_idx": idx,
+        })
+        entry["words"] += len((c.text or "").split())
+        entry["chunks"] += 1
+        kinds = getattr(c, "kinds", set()) or set()
+        if "example" in kinds:
+            entry["examples"] += 1
+        if "equation" in kinds:
+            entry["equations"] += 1
+        if "figure_cap" in kinds:
+            entry["figures"] += 1
+    return out
+
+
 _INCLUDEGRAPHICS_RE = re.compile(
     r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}"
 )
@@ -592,8 +781,222 @@ def _extract_includegraphics(text):
     return _INCLUDEGRAPHICS_RE.findall(text)
 
 
+# A bullet / line that promises a visual but supplies none — "...can be
+# illustrated graphically:", "...as shown below:", "Visual Representation:
+# ... depicted here:". When the enclosing frame has no \includegraphics,
+# this dangling promise renders as a near-empty slide with a trailing
+# colon. Matched only at the end of a line so genuine "as follows:" lists
+# (which have items after them) are untouched.
+_FIGURE_PROMISE_LINE_RE = re.compile(
+    r"(?im)^.*\b(?:illustrated|shown|depicted|visualized|represented|"
+    r"displayed|seen|drawn)\b[^.\n]*\b(?:graphically|below|here|in the "
+    r"(?:figure|diagram|image|plot)|as follows)\b[^.\n]*:\s*$"
+)
+# Also catch a bare "Visual Representation: <one clause>:" lead-in with a
+# trailing colon and no following content on the line.
+_VISUAL_LEADIN_LINE_RE = re.compile(
+    r"(?im)^\s*(?:\\item\s+)?(?:visual representation|visual aid|"
+    r"illustration|graphic(?:al)? (?:representation|depiction))\b[^.\n]*:\s*$"
+)
+
+# A pointer sentence that refers to a figure which isn't there — "refer to
+# the accompanying figure", "this figure highlights …", "the following
+# figure shows …". Stripped only on frames with no resolving figure.
+_FIGURE_REFERENCE_SENTENCE_RE = re.compile(
+    r"(?im)^[^.\n]*\b(?:refer to the (?:accompanying |following )?figure|"
+    r"(?:this|the|the accompanying|the following) figure (?:shows|"
+    r"highlights|depicts|illustrates|displays|represents|provides|"
+    r"presents|details|demonstrates|gives|offers|outlines|captures|"
+    r"shows the|portrays)|"
+    r"as (?:shown|depicted|illustrated) in the figure(?: below)?)\b"
+    r"[^.\n]*[.:]\s*$"
+)
+
+
+def _frame_has_resolving_figure(frame):
+    """True if the frame carries an \\includegraphics whose path exists on
+    disk — i.e. a figure that will actually render."""
+    for m in re.finditer(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", frame):
+        if os.path.exists(m.group(1)):
+            return True
+    return False
+
+
+def _strip_dangling_figure_promises(text):
+    """Remove figure-promise / figure-reference lines from frames that
+    carry no rendering figure.
+
+    The Faculty sometimes writes "...the steps can be illustrated
+    graphically:" or "refer to the accompanying figure" on a slide where
+    no figure is present (no marker, or an \\includegraphics whose path
+    doesn't resolve), leaving a dangling pointer to a picture that never
+    appears. Operating per frame, this drops such lines ONLY when the
+    frame has no figure that actually renders. Returns the text unchanged
+    on the vanilla path (no such promises)."""
+    if not text or "\\begin{frame}" not in text:
+        return text
+
+    def _process_frame(match):
+        frame = match.group(0)
+        if _frame_has_resolving_figure(frame):
+            return frame  # a real figure renders — leave the text alone
+        frame = _FIGURE_PROMISE_LINE_RE.sub("", frame)
+        frame = _VISUAL_LEADIN_LINE_RE.sub("", frame)
+        frame = _FIGURE_REFERENCE_SENTENCE_RE.sub("", frame)
+        return frame
+
+    return re.sub(
+        r"\\begin\{frame\}.*?\\end\{frame\}",
+        _process_frame, text, flags=re.DOTALL,
+    )
+
+
+# Sourcing figure captions from the textbook's own "Figure N.M <caption>"
+# lines, matched to an extracted figure by the page number embedded in
+# its filename. Lets the save chain caption any figure the writer left
+# bare, using the book's wording rather than a generic placeholder.
+_FIGURE_CAPTION_SOURCE_RE = re.compile(
+    r"Figure\s+(\d+\.\d+)\*{0,2}\s+([A-Z][^\n]{8,110}?)(?:\.|\n|$)"
+)
+_FIGURE_PATH_PAGE_RE = re.compile(r"[_p\-](\d{3,4})[_\-]\d+\.png")
+
+
+def _build_figure_caption_map(kb_chunks):
+    """Map ``page_number -> [(figure_number, caption_text), ...]`` parsed
+    from the textbook's own ``Figure N.M <caption>`` lines. Source for
+    captioning figures the writer left bare. Empty input → empty map."""
+    from collections import defaultdict
+    out = defaultdict(list)
+    for c in kb_chunks or []:
+        pg = getattr(c, "page_start", 0) or 0
+        if not pg:
+            continue
+        for m in _FIGURE_CAPTION_SOURCE_RE.finditer(c.text or ""):
+            cap = re.sub(r"[*_]+", "", m.group(2)).strip()
+            cap = re.sub(r"\b([A-Za-z]) -([A-Za-z])", r"\1-\2", cap)
+            if cap:
+                out[pg].append((m.group(1), cap))
+    return dict(out)
+
+
+_IMAGE_PATH_MARKER_RE = re.compile(
+    r"\[IMAGE_PATH:\s*([^\]]+)\]|!\[\]\(([^)]+)\)"
+)
+
+
+def _build_real_figure_filenames(kb_chunks):
+    """Set of image FILENAMES that come from ``figure_cap`` chunks but NOT
+    from ``equation`` chunks. Used to gate caption injection: an equation
+    crop must not receive a "Figure N.M" caption (it is a formula, not a
+    figure). Empty input → empty set."""
+    fig, eq = set(), set()
+    for c in kb_chunks or []:
+        kinds = getattr(c, "kinds", set()) or set()
+        if "figure_cap" not in kinds and "equation" not in kinds:
+            continue
+        target = fig if "figure_cap" in kinds and "equation" not in kinds else eq
+        for m in _IMAGE_PATH_MARKER_RE.finditer(c.text or ""):
+            name = (m.group(1) or m.group(2) or "").strip().rsplit("/", 1)[-1]
+            if name:
+                target.add(name)
+    return fig - eq
+
+
+def _dedupe_outline_titles(outline):
+    """Drop later slides whose title duplicates an earlier one (normalized:
+    lowercased, punctuation/whitespace collapsed). Keeps the first
+    occurrence and preserves order. Used on the grounded outline where the
+    designer occasionally emits two identically-titled slides."""
+    if not outline:
+        return outline
+    seen = set()
+    out = []
+    for slide in outline:
+        title = (slide.get("title") or "") if isinstance(slide, dict) else ""
+        key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        out.append(slide)
+    return out
+
+
+def _first_image_path(text):
+    """First image path in a chunk's text — from an ``[IMAGE_PATH: ...]``
+    marker or a markdown ``![](...)`` reference. Returns '' when none."""
+    if not text:
+        return ""
+    m = _IMAGE_PATH_MARKER_RE.search(text)
+    if not m:
+        return ""
+    return (m.group(1) or m.group(2) or "").strip()
+
+
+def _caption_for_figure_path(path, caption_map):
+    """Best textbook caption for a figure path, matched by the page
+    number in its filename (then nearby pages). Returns
+    ``"Figure N.M: <caption>"`` or ``""`` when none is found."""
+    if not caption_map:
+        return ""
+    m = _FIGURE_PATH_PAGE_RE.search(path or "")
+    if not m:
+        return ""
+    pg = int(m.group(1))
+    for dp in (0, -1, 1, -2, 2):
+        cands = caption_map.get(pg + dp)
+        if cands:
+            num, cap = cands[0]
+            return f"Figure {num}: {cap}"
+    return ""
+
+
+def _inject_missing_figure_captions(text, caption_map, figure_filenames=None):
+    """Add a ``\\caption{}`` after any ``\\includegraphics`` that has none,
+    sourced from the textbook's own figure caption (matched by page) so no
+    figure renders bare. Writer-supplied captions are left untouched.
+
+    Two guards keep captions honest:
+      * the image path must RESOLVE on disk — a caption for a missing
+        image would render as an orphan "Figure. …" line; and
+      * when ``figure_filenames`` is supplied, the image must be a real
+        figure (not an equation crop), so a formula never gets a
+        "Figure N.M" caption.
+
+    No-op when caption_map is empty or there are no figures."""
+    if not text or not caption_map or "\\includegraphics" not in text:
+        return text
+    out = []
+    pos = 0
+    for m in re.finditer(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", text):
+        out.append(text[pos:m.end()])
+        pos = m.end()
+        tail = text[m.end():m.end() + 220]
+        nxt = re.search(r"\\caption|\\includegraphics|\\end\{frame\}", tail)
+        if nxt is not None and nxt.group(0) == "\\caption":
+            continue  # writer already captioned this figure
+        path = m.group(1)
+        if not os.path.exists(path):
+            continue  # missing image — captioning it makes an orphan line
+        if figure_filenames is not None:
+            name = path.rsplit("/", 1)[-1]
+            if name not in figure_filenames:
+                continue  # equation crop / non-figure — don't label it "Figure"
+        cap = _caption_for_figure_path(path, caption_map)
+        if cap:
+            cap_tex = (cap.replace("&", "\\&").replace("%", "\\%")
+                          .replace("_", "\\_").replace("#", "\\#"))
+            out.append("\n    \\caption{" + cap_tex + "}")
+    out.append(text[pos:])
+    return "".join(out)
+
+
 _CITATION_TOKEN_ANY_RE = re.compile(
     r"\s*\[[A-Za-z][A-Za-z0-9_]*:ch\d+(?:\.s\d+)?:p\d+\]"
+)
+
+_CITATION_TOKEN_LATEX_WRAPPED_RE = re.compile(
+    r"\s*\\texttt\{\[[A-Za-z](?:[A-Za-z0-9_]|\\_)*:ch\d+(?:\.s\d+)?:p\d+\]\}"
 )
 
 
@@ -619,6 +1022,7 @@ def _strip_all_citation_tokens(text):
         return text
     if "[" not in text:
         return text
+    text = _CITATION_TOKEN_LATEX_WRAPPED_RE.sub("", text)
     return _CITATION_TOKEN_ANY_RE.sub("", text)
 
 
@@ -979,7 +1383,7 @@ class SlidesDeliberation:
         # render figures, they narrate them).
         if artifact != "script":
             results = self._inject_visual_chunk_if_available(
-                results, effective_section_ids,
+                results, effective_section_ids, query=query,
             )
 
         # Build per-excerpt blocks with structured headers. Budget the
@@ -1073,27 +1477,26 @@ class SlidesDeliberation:
                 f"exactly as printed in its header (e.g. {first_token})."
             )
             rule_2 = (
-                "  RULE 2 (ANCHOR-THEN-PARAPHRASE — slot-fill template). "
-                "For any factual claim — including definitions, formulas, "
-                "named concepts, and procedure descriptions — your sentence "
-                "MUST follow this exact 3-part structure:\n"
-                "       <<verbatim phrase from excerpt>> [citation token] — "
-                "<<your one-sentence elaboration, if any>>\n"
+                "  RULE 2 (TEACH IN YOUR OWN WORDS — no quote-dumping). "
+                "Write each bullet as clear instructional prose, the way a "
+                "lecturer explains a concept — NOT by quoting a sentence from "
+                "the book and tacking on a gloss. Lead with the idea stated "
+                "plainly, in your own phrasing, using the textbook's facts and "
+                "terminology faithfully.\n"
                 "  \n"
                 "  HARD CONSTRAINTS:\n"
-                "    (a) <<verbatim phrase>> is a 6-25 word slice copied "
-                "letter-for-letter from one of the excerpts above. Do NOT "
-                "paraphrase the slice; do NOT add words inside it. Use the "
-                "textbook's EXACT WORDING in double quotes.\n"
-                "    (b) The citation token comes IMMEDIATELY after the "
-                "closing quote, exactly as printed in the excerpt's TOKEN "
-                "header.\n"
-                "    (c) Your elaboration adds NO NEW FACTS — only "
-                "explanation, paraphrase, or example. If you can't elaborate "
-                "without inventing facts, leave the elaboration off.\n"
-                "    (d) For definitions and formulas, the verbatim quote is "
-                "MANDATORY. Loose paraphrase + citation alone will be flagged "
-                "as wrong-section-named by the verifier."
+                "    (a) Do NOT open a bullet with a quoted sentence followed "
+                "by a dash and an explanation. That reads like a citation "
+                "dump, not teaching.\n"
+                "    (b) Reserve \"direct quotation\" for a precise definition "
+                "or a formula statement where exact wording matters — at most "
+                "ONE short quote per slide, and only when paraphrase would "
+                "lose precision.\n"
+                "    (c) State only what the excerpts support. Add no new "
+                "facts; if you cannot say something from the evidence, omit it.\n"
+                "    (d) For an algorithm, SHOW its steps as a short numbered "
+                "procedure in your own words rather than quoting a description "
+                "of it."
             )
             header_label = "TEXTBOOK GROUNDING — MANDATORY RULES"
             footer_intro = "GROUNDING REMINDER (apply while writing):"
@@ -1102,8 +1505,8 @@ class SlidesDeliberation:
                 f"(e.g. {first_token})."
             )
             footer_rule_2 = (
-                "  • Prefer textbook wording over paraphrase, especially for "
-                "definitions and formulas — use \"direct quotes\" where appropriate."
+                "  • Teach in your own clear words; reserve direct quotes for "
+                "precise definitions or formulas only (at most one per slide)."
             )
 
         evidence_block = (
@@ -1226,25 +1629,93 @@ class SlidesDeliberation:
             slide_query, artifact=artifact, section_ids_override=per_slide,
         )
 
-    _VISUAL_INJECT_CAP = 4
+    # At most one injected figure per slide — author-deck slides carry a
+    # single focused figure, and cramming several tiny mismatched crops
+    # onto one slide (the v9 failure mode) reads far worse than one
+    # well-chosen figure.
+    _VISUAL_INJECT_CAP = 1
+    # Minimum content-token overlap for a cross-section figure to be
+    # injected onto a slide. Same-section figures bypass this gate.
+    _VISUAL_RELEVANCE_MIN_OVERLAP = 2
 
-    def _inject_visual_chunk_if_available(self, results, section_ids):
-        """Hoist in-scope visual chunks (IMAGE_PATH / LATEX / TABLE /
-        ALGORITHM_STEPS markers) to the FRONT of ``results`` up to
-        ``_VISUAL_INJECT_CAP`` chunks per call.
+    def _caption_embedding(self, caption):
+        """Cached unit-norm embedding of a textbook figure caption. Returns
+        None if embedding is unavailable. Captions repeat across slides, so
+        caching keeps the per-run embedding cost to one call per caption."""
+        import numpy as np
+        cache = getattr(self, "_fig_caption_emb_cache", None)
+        if cache is None:
+            cache = self._fig_caption_emb_cache = {}
+        if caption not in cache:
+            try:
+                v = self.retriever.embedder.embed([caption])[0]
+                cache[caption] = v / (float(np.linalg.norm(v)) + 1e-9)
+            except Exception:
+                cache[caption] = None
+        return cache[caption]
 
-        The block-builder loop downstream consumes a fixed word budget
-        per chunk in rank order; putting visual chunks first guarantees
-        their markers survive into the evidence text even when later
-        prose chunks get truncated.
+    def _figure_caption_relevance(self, candidates, query):
+        """Return ``{id(chunk): cosine}`` of each candidate visual chunk
+        against the slide query.
 
-        Multi-figure slides emerge naturally when several visual chunks
-        sit in the bound section_ids — matches author-deck style where
-        a single concept slide carries 3-5 panels. Prefers chunks in
-        the same section as the top retrieved result so the figures
-        align with the slide topic; falls back to any in-scope visual
-        chunk after exhausting the preferred section. Lower-ranked
-        prose chunks are dropped to keep the result count stable.
+        For a FIGURE chunk the chunk text is just an ``[IMAGE_PATH:]``
+        marker (semantically empty), so its page-matched caption
+        ("Figure 10.15: DBSCAN algorithm") is the signal that tells a
+        DBSCAN figure from an OPTICS one. For an EQUATION (or other
+        marker-only) chunk there is no figure caption, but the chunk's
+        own prose IS meaningful, so it is used directly — this keeps the
+        BCubed "Correctness" formula off the Silhouette slide. Empty dict
+        when embeddings are unavailable (caller falls back to token
+        overlap)."""
+        import numpy as np
+        try:
+            kb_chunks = self.retriever.kb.chunks
+        except AttributeError:
+            return {}
+        cmap = getattr(self, "_fig_caption_map_cache", None)
+        if cmap is None:
+            cmap = _build_figure_caption_map(kb_chunks)
+            self._fig_caption_map_cache = cmap
+        try:
+            qv = self.retriever.embedder.embed([query])[0]
+            qv = qv / (float(np.linalg.norm(qv)) + 1e-9)
+        except Exception:
+            return {}
+        scores = {}
+        for c in candidates:
+            path = _first_image_path(c.text)
+            rep = _caption_for_figure_path(path, cmap) if path else ""
+            if not rep:
+                # Equation / uncaptioned chunk: embed its own prose
+                # (drop the visual markers first).
+                rep = re.sub(
+                    r"\[(?:IMAGE_PATH|LATEX|TABLE|ALGORITHM_STEPS|"
+                    r"DESCRIPTION|INSIGHT)[^\]]*\]", "", c.text or "")
+                rep = re.sub(r"!\[\]\([^)]*\)", "", rep).strip()[:300]
+            if not rep:
+                continue
+            cv = self._caption_embedding(rep)
+            if cv is not None:
+                scores[id(c)] = float(np.dot(qv, cv))
+        return scores
+
+    def _inject_visual_chunk_if_available(self, results, section_ids, query=None):
+        """Hoist the single most slide-relevant in-scope visual chunk
+        (IMAGE_PATH / LATEX / TABLE / ALGORITHM_STEPS marker) to the FRONT
+        of ``results``, up to ``_VISUAL_INJECT_CAP``.
+
+        The block-builder loop downstream consumes a fixed word budget per
+        chunk in rank order; putting the visual chunk first guarantees its
+        marker survives into the evidence text even when later prose chunks
+        get truncated.
+
+        Figure choice is by EMBEDDING similarity of each candidate's
+        textbook caption to the slide query (so a DBSCAN slide gets the
+        DBSCAN figure, not the OPTICS one that shares its section), falling
+        back to content-token overlap when embeddings are unavailable.
+        Same-section figures are preferred; cross-section figures must
+        clear the overlap gate. Lower-ranked prose chunks are dropped to
+        keep the result count stable.
 
         Returns ``results`` unchanged when retrieval is empty, the
         retriever is None (vanilla path), or no visual chunks exist in
@@ -1273,17 +1744,38 @@ class SlidesDeliberation:
         top_section = results[0].chunk.section_id
         seen = {id(r.chunk) for r in results}
 
-        # Rank candidates: same-section visuals first, then any
-        # in-scope visual, skipping anything already in results.
-        candidates: list = []
-        for c in kb_chunks:
-            if (c.section_id == top_section and has_marker(c)
-                    and id(c) not in seen):
-                candidates.append(c)
-        for c in kb_chunks:
-            if (c.section_id in wanted_sections and c.section_id != top_section
-                    and has_marker(c) and id(c) not in seen):
-                candidates.append(c)
+        # Relevance reference for the token-overlap fallback / cross-section
+        # gate: content tokens of the slide's best retrieved chunks.
+        ref_tokens: set = set()
+        for r in results[:3]:
+            ref_tokens |= _content_tokens(r.chunk.text)
+            ref_tokens |= _content_tokens(getattr(r.chunk, "section_title", ""))
+
+        def _overlap(c):
+            return len(ref_tokens & _content_tokens(c.text))
+
+        same_section = [
+            c for c in kb_chunks
+            if c.section_id == top_section and has_marker(c) and id(c) not in seen
+        ]
+        cross_section = [
+            c for c in kb_chunks
+            if c.section_id in wanted_sections and c.section_id != top_section
+            and has_marker(c) and id(c) not in seen
+            and _overlap(c) >= self._VISUAL_RELEVANCE_MIN_OVERLAP
+        ]
+
+        # Primary ranking: caption↔query embedding similarity. Fall back to
+        # token overlap when embeddings/captions are unavailable.
+        emb = (self._figure_caption_relevance(same_section + cross_section, query)
+               if query else {})
+
+        def _rank(c):
+            return emb.get(id(c), _overlap(c))
+
+        same_section.sort(key=_rank, reverse=True)
+        cross_section.sort(key=_rank, reverse=True)
+        candidates: list = same_section + cross_section
 
         to_inject = candidates[:cap - existing_visuals]
         if not to_inject:
@@ -1654,6 +2146,26 @@ class SlidesDeliberation:
         # that broke PDF compilation in earlier baselines. Only affects
         # LaTeX output (slides.tex); markdown unchanged.
         latex_source = _clean_latex_artifacts(latex_source)
+        # Drop dangling "...illustrated graphically:" promises on frames
+        # that carry no figure, so a missing [IMAGE_PATH:] marker doesn't
+        # leave a near-empty slide with a trailing colon. Grounded path
+        # only — vanilla frames carry no figure markers, so this stays a
+        # no-op there and vanilla output is preserved byte-for-byte.
+        if self.retriever is not None:
+            latex_source = _strip_dangling_figure_promises(latex_source)
+            # Caption any figure the writer left bare, using the textbook's
+            # own "Figure N.M <caption>" line matched by page number. Only
+            # real, on-disk figures get captioned (not equation crops or
+            # missing images).
+            try:
+                kb_chunks = self.retriever.kb.chunks
+                caption_map = _build_figure_caption_map(kb_chunks)
+                figure_filenames = _build_real_figure_filenames(kb_chunks)
+                latex_source = _inject_missing_figure_captions(
+                    latex_source, caption_map, figure_filenames
+                )
+            except AttributeError:
+                pass
 
         # Gate B — post-emit semantic strip. For each citation token
         # remaining in the final artifacts, computes claim-chunk
@@ -1753,31 +2265,82 @@ class SlidesDeliberation:
             except AttributeError:
                 bound = []
             topics = _extract_topic_names(bound)
-            section_words = _section_word_counts(bound)
-            if section_words:
-                total_words = sum(section_words.values())
+            depth = _section_depth_signals(bound)
+            example_identifiers = _extract_example_identifiers(bound)
+            if depth:
+                weighted = {
+                    sid: (
+                        d["words"]
+                        + 25 * d["examples"]
+                        + 15 * d["equations"]
+                        + 10 * d["figures"]
+                    )
+                    for sid, d in depth.items()
+                }
+                total = sum(weighted.values()) or 1
+                ordered = sorted(
+                    depth.items(),
+                    key=lambda kv: _section_order_key(
+                        kv[1]["title"], kv[1]["order_idx"]
+                    ),
+                )
                 allocations = []
-                for sid, w in sorted(section_words.items(), key=lambda kv: -kv[1]):
-                    share = w / total_words if total_words else 0
+                for sid, d in ordered:
+                    share = weighted[sid] / total
                     slots = max(1, round(share * target_count))
-                    allocations.append(f"  - {sid}: ~{slots} slides ({w} source words)")
+                    flags = []
+                    if d["examples"]:
+                        flags.append(f"{d['examples']} ex")
+                    if d["equations"]:
+                        flags.append(f"{d['equations']} eq")
+                    if d["figures"]:
+                        flags.append(f"{d['figures']} fig")
+                    extras = f" ({', '.join(flags)})" if flags else ""
+                    allocations.append(
+                        f"  - {sid} \"{d['title']}\": ~{slots} slides — "
+                        f"{d['words']} words, {d['chunks']} chunks{extras}"
+                    )
                 budget_block = (
-                    "BUDGET HINTS (allocate slides proportionally — heavier "
-                    "sections deserve more depth):\n" + "\n".join(allocations)
+                    "SECTION BUDGET (slides MUST appear in the order below; "
+                    "this mirrors the textbook's section order. Allocate "
+                    "depth proportionally — sections rich in examples, "
+                    "equations, or figures deserve more slots than thin "
+                    "narrative sections):\n" + "\n".join(allocations)
                 )
             else:
                 budget_block = ""
             if topics:
                 topic_block = (
-                    "REQUIRED TOPIC COVERAGE — every textbook topic below "
-                    "MUST have at least one dedicated slide with that "
-                    "topic's name in the title. Improvising generic "
-                    "\"Introduction Part 1/2/3\" titles in place of these "
-                    "named topics is a defect:\n  "
-                    + ", ".join(topics)
+                    "TOPIC COVERAGE — give each textbook topic below that "
+                    f"fits the chapter \"{chapter['title']}\" its own "
+                    "dedicated slide, with the topic's name in the title, "
+                    "in the order shown (the textbook's own order). "
+                    "Improvising generic \"Introduction Part 1/2/3\" titles "
+                    "in place of these named topics is a defect. BUT if a "
+                    "listed topic is clearly from a DIFFERENT subject than "
+                    f"\"{chapter['title']}\" (a stray binding — e.g. a "
+                    "preprocessing or classification topic in a clustering "
+                    "chapter), SKIP it; do not create an off-topic slide:\n  "
+                    + " → ".join(topics)
                 )
             else:
                 topic_block = ""
+            if example_identifiers:
+                example_lines = [
+                    f"  - \"Example: {ident} — {topic}\""
+                    for ident, topic in example_identifiers[:12]
+                ]
+                example_block = (
+                    "REQUIRED WORKED-EXAMPLE SLIDES — the textbook carries "
+                    "the worked examples below. EACH one MUST appear as a "
+                    "separate slide whose title starts with \"Example:\". "
+                    "Preserve the numerical trace (cluster centers, "
+                    "iteration counts, intermediate values — not "
+                    "paraphrased prose). Use the exact titles shown:\n"
+                    + "\n".join(example_lines)
+                )
+            else:
+                example_block = ""
             if len(topics) >= 2:
                 comparison_block = (
                     "COMPARISON SLIDES — for any pair of related topics, "
@@ -1786,8 +2349,49 @@ class SlidesDeliberation:
                 )
             else:
                 comparison_block = ""
+            forbidden_block = (
+                "FORBIDDEN SLIDE TITLES — substring match. ANY title that "
+                "CONTAINS the words \"Visual\", \"Visualization\", "
+                "\"Illustration\", \"Figure Illustration\", or \"Diagram\" "
+                "as a descriptor noun is a defect. Adding a topic prefix "
+                "or suffix does NOT make it acceptable. Concrete escape "
+                "attempts you must NOT make:\n"
+                "  - \"Visual Representation of Clustering\" ✗\n"
+                "  - \"DBSCAN Visual Representation\" ✗\n"
+                "  - \"Figure Illustration of DBI\" ✗\n"
+                "  - \"K-Means Visualization\" ✗\n"
+                "  - \"Algorithm Diagram\" ✗\n"
+                "Every slide title MUST name the specific concept, "
+                "algorithm, or worked example the slide teaches. If a "
+                "figure is the primary content, title the slide after "
+                "WHAT THE FIGURE SHOWS (e.g. \"K-Means: Cluster "
+                "Assignment by Iteration\", \"DBSCAN: Density-Reachable "
+                "Cluster Growth\"). Proper-noun usage of \"Voronoi "
+                "Diagram\" or similar named concepts is allowed."
+            )
+            structure_block = (
+                "DECK STRUCTURE — the FIRST slide MUST introduce the "
+                "chapter topic: a plain-language definition plus what the "
+                "lecture will cover. Do NOT open with a references, "
+                "bibliography, or \"literature overview\" slide — those "
+                "belong at the very end, if at all, and are not the "
+                "lecture's content. Walk the sections in the numeric order "
+                "given in the SECTION BUDGET. Aim for substantive slides: "
+                "each content slide should carry 3–5 teaching bullets, not "
+                "one thin line.\n"
+                "NO REDUNDANCY — every slide must teach NEW material. Do "
+                "NOT repeat the chapter overview, the \"what is "
+                "clustering\" definition, the hierarchical-methods "
+                "overview, or the evaluation introduction across multiple "
+                "slides. Two slides must never share the same title. Once a "
+                "concept has its slide, move on — do not circle back to it "
+                "near the end of the deck."
+            )
             textbook_hints = "\n\n".join(
-                b for b in (topic_block, comparison_block, budget_block) if b
+                b for b in (
+                    structure_block, topic_block, example_block,
+                    comparison_block, forbidden_block, budget_block,
+                ) if b
             )
 
         prompt = f"""
@@ -1833,7 +2437,13 @@ class SlidesDeliberation:
             else:
                 # If no JSON array pattern is found, try direct parsing
                 self.slides_outline = json.loads(response)
-            
+
+            # Drop duplicate-title slides the outline agent sometimes emits
+            # (e.g. two "Applications of Cluster Analysis"); grounded path
+            # only, so vanilla output is untouched.
+            if self.retriever is not None:
+                self.slides_outline = _dedupe_outline_titles(self.slides_outline)
+
             print(f"Successfully generated outline with {len(self.slides_outline)} slides")
             
         except (json.JSONDecodeError, ValueError) as e:
@@ -1890,8 +2500,8 @@ class SlidesDeliberation:
             % Content will be added here
         \\end{{frame}}
 
-        1. Don't use non-English characters directly, e.g. use $\gamma$ instead of γ, $\epsilon$ instead of ε
-        2. If any of symbols has a special meaning, add a slash. e.g. use \& instead of &
+        1. Don't use non-English characters directly, e.g. use $\\gamma$ instead of γ, $\\epsilon$ instead of ε
+        2. If any of symbols has a special meaning, add a slash. e.g. use \\& instead of &
         {citation_rules}
 
         Your response should be LaTeX code that can be compiled directly.
@@ -2240,6 +2850,51 @@ class SlidesDeliberation:
             f"{slide['title']}. {slide.get('description', '')}"
         )
 
+        # On grounded runs, the evidence block surfaces real cropped
+        # figures via [IMAGE_PATH:] markers; the Faculty should reach
+        # for them on every slide where a visual would teach better
+        # than prose. Vanilla path receives no markers, so the line
+        # below is harmless when ``self.retriever is None``.
+        figure_directive = (
+            "4. Figures from the textbook: when an excerpt above carries an "
+            "[IMAGE_PATH: ...] marker, INCLUDE the figure with "
+            "``\\includegraphics[width=0.55\\textwidth]{<exact path from the marker>}``. "
+            "A figure must NEVER appear bare. Two things are MANDATORY for "
+            "every figure you include:\n"
+            "   (a) a bullet that INTRODUCES it — say in plain words what the "
+            "figure shows and why it matters to this slide's point, BEFORE "
+            "the \\includegraphics line;\n"
+            "   (b) a ``\\caption{<one sentence describing what the reader is "
+            "looking at>}`` line IMMEDIATELY AFTER the \\includegraphics, "
+            "using the [DESCRIPTION: ...] marker text if the excerpt supplies "
+            "one. A figure with no caption and no introduction reads as a "
+            "random image and is a defect.\n"
+            "   Keep your 3–5 concept bullets as usual; the figure supports "
+            "them. If NO excerpt carries an [IMAGE_PATH: ...] marker, do NOT "
+            "mention, promise, or gesture at a figure — write self-contained "
+            "prose instead. Never end a bullet with \"as illustrated below\", "
+            "\"can be shown graphically\", or a dangling colon expecting a "
+            "picture that will not be there."
+            if self.retriever is not None else
+            "4. Any formulas, code snippets, or diagrams that would be helpful, but dont try to include any pictures in the LaTeX code."
+        )
+
+        # Clean-formatting directive — grounded path only (vanilla output
+        # stays byte-identical). The textbook excerpts carry markdown
+        # decoration (``_k_``, ``**bold**``, ``<<…>>``) from the source IR;
+        # without this the Faculty copies it verbatim and it leaks onto the
+        # rendered slide. Pair with RULE 2 (teach in your own words) and the
+        # save-chain sanitizer.
+        style_directive = (
+            "\n5. Formatting: write clean prose for LaTeX slides. Do NOT use "
+            "markdown syntax — no _underscores_ for emphasis, no **asterisks** "
+            "for bold, no << >> quote markers, no `---` as a sentence "
+            "separator. For mathematical symbols use LaTeX math mode "
+            "(``$k \\leq n$``), never bare underscores. Write whole, "
+            "self-contained sentences a student can read at a glance."
+            if self.retriever is not None else ""
+        )
+
         # Create the prompt for the agent
         prompt = f"""
         {evidence_block}
@@ -2261,7 +2916,7 @@ class SlidesDeliberation:
         1. Clear explanations of concepts
         2. Examples or illustrations where appropriate
         3. Key points to emphasize
-        4. Any formulas, code snippets, or diagrams that would be helpful, but dont try to include any pictures in the LaTeX code.
+        {figure_directive}{style_directive}
         {citation_rules}
 
         Focus on making the content educational, engaging, and aligned with the chapter's learning objectives.

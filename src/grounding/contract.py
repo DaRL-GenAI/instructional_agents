@@ -112,6 +112,33 @@ SMART_INTRO_SECTIONS_PER_TOPIC = 10
 # <40% in the prior generation.
 META_ABSTAIN_RRF_FLOOR = 0.025
 
+# Relative-score floor on the bound sections — drops only NOISE sections
+# (a near-zero fused RRF relative to the top), not a primary off-topic
+# filter. A score floor can't cleanly separate on-topic from off-topic:
+# a genuinely on-topic sub-section (e.g. "Density-Based Methods") often
+# scores BELOW an off-topic straggler HyDE pulled in (e.g. a Chapter 3
+# PCA section), so an aggressive floor starves the legitimate sections of
+# their figures. Off-topic *slides* are prevented by the softened
+# TOPIC-COVERAGE outline instruction ("skip a topic clearly from a
+# different subject"), and off-topic *figures* by the embedding-based
+# figure↔slide matching. This floor just removes sections that barely
+# registered at all.
+SECTION_RELATIVE_SCORE_FLOOR = 0.10
+
+
+def _apply_relative_score_floor(ranked, top_n, floor_fraction):
+    """Of the top-``top_n`` ranked ``(section_id, score)`` pairs, keep only
+    those whose score is at least ``floor_fraction`` of the top score —
+    dropping weakly-related stragglers while preserving a genuinely spread
+    binding. Always keeps at least the top section. ``ranked`` must be
+    sorted by descending score."""
+    if not ranked:
+        return []
+    top_score = ranked[0][1]
+    floor = floor_fraction * top_score
+    kept = [sid for sid, sc in ranked[:top_n] if sc >= floor]
+    return kept or [ranked[0][0]]
+
 
 def _is_generic_intro_chapter(title: str, desc: str) -> bool:
     """Keyword-based intro / meta-chapter detection.
@@ -280,12 +307,21 @@ def build_course_contract(
                 ))
                 continue
 
-            section_ids = [sid for sid, _ in ranked[:effective_top_n]]
+            # Relative-score floor: keep only sections scoring near the top
+            # so a weakly-related straggler HyDE pulled in (a different
+            # chapter's topic) doesn't end up bound and forcing an
+            # off-topic slide. Always keep at least the top section.
+            section_ids = _apply_relative_score_floor(
+                ranked, effective_top_n, SECTION_RELATIVE_SCORE_FLOOR
+            )
+            dropped = min(effective_top_n, len(ranked)) - len(section_ids)
             if smart_widen_trigger:
                 coverage_status = (
                     f"top section RRF={top_score:.4f} · "
                     f"smart-intro widened to {len(section_ids)} sections "
-                    f"({smart_widen_trigger})"
+                    f"({smart_widen_trigger}; "
+                    f"{dropped} below {SECTION_RELATIVE_SCORE_FLOOR:.0%} "
+                    f"relative floor dropped)"
                 )
             else:
                 coverage_status = f"top section RRF={top_score:.4f}"

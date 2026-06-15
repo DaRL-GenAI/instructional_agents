@@ -22,7 +22,7 @@ _BUILD_SCRIPT = Path(__file__).resolve().parent / "build_pptx.js"
 
 @dataclass
 class SlideElement:
-    type: str  # 'text', 'itemize', 'enumerate', 'block', 'alertblock', 'code', 'math', 'tikz', 'columns'
+    type: str  # 'text', 'itemize', 'enumerate', 'block', 'alertblock', 'code', 'math', 'tikz', 'columns', 'image', 'caption'
     content: Any = None
     title: str = ''
     language: str = ''
@@ -56,6 +56,15 @@ def unescape_latex(text: str) -> str:
     # paired delimiters are distinct enough not to span unrelated text.
     text = re.sub(r"``([^']*?)''", r'"\1"', text)
     text = re.sub(r"`([^']*?)'(?!')", r"'\1'", text)
+    # Empty / standalone double-dollar math the writer left behind ($$ with
+    # no symbol between). Renders as literal "$$"; drop it.
+    text = text.replace('$$', '')
+    # LaTeX dash ligatures → unicode. In LaTeX "---" is an em-dash and
+    # "--" an en-dash, but the PPTX path shows them as literal hyphens.
+    # Convert so the common quote-then-gloss "..." --- gloss separator
+    # renders as a real em-dash. Order matters: longest run first.
+    text = re.sub(r'(?<!-)---(?!-)', '—', text)
+    text = re.sub(r'(?<!-)--(?!-)', '–', text)
     return text
 
 
@@ -76,6 +85,20 @@ _MARKDOWN_ITALIC_RE = re.compile(r'(?<![*\w])\*([^*\n]+?)\*(?![*\w])')
 _BARE_DOLLAR_MATH_RE = re.compile(r'\$\s*([^$\n]{1,60})\s*\$')
 
 
+# Markdown _italic_ (single-underscore pairs), e.g. "_k_-means". LaTeX
+# treats a bare underscore as a subscript operator; the PPTX path leaks
+# it as literal "_k_". Strip the markers, keep the content. Lookbehind
+# excludes a preceding backslash (escaped ``\_``) or word char (real
+# subscripts ``x_i`` and path underscores ``data_mining``); lookahead
+# excludes a trailing word char so ``C_{ij}`` is left alone.
+_MARKDOWN_ITALIC_UNDERSCORE_RE = re.compile(
+    r"(?<![\\\w])_([A-Za-z][A-Za-z0-9 ()'.,/+-]{0,40}?)_(?![\w])"
+)
+# Guillemet quote markers (<<"...">>) the writer emits instead of plain
+# quotes. Strip the angle pairs, keep the inner text.
+_GUILLEMET_RE = re.compile(r'<<+\s*|\s*>>+')
+
+
 def strip_markdown_artifacts(text: str) -> str:
     """Remove leftover markdown formatting that the writer included in
     .tex output and that LaTeX would have ignored (but the PPTX path
@@ -83,6 +106,105 @@ def strip_markdown_artifacts(text: str) -> str:
     text = _MARKDOWN_BOLD_RE.sub(r'\1', text)
     text = _MARKDOWN_BOLD_UNDERSCORE_RE.sub(r'\1', text)
     text = _MARKDOWN_ITALIC_RE.sub(r'\1', text)
+    text = _MARKDOWN_ITALIC_UNDERSCORE_RE.sub(r'\1', text)
+    text = _GUILLEMET_RE.sub('', text)
+    return text
+
+
+# LaTeX math symbols → unicode, used by clean_math_for_display so an
+# equation/align block that survives to the PPTX path renders as readable
+# text instead of raw "\begin{align*} \text{...} \\" source.
+_MATH_SYMBOL_MAP = {
+    r'\rightarrow': '→', r'\Rightarrow': '⇒', r'\leftarrow': '←',
+    r'\leq': '≤', r'\geq': '≥', r'\neq': '≠', r'\approx': '≈',
+    r'\times': '×', r'\cdot': '·', r'\pm': '±', r'\in': '∈',
+    r'\notin': '∉', r'\subseteq': '⊆', r'\subset': '⊂',
+    r'\cup': '∪', r'\cap': '∩', r'\sum': 'Σ', r'\prod': 'Π',
+    r'\forall': '∀', r'\exists': '∃', r'\infty': '∞',
+    r'\partial': '∂', r'\nabla': '∇', r'\sqrt': '√',
+    r'\alpha': 'α', r'\beta': 'β', r'\gamma': 'γ', r'\delta': 'δ',
+    r'\epsilon': 'ε', r'\varepsilon': 'ε', r'\theta': 'θ',
+    r'\lambda': 'λ', r'\mu': 'μ', r'\sigma': 'σ', r'\phi': 'φ',
+    r'\omega': 'ω', r'\pi': 'π', r'\rho': 'ρ', r'\tau': 'τ',
+    r'\ldots': '…', r'\dots': '…', r'\cdots': '…',
+}
+
+
+def _convert_math_macros(text: str) -> str:
+    """Convert the unambiguous math macros — ``\\frac``, ``\\sqrt``,
+    operator names, braced sub/superscripts, and symbols — to readable
+    unicode. Safe to run on general slide text (these only occur in math),
+    so it also rescues bare formulas the writer emitted without ``$``
+    delimiters, which the generic command-stripper would otherwise erase."""
+    # \frac{a}{b} → (a)/(b); run twice for one level of nesting
+    for _ in range(2):
+        text = re.sub(r'\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}', r'(\1)/(\2)', text)
+    # \sqrt{x} → √(x)
+    text = re.sub(r'\\sqrt\s*\{([^{}]*)\}', r'√(\1)', text)
+    text = text.replace('\\sqrt', '√')
+    # Operator/function names: drop the backslash, keep the word
+    text = re.sub(r'\\(max|min|log|ln|exp|arg|deg|gcd|lim|sup|inf|sin|cos|tan|det|dim|mod)\b', r'\1', text)
+    # Braced sub/superscripts: keep the content, drop the marker (2^{n} → 2n)
+    text = re.sub(r'[_^]\{([^{}]*)\}', r'\1', text)
+    # Symbols → unicode. The negative lookahead stops a short macro matching
+    # inside a longer command — e.g. \cap must NOT fire inside \caption.
+    for macro, sym in _MATH_SYMBOL_MAP.items():
+        text = re.sub(re.escape(macro) + r'(?![a-zA-Z])', sym, text)
+    return text
+
+
+def clean_math_for_display(text: str) -> str:
+    """Turn a LaTeX math body into readable plain text.
+
+    pptxgenjs has no math renderer, so math otherwise reaches the slide as
+    raw source — ``\\begin{align*} \\text{Initial:} \\& \\quad...`` for a
+    block, or ``\\frac{b(o)-a(o)}{\\max...}`` for an inline formula whose
+    structural commands the generic command-stripper would erase entirely
+    (leaving "s(o) ="). This converts structure (``\\frac``, ``\\text``,
+    ``\\quad``, ``&`` alignment, ``\\\\`` rows, sub/superscripts) and maps
+    symbols / operator names to unicode so the content stays legible.
+    Returns '' when nothing survives."""
+    text = _convert_math_macros(text)
+    # \text{X} / \mathbf{X} / \mathrm{X} → X
+    text = re.sub(r'\\(?:text|mathbf|mathrm|mathit|mathcal|mathbb|boldsymbol|operatorname)\{([^{}]*)\}', r'\1', text)
+    # Row separators → newline; spacing macros → space
+    text = text.replace('\\\\', '\n')
+    text = re.sub(r'\\(?:quad|qquad)', '  ', text)
+    text = re.sub(r'\\[,;:! ]', ' ', text)
+    # Alignment markers (escaped or bare)
+    text = text.replace('\\&', ' ')
+    text = re.sub(r'(?<!\\)&', ' ', text)
+    text = re.sub(r'\\(?:left|right|big|Big|bigg|Bigg)\b', '', text)
+    # Unbraced subscripts/superscripts: keep the symbol, drop the marker
+    text = re.sub(r'[_^]([A-Za-z0-9])', r'\1', text)
+    # Any remaining \command → drop
+    text = re.sub(r'\\[a-zA-Z]+', '', text)
+    # Strip LaTeX grouping braces, but NOT escaped set-notation braces
+    # (``\{a\}`` must survive as ``{a}``). The lookbehind protects ``\{``;
+    # convert those to literal braces afterwards.
+    text = re.sub(r'(?<!\\)[{}]', '', text)
+    text = text.replace('\\{', '{').replace('\\}', '}')
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n[ \t]*\n+', '\n', text)
+    return text.strip()
+
+
+# Inline / display math delimiters. Content is rendered to readable
+# unicode via clean_math_for_display; this MUST run before the generic
+# ``\command`` stripper so structural macros (\frac, \max) are converted
+# rather than erased. Order: display forms first, then inline.
+def render_inline_math(text: str) -> str:
+    """Convert ``\\[...\\]``, ``$$...$$``, ``\\(...\\)`` and ``$...$`` to
+    readable unicode text. Empty or unpaired delimiters are dropped so a
+    stray ``$`` or literal ``\\( K \\)`` never reaches the slide."""
+    text = re.sub(r'\\\[(.+?)\\\]', lambda m: clean_math_for_display(m.group(1)), text, flags=re.DOTALL)
+    text = re.sub(r'\$\$(.+?)\$\$', lambda m: clean_math_for_display(m.group(1)), text, flags=re.DOTALL)
+    text = re.sub(r'\\\((.+?)\\\)', lambda m: clean_math_for_display(m.group(1)), text, flags=re.DOTALL)
+    text = re.sub(r'\$(.+?)\$', lambda m: clean_math_for_display(m.group(1)), text)
+    # Drop any leftover empty / unpaired delimiters.
+    text = text.replace('$$', '').replace('\\(', '').replace('\\)', '')
+    text = text.replace('\\[', '').replace('\\]', '')
+    text = re.sub(r'(?<!\\)\$', '', text)
     return text
 
 
@@ -92,6 +214,34 @@ def strip_bare_math_fences(text: str) -> str:
     but the PPTX path can't, so the dollars leak as visible text. Strip
     the fences; keep the inner content."""
     return _BARE_DOLLAR_MATH_RE.sub(r'\1', text)
+
+
+_PDF_DASH_NAME_RE = re.compile(r'^(.+?)\.pdf-(\d+)-(\d+)(\.[A-Za-z]+)$')
+_FIGURE_PAGE_NAME_RE = re.compile(r'^(.+?)[._]p?(\d{3,4})[-_]\d+(\.[A-Za-z]+)$')
+
+
+def _candidate_figure_basenames(name):
+    """Alternative on-disk basenames for a figure the writer may have named
+    under the wrong convention. Yields the name itself, then the
+    ``<id>.pdf-<page>-<idx>`` → ``<id>_p<page>_<idx>`` normalization that
+    matches how figures are actually written to ``.grounding_cache``."""
+    if not name:
+        return
+    yield name
+    m = _PDF_DASH_NAME_RE.match(name)
+    if m:
+        yield f"{m.group(1)}_p{m.group(2)}_{m.group(3)}{m.group(4)}"
+
+
+def _figure_page_glob(name):
+    """Glob for any figure on the same page as ``name`` (last-resort match
+    when the exact panel index doesn't exist). Returns '' when the name
+    carries no page number."""
+    m = _FIGURE_PAGE_NAME_RE.match(name or "")
+    if not m:
+        return ""
+    page = m.group(2)
+    return f"*p{page}_*{m.group(3)}"
 
 
 def strip_latex_formatting(text: str) -> str:
@@ -127,6 +277,13 @@ def strip_latex_formatting(text: str) -> str:
     # Remove remaining \begin{...} / \end{...} that leaked through
     text = re.sub(r'\\begin\{[^}]*\}', '', text)
     text = re.sub(r'\\end\{[^}]*\}', '', text)
+    # Render inline/display math to readable unicode BEFORE the generic
+    # command-strip below, otherwise structural macros inside a formula
+    # (\frac, \max, \leq) get erased, leaving fragments like "s(o) =".
+    text = render_inline_math(text)
+    # Also rescue bare math macros the writer emitted without delimiters
+    # (e.g. "s(o) = \frac{...}" on a line with no $); same erase risk.
+    text = _convert_math_macros(text)
     # Remove remaining unknown \commands (but preserve \\ as newline).
     # Match optional ``[opt]`` argument first then any number of ``{arg}``
     # groups; that way a leftover ``\includegraphics[width=...]{path}``
@@ -136,13 +293,8 @@ def strip_latex_formatting(text: str) -> str:
         r'\\(?!\\)[a-zA-Z]+\*?(?:\[[^\]\n]*\])?(?:\{[^}]*\})*',
         '', text,
     )
-    # Strip markdown leftovers (**bold**, __bold__, *italic*) before
-    # math-fence stripping so the asterisks don't confuse later regexes
+    # Strip markdown leftovers (**bold**, __bold__, *italic*, _italic_).
     text = strip_markdown_artifacts(text)
-    # Drop bare $...$ math fences — we can't render math in pptxgenjs,
-    # so $\geq 30$ → "\geq 30" reads better than "$\geq 30$".
-    text = strip_bare_math_fences(text)
-    # Inline math: keep as-is (raw LaTeX)
     return unescape_latex(text).strip()
 
 
@@ -193,7 +345,44 @@ class LaTeXParser:
                 cur = cur.parent
                 if cur == cur.parent:
                     break
+        # Last resort: the writer often emits a figure under the wrong
+        # naming convention (``<id>.pdf-0017-03.png`` instead of the
+        # on-disk ``<id>_p0017_03.png``) or a non-existent panel index.
+        # Find the figures directory and look for a normalized basename,
+        # then any figure on the same page — so a near-miss path still
+        # renders its figure instead of vanishing.
+        figdir = self._figures_dir()
+        if figdir is not None:
+            for cand in _candidate_figure_basenames(Path(raw).name):
+                hit = figdir / cand
+                if hit.exists():
+                    return hit.resolve()
+            page_glob = _figure_page_glob(Path(raw).name)
+            if page_glob:
+                matches = sorted(figdir.glob(page_glob))
+                if matches:
+                    return matches[0].resolve()
         return None
+
+    def _figures_dir(self) -> Optional[Path]:
+        """Locate ``.grounding_cache/figures`` by walking up from the .tex
+        source directory (cached). Returns None if not found."""
+        cached = getattr(self, "_figdir_cache", "unset")
+        if cached != "unset":
+            return cached
+        result = None
+        base = self.source_dir or Path.cwd()
+        cur = Path(base).resolve()
+        for _ in range(8):
+            cand = cur / ".grounding_cache" / "figures"
+            if cand.is_dir():
+                result = cand
+                break
+            if cur == cur.parent:
+                break
+            cur = cur.parent
+        self._figdir_cache = result
+        return result
 
     def parse(self, tex_content: str) -> List[FrameData]:
         """Parse a complete .tex file into a list of frames."""
@@ -315,10 +504,14 @@ class LaTeXParser:
                 pos += m.end()
                 continue
 
-            # Math environments
+            # Math environments. pptxgenjs can't typeset math, so flatten
+            # the body to readable unicode text rather than dumping raw
+            # LaTeX source onto the slide.
             m = re.match(r'\\begin\{(equation\*?|align\*?|gather\*?)\}(.*?)\\end\{\1\}', content[pos:], re.DOTALL)
             if m:
-                elements.append(SlideElement(type='math', content=m.group(2).strip()))
+                cleaned = clean_math_for_display(m.group(2).strip())
+                if cleaned:
+                    elements.append(SlideElement(type='text', content=cleaned))
                 pos += m.end()
                 continue
 
@@ -343,7 +536,29 @@ class LaTeXParser:
                 resolved = self._resolve_image_path(raw_path)
                 if resolved:
                     elements.append(SlideElement(type='image', content=str(resolved)))
-                # If the path doesn't resolve, silently skip (no broken image)
+                    pos += m.end()
+                else:
+                    # Path doesn't resolve: skip the image AND a caption that
+                    # immediately follows it, so we don't leave an orphan
+                    # "Figure. …" line with no picture above it.
+                    pos += m.end()
+                    drop = re.match(r'\s*\\caption\*?\{(?:.+?)\}\s*',
+                                    content[pos:], re.DOTALL)
+                    if drop:
+                        pos += drop.end()
+                continue
+
+            # \caption{...} — the writer's figure description. Render it as
+            # a caption line so figures carry context instead of floating
+            # bare. (Outside a figure env \caption doesn't render in beamer,
+            # and the generic command-strip would otherwise drop it.) Only
+            # kept when the immediately-preceding element is an image —
+            # otherwise it's an orphan caption (image failed to resolve).
+            m = re.match(r'\\caption\*?\{(.+?)\}\s*', content[pos:], re.DOTALL)
+            if m:
+                cap = strip_latex_formatting(m.group(1))
+                if cap and elements and elements[-1].type == 'image':
+                    elements.append(SlideElement(type='caption', content=cap))
                 pos += m.end()
                 continue
 
@@ -381,7 +596,7 @@ class LaTeXParser:
             # so multiple images in one frame don't all get swallowed by
             # the first text run.
             text_match = re.match(
-                r'((?:(?!\\begin\{)(?!\\includegraphics\b).)+)',
+                r'((?:(?!\\begin\{)(?!\\includegraphics\b)(?!\\caption\b).)+)',
                 content[pos:], re.DOTALL,
             )
             if text_match:

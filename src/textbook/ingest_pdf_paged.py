@@ -54,6 +54,40 @@ _MATH_KEYWORD_RE = re.compile(
     re.IGNORECASE,
 )
 
+_EXAMPLE_HEADER_RE = re.compile(
+    r"(?:^|\n)\s*(?:\*\*)?Example\s+\d+(?:\.\d+)?\b",
+    re.IGNORECASE,
+)
+_EXAMPLE_INLINE_RE = re.compile(
+    r"\bFor example,\s|\bAs an example,\s|\bConsider\s+(?:the\s+)?(?:following\s+)?example\b",
+    re.IGNORECASE,
+)
+
+
+def _tag_example_paragraphs(textbook: Textbook) -> int:
+    """Re-tag prose paragraphs that start a worked example with
+    ``kind='example'`` so the slide writer's KIND field surfaces them.
+
+    Triggers on a leading ``Example N`` / ``Example N.M`` header (the
+    textbook's own marker for a numbered worked example) — that single
+    signal is high-precision because textbook authors reserve the
+    pattern for actual worked examples. Inline "for example, …" is
+    deliberately NOT enough on its own. Idempotent.
+    """
+    retagged = 0
+    for chapter in textbook.chapters:
+        for section in chapter.sections:
+            for para in section.paragraphs:
+                if para.kind and para.kind != "prose":
+                    continue
+                text = para.text or ""
+                if not text:
+                    continue
+                if _EXAMPLE_HEADER_RE.search(text):
+                    para.kind = "example"
+                    retagged += 1
+    return retagged
+
 
 def _tag_equation_paragraphs(textbook: Textbook) -> int:
     """Re-tag prose paragraphs that contain dense math notation with
@@ -352,6 +386,7 @@ def ingest_pdf_file_paged(
     )
     _assign_real_pages(textbook)
     _tag_equation_paragraphs(textbook)
+    _tag_example_paragraphs(textbook)
     return textbook
 
 

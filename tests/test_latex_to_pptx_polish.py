@@ -266,3 +266,116 @@ class TestNestedItemizeBalancedMatch:
         assert len(itemizes) == 2
         assert [i["text"] for i in itemizes[0].items] == ["A1", "A2"]
         assert [i["text"] for i in itemizes[1].items] == ["B1", "B2"]
+
+
+class TestMathBlockToReadableText:
+    """align/equation blocks flatten to readable unicode, not raw LaTeX."""
+
+    def test_align_merge_sequence_readable(self):
+        from src.latex_to_pptx import clean_math_for_display
+        align = (
+            r"\text{Initial:} \& \quad \{a\}, \{b\} \\"
+            "\n"
+            r"\text{Step 1:} \& \quad \{a\}, \{b\} \rightarrow \{ab\}"
+        )
+        out = clean_math_for_display(align)
+        assert "\\text" not in out
+        assert "\\quad" not in out
+        assert "\\rightarrow" not in out
+        assert "→" in out
+        assert "Initial:" in out and "{ab}" in out
+
+    def test_empty_after_clean_returns_blank(self):
+        from src.latex_to_pptx import clean_math_for_display
+        assert clean_math_for_display(r"\\ \quad \&") == ""
+
+
+class TestUnderscoreItalicAndGuillemets:
+    def test_single_underscore_italic_stripped(self):
+        from src.latex_to_pptx import strip_latex_formatting
+        out = strip_latex_formatting("The _k_-means and _MinPts_ values")
+        assert "_k_" not in out and "_MinPts_" not in out
+        assert "k-means" in out and "MinPts" in out
+
+    def test_guillemets_stripped(self):
+        from src.latex_to_pptx import strip_latex_formatting
+        out = strip_latex_formatting('<<"DBSCAN finds core objects.">>')
+        assert "<<" not in out and ">>" not in out
+
+
+class TestDashAndDollarNormalization:
+    def test_triple_dash_to_emdash(self):
+        from src.latex_to_pptx import unescape_latex
+        assert "—" in unescape_latex("a quote --- a gloss")
+
+    def test_empty_double_dollar_dropped(self):
+        from src.latex_to_pptx import unescape_latex
+        assert "$$" not in unescape_latex("such as $$ (the radius)")
+
+
+class TestInlineMathRendering:
+    """Inline/display math renders to readable unicode, not raw LaTeX or
+    an erased fragment."""
+
+    def test_bare_frac_survives_command_strip(self):
+        from src.latex_to_pptx import strip_latex_formatting
+        # A formula with no $ delimiters must not be erased to "s(o) =".
+        out = strip_latex_formatting("s(o) = \\frac{b(o) - a(o)}{\\max(a(o), b(o))}")
+        assert "(b(o) - a(o))/(max(a(o), b(o)))" in out
+
+    def test_inline_paren_math_unwrapped(self):
+        from src.latex_to_pptx import strip_latex_formatting
+        out = strip_latex_formatting("Select \\( K \\) random points")
+        assert "\\(" not in out and "\\)" not in out
+        assert "Select K random points" in out
+
+    def test_dollar_math_symbols_to_unicode(self):
+        from src.latex_to_pptx import strip_latex_formatting
+        out = strip_latex_formatting("where $k \\leq n$ and $O(n \\log n)$")
+        assert "≤" in out and "log" in out
+        assert "\\leq" not in out and "$" not in out
+
+    def test_greek_inline(self):
+        from src.latex_to_pptx import strip_latex_formatting
+        out = strip_latex_formatting("the parameter $\\epsilon$ and $MinPts$")
+        assert "ε" in out and "MinPts" in out
+
+    def test_set_notation_braces_survive(self):
+        from src.latex_to_pptx import clean_math_for_display
+        out = clean_math_for_display(r"\{a\}, \{b\} \rightarrow \{ab\}")
+        assert "{a}" in out and "{ab}" in out and "→" in out
+
+
+class TestCaptionAndCapBug:
+    def test_caption_not_mangled_by_cap_symbol(self):
+        from src.latex_to_pptx import _convert_math_macros
+        # \cap must not fire inside \caption
+        assert "∩tion" not in _convert_math_macros(r"\caption{Reachability plot}")
+        assert _convert_math_macros(r"\caption{x}") == r"\caption{x}"
+
+    def test_cap_still_converts_standalone(self):
+        from src.latex_to_pptx import _convert_math_macros
+        assert "∩" in _convert_math_macros(r"A \cap B")
+
+    def test_caption_kept_when_image_resolves(self, tmp_path):
+        from src.latex_to_pptx import LaTeXParser
+        img = tmp_path / "fig.png"
+        img.write_bytes(b"\x89PNG\r\n")  # any existing file resolves
+        body = (
+            f"\\includegraphics[width=0.5\\textwidth]{{{img}}}\n"
+            "\\caption{What the figure shows.}\n"
+        )
+        elements = LaTeXParser()._parse_content(body)
+        caps = [e for e in elements if e.type == "caption"]
+        assert len(caps) == 1
+        assert "What the figure shows." in caps[0].content
+
+    def test_orphan_caption_dropped_when_image_missing(self):
+        from src.latex_to_pptx import LaTeXParser
+        body = (
+            "\\includegraphics[width=0.5\\textwidth]{/no/such.png}\n"
+            "\\caption{Orphan with no picture.}\n"
+        )
+        elements = LaTeXParser()._parse_content(body)
+        assert [e for e in elements if e.type == "caption"] == []
+        assert [e for e in elements if e.type == "image"] == []
