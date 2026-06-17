@@ -60,6 +60,26 @@ class TestAggregateGroundingFidelity:
         assert gf["chapters_scored"] == 1
         assert gf["fidelity_pct"] == 90.0
 
+    def test_summary_print_survives_derived_aggregates(self):
+        # Regression: the end-of-run summary printer iterated every top-level
+        # results key expecting a per-file 'summary' — the grounding_fidelity /
+        # core_quality aggregates have no such key and used to crash it with a
+        # KeyError (AFTER results were already saved). It must now skip/handle
+        # them.
+        from evaluate import _format_results_summary
+        results = {
+            "slide_content": {"summary": {"total_files": 14, "average_score": 2.64,
+                                          "min_score": 1.0, "max_score": 4.0}},
+            "core_quality": {"summary": {"total_files": 44, "average_score": 3.44,
+                                         "min_score": 3.0, "max_score": 4.0}},
+            "grounding_fidelity": {"fidelity_pct": 88.1, "total_claims": 700,
+                                   "total_flagged": 83, "chapters_scored": 14},
+        }
+        out = _format_results_summary(results)            # must not raise
+        assert "slide_content" in out
+        assert "Grounding Fidelity: 88.1%" in out
+        assert "617/700 claims" in out
+
     def test_perfect_and_zero(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         root = tmp_path / "exp" / "perfect"

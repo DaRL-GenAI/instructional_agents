@@ -511,6 +511,31 @@ def aggregate_grounding_fidelity(exp_name: str) -> Optional[Dict]:
     }
 
 
+def _format_results_summary(evaluation_results) -> str:
+    """Build the end-of-run console summary. Robust to derived aggregates
+    (``core_quality``, ``grounding_fidelity``) that don't carry the per-file
+    ``summary`` shape — those must not crash the print after results are already
+    saved to disk."""
+    lines = ["=" * 50]
+    for file_type, data in evaluation_results.items():
+        if file_type == "grounding_fidelity" and isinstance(data, dict):
+            supported = data["total_claims"] - data["total_flagged"]
+            lines.append(
+                f"\nGrounding Fidelity: {data['fidelity_pct']}% "
+                f"({supported}/{data['total_claims']} claims across "
+                f"{data['chapters_scored']} chapters)"
+            )
+            continue
+        if not isinstance(data, dict) or "summary" not in data:
+            continue
+        s = data["summary"]
+        lines.append(f"\n{file_type}:")
+        lines.append(f"  Files: {s['total_files']}")
+        lines.append(f"  Average Score: {s['average_score']:.2f}")
+        lines.append(f"  Score Range: {s['min_score']} - {s['max_score']}")
+    return "\n".join(lines)
+
+
 def main(model_name, exp_name, rigorous=False):
     """Run rubric-scoring + validation across the generated course
     artifacts in ``exp/<exp_name>/``. Writes ``evaluation_results/``
@@ -597,12 +622,7 @@ def main(model_name, exp_name, rigorous=False):
     print("Validation complete.")
 
 
-    print("="*50)
-    for file_type, data in evaluation_results.items():
-        print(f"\n{file_type}:")
-        print(f"  Files: {data['summary']['total_files']}")
-        print(f"  Average Score: {data['summary']['average_score']:.2f}")
-        print(f"  Score Range: {data['summary']['min_score']} - {data['summary']['max_score']}")
+    print(_format_results_summary(evaluation_results))
 
 if __name__ == "__main__":
     with open("config.json", "r") as f:
