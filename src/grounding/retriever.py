@@ -237,11 +237,20 @@ class HybridRetriever:
         embedder: Optional[Embedder] = None,
         cache_dir: Optional[Path] = None,
         reranker: Optional["Reranker"] = None,  # type: ignore[name-defined]
+        embed_metadata_prefix: bool = False,
     ) -> None:
         if not kb.chunks:
             raise ValueError("knowledge base has no chunks — nothing to retrieve")
         self.kb = kb
         self.embedder: Embedder = embedder if embedder is not None else OpenAIEmbedder()
+        # When True, each chunk is embedded with a "<chapter> > <section>\n"
+        # location prefix so the dense vector knows WHERE in the book it lives —
+        # helps the global chapter→section bind step disambiguate a term that
+        # recurs across domains. OPT-IN (default off): it changes every
+        # embedding, so it invalidates the embedding cache and needs an A/B
+        # recall check before flipping on. The cache key folds in this flag so
+        # prefixed and non-prefixed indexes never collide.
+        self._embed_metadata_prefix = embed_metadata_prefix
 
         # Optional second-stage cross-encoder reranker. When set, search()
         # pulls a larger first-stage candidate set (DEFAULT_RERANK_FETCH_K)
@@ -275,7 +284,10 @@ class HybridRetriever:
             self._embeddings = cached
             return
         t0 = time.perf_counter()
-        texts = [c.text for c in self.kb.chunks]
+        if self._embed_metadata_prefix:
+            texts = [self._chunk_embed_text(c) for c in self.kb.chunks]
+        else:
+            texts = [c.text for c in self.kb.chunks]
         self._embeddings = self.embedder.embed(texts)
         self._normalise_rows(self._embeddings)
         elapsed = time.perf_counter() - t0
@@ -415,6 +427,16 @@ class HybridRetriever:
         ranked = sorted(scores.items(), key=lambda kv: -kv[1])
         return ranked[:top_k]
 
+    def _chunk_embed_text(self, c) -> str:
+        """Chunk text prefixed with its structural location for embedding —
+        ``"<chapter> > <section>\\n<text>"`` — so the dense vector knows WHERE
+        in the book the passage lives. Used only when
+        ``embed_metadata_prefix`` is on."""
+        ch = (getattr(c, "chapter_title", "") or "").strip()
+        sec = (getattr(c, "section_title", "") or "").strip()
+        loc = " > ".join(s for s in (ch, sec) if s)
+        return f"{loc}\n{c.text}" if loc else (c.text or "")
+
     @staticmethod
     def _normalise_rows(m: np.ndarray) -> None:
         """L2-normalise in place. Zero rows stay zero."""
@@ -429,6 +451,7 @@ class HybridRetriever:
         h = hashlib.md5()
         h.update(self.kb.textbook_id.encode())
         h.update(self.embedder.model.encode())
+        h.update(b"meta-prefix" if self._embed_metadata_prefix else b"raw")
         h.update(str(len(self.kb.chunks)).encode())
         # Hash the chunk ids so a re-ingest with a different chunking
         # config invalidates the cache automatically.

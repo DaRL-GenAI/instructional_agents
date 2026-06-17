@@ -129,27 +129,71 @@ _MATH_SYMBOL_MAP = {
     r'\ldots': '…', r'\dots': '…', r'\cdots': '…',
 }
 
+# A brace group that tolerates ONE level of nesting: a run of non-brace chars
+# or a simple ``{…}`` group. Lets ``\frac{\sum_{i=1}^{N} x_i}{N}`` (numerator
+# still holding braces) convert instead of being eaten whole as an empty
+# result by the generic command-stripper.
+_BRACE_GROUP = r'(?:[^{}]|\{[^{}]*\})*'
+
+# Accents → trailing combining mark. ``\bar{x}`` → ``x̄`` etc. Appending the
+# mark keeps the accented symbol alive past the generic command-stripper,
+# which would otherwise eat ``\bar{x}`` whole and collapse a mean formula to
+# just "=".
+_MATH_ACCENT_MAP = {
+    'bar': '̄', 'overline': '̄', 'hat': '̂', 'widehat': '̂',
+    'tilde': '̃', 'widetilde': '̃', 'vec': '⃗',
+    'dot': '̇', 'ddot': '̈',
+}
+
 
 def _convert_math_macros(text: str) -> str:
-    """Convert the unambiguous math macros — ``\\frac``, ``\\sqrt``,
+    """Convert the unambiguous math macros — accents, ``\\frac``, ``\\sqrt``,
     operator names, braced sub/superscripts, and symbols — to readable
     unicode. Safe to run on general slide text (these only occur in math),
     so it also rescues bare formulas the writer emitted without ``$``
     delimiters, which the generic command-stripper would otherwise erase."""
-    # \frac{a}{b} → (a)/(b); run twice for one level of nesting
-    for _ in range(2):
-        text = re.sub(r'\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}', r'(\1)/(\2)', text)
-    # \sqrt{x} → √(x)
-    text = re.sub(r'\\sqrt\s*\{([^{}]*)\}', r'√(\1)', text)
+    # \text{X} / \mathbf{X} / \mathrm{X} … → X. Unwrap text-formatting macros
+    # FIRST so their CONTENT survives — otherwise the generic command-stripper
+    # in strip_latex_formatting() eats "\text{computer}" whole, which is exactly
+    # how an undelimited rule rendered as "buys(X, ) ⇒ buys(X, )". (Delimited
+    # math is already handled in clean_math_for_display; this covers the bare,
+    # no-$ case that never reaches it.)
+    text = re.sub(
+        r'\\(?:text|mathbf|mathrm|mathit|mathsf|mathcal|mathbb|boldsymbol|operatorname)'
+        r'\{([^{}]*)\}',
+        r'\1', text,
+    )
+    # Accents: \bar{x} → x̄, \hat{x} → x̂, … (combining mark trails the content).
+    for _name, _mark in _MATH_ACCENT_MAP.items():
+        text = re.sub(
+            r'\\' + _name + r'\s*\{([^{}]*)\}',
+            lambda m, mk=_mark: m.group(1) + mk, text,
+        )
+    # \sqrt{x} → √(x). Before the symbol map (which maps bare \sqrt → √) so the
+    # radicand keeps its parens.
+    text = re.sub(r'\\sqrt\s*\{(' + _BRACE_GROUP + r')\}', r'√(\1)', text)
     text = text.replace('\\sqrt', '√')
     # Operator/function names: drop the backslash, keep the word
     text = re.sub(r'\\(max|min|log|ln|exp|arg|deg|gcd|lim|sup|inf|sin|cos|tan|det|dim|mod)\b', r'\1', text)
-    # Braced sub/superscripts: keep the content, drop the marker (2^{n} → 2n)
-    text = re.sub(r'[_^]\{([^{}]*)\}', r'\1', text)
-    # Symbols → unicode. The negative lookahead stops a short macro matching
-    # inside a longer command — e.g. \cap must NOT fire inside \caption.
+    # Symbols → unicode. BEFORE sub/superscript brace-stripping below, so a
+    # symbol macro carrying a subscript (``\sum_{i=1}``) resolves while the
+    # ``_`` still follows it — otherwise stripping the braces glues a letter on
+    # (``\sumi``), the lookahead misfires, and the generic stripper erases the
+    # fake command. The negative lookahead stops a short macro matching inside a
+    # longer command — e.g. \cap must NOT fire inside \caption.
     for macro, sym in _MATH_SYMBOL_MAP.items():
         text = re.sub(re.escape(macro) + r'(?![a-zA-Z])', sym, text)
+    # Braced sub/superscripts: keep the content, drop the marker (2^{n} → 2n).
+    # BEFORE \frac so a nested ``\sum_{i=1}^{N}`` in a fraction argument sheds
+    # its braces first — otherwise the fraction can't be matched and the whole
+    # ``\frac{…}{…}`` is erased, collapsing the formula to just "=".
+    text = re.sub(r'[_^]\{([^{}]*)\}', r'\1', text)
+    # \frac{a}{b} → (a)/(b); brace-tolerant + iterated for one nesting level.
+    for _ in range(3):
+        text = re.sub(
+            r'\\frac\s*\{(' + _BRACE_GROUP + r')\}\s*\{(' + _BRACE_GROUP + r')\}',
+            r'(\1)/(\2)', text,
+        )
     return text
 
 
@@ -244,6 +288,21 @@ def _figure_page_glob(name):
     return f"*p{page}_*{m.group(3)}"
 
 
+# Leading textbook figure number — "Figure 13.3:", "Figure 10.8.", "Fig 2.16 —".
+# The number references the SOURCE textbook's own figure numbering, which has
+# no meaning in the generated deck (there is no "Figure 13.3" here). Drop the
+# number and keep the description; the renderer adds a generic "Figure." label.
+_TEXTBOOK_FIGURE_NUMBER_RE = re.compile(
+    r'^\s*(?:Figure|Fig\.?)\s+\d+(?:\.\d+)?\s*[:.—\-]+\s*', re.IGNORECASE,
+)
+
+
+def _strip_textbook_figure_number(caption: str) -> str:
+    """Remove a leading source-textbook figure number from a caption so it
+    reads as context, not a dangling cross-reference to the original book."""
+    return _TEXTBOOK_FIGURE_NUMBER_RE.sub('', caption or '').strip()
+
+
 def strip_latex_formatting(text: str) -> str:
     """Strip LaTeX formatting commands, returning plain text."""
     # Remove commands that take arguments: \cmd{content} -> content
@@ -272,8 +331,11 @@ def strip_latex_formatting(text: str) -> str:
     text = re.sub(r'\\(centering|raggedright|raggedleft|noindent|newline|linebreak)\b', '', text)
     # Remove \rule{...}{...}
     text = re.sub(r'\\rule\{[^}]*\}\{[^}]*\}', '', text)
-    # Remove % comments (LaTeX line comments)
-    text = re.sub(r'%[^\n]*', '', text)
+    # Remove % comments (LaTeX line comments) — but NOT an escaped \% (a
+    # literal percent like "80\%"). The negative lookbehind keeps \% so
+    # unescape_latex() below turns it into a real "%". Without it, "80\% of
+    # buyers" lost everything after the % at render (showed just "80\").
+    text = re.sub(r'(?<!\\)%[^\n]*', '', text)
     # Remove remaining \begin{...} / \end{...} that leaked through
     text = re.sub(r'\\begin\{[^}]*\}', '', text)
     text = re.sub(r'\\end\{[^}]*\}', '', text)
@@ -296,6 +358,40 @@ def strip_latex_formatting(text: str) -> str:
     # Strip markdown leftovers (**bold**, __bold__, *italic*, _italic_).
     text = strip_markdown_artifacts(text)
     return unescape_latex(text).strip()
+
+
+def _tabular_to_text(body: str) -> str:
+    """Flatten a LaTeX tabular/table body into readable rows so a table slide
+    renders its data instead of a bare "[Table - see LaTeX source]"
+    placeholder. Drops the env wrappers, column spec, caption, and rule
+    macros; splits rows on ``\\\\`` and cells on ``&``; joins cells with a
+    thin separator. Returns '' when nothing parseable remains (the caller
+    falls back to a short label)."""
+    body = body.strip()
+    # Leading column spec when called on a tabular body: {|l|c|r|}
+    body = re.sub(r'^\{[^{}]*\}', '', body)
+    # Env wrappers + their column spec (when called on a full table body).
+    body = re.sub(r'\\begin\{(tabular|table|center)\}(?:\{[^{}]*\})?', '', body)
+    body = re.sub(r'\\end\{(tabular|table|center)\}', '', body)
+    body = re.sub(r'\\caption\{[^}]*\}', '', body)
+    body = re.sub(r'\\(centering|hline|toprule|midrule|bottomrule|cline\{[^}]*\})', '', body)
+    rows = []
+    for raw in re.split(r'\\\\', body):
+        cells = []
+        for c in raw.split('&'):
+            # Unwrap text/format commands to their content first — the generic
+            # command-strip in strip_latex_formatting() would otherwise drop a
+            # \text{Customer} cell (command + arg) and leave the row blank.
+            c = re.sub(
+                r'\\(?:text|textbf|textit|texttt|textsf|emph|mathrm|mathbf|mathit)'
+                r'\{([^{}]*)\}',
+                r'\1', c,
+            )
+            cells.append(strip_latex_formatting(c).strip())
+        cells = [c for c in cells if c]
+        if cells:
+            rows.append('  |  '.join(cells))
+    return '\n'.join(rows)
 
 
 class LaTeXParser:
@@ -557,6 +653,7 @@ class LaTeXParser:
             m = re.match(r'\\caption\*?\{(.+?)\}\s*', content[pos:], re.DOTALL)
             if m:
                 cap = strip_latex_formatting(m.group(1))
+                cap = _strip_textbook_figure_number(cap)
                 if cap and elements and elements[-1].type == 'image':
                     elements.append(SlideElement(type='caption', content=cap))
                 pos += m.end()
@@ -570,10 +667,11 @@ class LaTeXParser:
                 pos += m.end()
                 continue
 
-            # Table
+            # Table — flatten to readable rows rather than a bare placeholder.
             m = re.match(r'\\begin\{(tabular|table)\}(.*?)\\end\{\1\}', content[pos:], re.DOTALL)
             if m:
-                elements.append(SlideElement(type='text', content='[Table - see LaTeX source]'))
+                table_txt = _tabular_to_text(m.group(2))
+                elements.append(SlideElement(type='text', content=table_txt or '[Table]'))
                 pos += m.end()
                 continue
 

@@ -383,8 +383,8 @@ class TestCoverageGating:
         if "off-textbook" in mapping.rationale:
             assert mapping.section_ids == []
         else:
-            # Strong-enough match recorded with its RRF score.
-            assert "top section RRF" in mapping.rationale
+            # Strong-enough match recorded with its normalized RRF score.
+            assert "top normalized RRF" in mapping.rationale
 
     def test_rationale_records_query_count(self, mini_kb, tmp_path):
         retriever = HybridRetriever(mini_kb, embedder=HashEmbedder(dim=64),

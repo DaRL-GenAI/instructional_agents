@@ -39,33 +39,6 @@ class TestFakeIncludegraphicsPath:
         assert "\\includegraphics" not in out
 
 
-class TestBibtexCiteUnwrap:
-    def test_unwraps_cite_to_brackets(self):
-        # v7 chain: \cite{token} -> [token] -> \texttt{[escaped-token]}
-        text = "Claim text \\cite{han_data_mining_3e:ch1.s1:p01} and more."
-        out = _clean_latex_artifacts(text)
-        assert "\\cite{" not in out
-        # Citation token survives in texttt-wrapped, underscore-escaped form
-        assert r"\texttt{[han\_data\_mining\_3e:ch1.s1:p01]}" in out
-
-    def test_unwraps_multiple(self):
-        text = (
-            "Claim A \\cite{han_data_mining_3e:ch2.s2:p05}. "
-            "Claim B \\cite{han_data_mining_3e:ch6.s2:p08}."
-        )
-        out = _clean_latex_artifacts(text)
-        assert "\\cite{" not in out
-        assert r"\texttt{[han\_data\_mining\_3e:ch2.s2:p05]}" in out
-        assert r"\texttt{[han\_data\_mining\_3e:ch6.s2:p08]}" in out
-
-    def test_leaves_non_textbook_cite_alone(self):
-        # A cite to a real BibTeX entry (rare here but safe)
-        text = "Per \\cite{Smith2021} the approach works."
-        out = _clean_latex_artifacts(text)
-        # Smith2021 doesn't match our textbook pattern → leave alone
-        assert "\\cite{Smith2021}" in out
-
-
 class TestAmpersandEscaping:
     def test_escapes_bare_ampersand_in_text(self):
         text = "\\begin{frame}\nSegments customers by behavior & demographics.\n\\end{frame}"
@@ -141,39 +114,6 @@ class TestUnicodeReplacement:
         text = "Plain ASCII content, no unicode here."
         out = _clean_latex_artifacts(text)
         assert out == text
-
-
-class TestCitationTokenEscaping:
-    def test_token_in_text_wrapped_in_texttt(self):
-        text = "Per [han_data_mining_3e:ch1.s1:p01] the topic..."
-        out = _clean_latex_artifacts(text)
-        assert r"\texttt{[han\_data\_mining\_3e:ch1.s1:p01]}" in out
-
-    def test_underscores_escaped_in_token(self):
-        text = "[han_data_mining_3e:ch6.s2:p08]"
-        out = _clean_latex_artifacts(text)
-        # Three underscores in 'han_data_mining_3e' all escaped
-        assert r"han\_data\_mining\_3e" in out
-
-    def test_already_wrapped_token_not_double_wrapped(self):
-        text = r"\texttt{[han_data_mining_3e:ch1.s1:p01]}"
-        out = _clean_latex_artifacts(text)
-        # Should NOT have \texttt{\texttt{...}}
-        assert r"\texttt{\texttt{" not in out
-
-    def test_page_range_token_wrapped(self):
-        # Multi-page chunks have p15-p17 format
-        text = "Per [han_data_mining_3e:ch3.s4:p15-p17] the formula..."
-        out = _clean_latex_artifacts(text)
-        assert r"\texttt{[han\_data\_mining\_3e:ch3.s4:p15-p17]}" in out
-
-    def test_non_textbook_brackets_untouched(self):
-        # Square brackets that aren't citation tokens (LaTeX options, etc.)
-        text = "\\begin{frame}[fragile]\n[Just some bracketed text]\n"
-        out = _clean_latex_artifacts(text)
-        assert "[fragile]" in out  # LaTeX optional arg preserved
-        # Plain bracketed text not matching citation pattern preserved
-        assert "[Just some bracketed text]" in out
 
 
 class TestGraphicspathInjection:
@@ -282,14 +222,6 @@ class TestVLMMarkerLeakage:
         out = _clean_latex_artifacts(text)
         assert "[ALGORITHM_STEPS:" not in out
 
-    def test_real_citation_tokens_preserved(self):
-        # Citation tokens follow [textbook_id:chN.sM:pXX] shape and must
-        # survive (they're wrapped in \texttt{} by the citation pass with
-        # escaped underscores).
-        text = "Per [han_data_mining_3e:ch1.s1:p01] the topic is studied."
-        out = _clean_latex_artifacts(text)
-        assert r"\texttt{[han\_data\_mining\_3e:ch1.s1:p01]}" in out
-
     def test_case_insensitive_strip(self):
         # Some VLM outputs use mixed case
         text = "[description: a figure showing X] and [Insight: it teaches Y]"
@@ -324,14 +256,11 @@ class TestEdgeCases:
         # Multiple issues at once — all should be fixed
         text = (
             "\\begin{frame}\n"
-            "Per \\cite{han_data_mining_3e:ch1.s1:p01} the topic A & B is studied.\n"
+            "The topic A & B is studied.\n"
             "\\includegraphics{/path/to/file.png}\n"
             "\\end{frame}"
         )
         out = _clean_latex_artifacts(text)
-        # v7 chain: cite-unwrap → texttt-wrap with escaped underscores
-        assert r"\texttt{[han\_data\_mining\_3e:ch1.s1:p01]}" in out
-        assert "\\cite{" not in out
         assert "A \\& B" in out
         assert "\\includegraphics" not in out
 
@@ -450,64 +379,54 @@ class TestContentTokensAndSectionOrder:
 
 
 class TestFigureCaptionInjection:
-    def test_caption_map_from_chunks(self):
-        from src.slides import _build_figure_caption_map
-        class _C:
-            def __init__(self, text, page): self.text = text; self.page_start = page
-        chunks = [_C("Figure 10.2 The k-means partitioning algorithm. More text.", 491)]
-        m = _build_figure_caption_map(chunks)
-        assert 491 in m
-        assert m[491][0][0] == "10.2"
-        assert "k-means partitioning algorithm" in m[491][0][1]
-
-    def test_caption_for_path_by_page(self):
-        from src.slides import _caption_for_figure_path
-        cmap = {491: [("10.2", "The k-means partitioning algorithm")]}
-        cap = _caption_for_figure_path("x/data_mining_p0491_09.png", cmap)
-        assert cap == "Figure 10.2: The k-means partitioning algorithm"
-
-    def test_caption_for_path_nearby_page(self):
-        from src.slides import _caption_for_figure_path
-        cmap = {510: [("10.14", "Density-reachability")]}
-        # path page 511 should match page 510 (±1 window)
-        assert "10.14" in _caption_for_figure_path("a/han_p0511_01.png", cmap)
+    """Captions are injected ONLY from the image's atomic by-path pairing —
+    never a page lookup (which could borrow a neighbour figure's caption)."""
 
     def test_inject_only_when_missing(self, tmp_path):
         from src.slides import _inject_missing_figure_captions
-        cmap = {491: [("10.2", "The k-means partitioning algorithm")]}
         img = tmp_path / "data_mining_p0491_01.png"
         img.write_bytes(b"\x89PNG\r\n")
-        # bare figure that resolves on disk → caption injected
+        by_path = {"data_mining_p0491_01.png": "The k-means partitioning algorithm"}
+        # bare figure that resolves on disk → its own caption injected
         bare = f"\\includegraphics[width=0.5\\textwidth]{{{img}}}\n"
-        out = _inject_missing_figure_captions(bare, cmap)
-        assert "\\caption{Figure 10.2: The k-means partitioning algorithm}" in out
+        out = _inject_missing_figure_captions(bare, by_path=by_path)
+        assert "\\caption{The k-means partitioning algorithm}" in out
         # already-captioned figure → untouched
         capd = (f"\\includegraphics{{{img}}}\n\\caption{{Writer's own caption}}\n")
-        out2 = _inject_missing_figure_captions(capd, cmap)
+        out2 = _inject_missing_figure_captions(capd, by_path=by_path)
         assert out2.count("\\caption{") == 1
         assert "Writer's own caption" in out2
 
+    def test_no_caption_for_unpaired_image(self, tmp_path):
+        from src.slides import _inject_missing_figure_captions
+        img = tmp_path / "data_mining_p0491_01.png"
+        img.write_bytes(b"\x89PNG\r\n")
+        # resolves on disk but no atomic caption → stays bare (no page guess)
+        bare = f"\\includegraphics{{{img}}}\n"
+        out = _inject_missing_figure_captions(bare, by_path={"other.png": "x"})
+        assert "\\caption" not in out
+
     def test_no_caption_for_missing_image(self):
         from src.slides import _inject_missing_figure_captions
-        cmap = {491: [("10.2", "The k-means partitioning algorithm")]}
+        by_path = {"data_mining_p0491_01.png": "The k-means partitioning algorithm"}
         # path doesn't resolve → no caption (avoids orphan caption)
         bare = "\\includegraphics{/no/such/data_mining_p0491_01.png}\n"
-        assert "\\caption" not in _inject_missing_figure_captions(bare, cmap)
+        assert "\\caption" not in _inject_missing_figure_captions(bare, by_path=by_path)
 
     def test_no_caption_for_equation_crop(self, tmp_path):
         from src.slides import _inject_missing_figure_captions
-        cmap = {491: [("10.2", "The k-means partitioning algorithm")]}
         img = tmp_path / "data_mining_p0491_01.png"
         img.write_bytes(b"\x89PNG\r\n")
+        by_path = {"data_mining_p0491_01.png": "The k-means partitioning algorithm"}
         bare = f"\\includegraphics{{{img}}}\n"
         # filename NOT in the real-figure allowlist → treated as equation
-        out = _inject_missing_figure_captions(bare, cmap, figure_filenames=set())
+        out = _inject_missing_figure_captions(bare, figure_filenames=set(), by_path=by_path)
         assert "\\caption" not in out
 
     def test_inject_noop_without_map(self):
         from src.slides import _inject_missing_figure_captions
         text = "\\includegraphics{x/p0491_01.png}\n"
-        assert _inject_missing_figure_captions(text, {}) == text
+        assert _inject_missing_figure_captions(text, by_path={}) == text
 
 
 class TestOutlineDedupe:
@@ -542,3 +461,29 @@ class TestOutlineDedupe:
         names = _build_real_figure_filenames(chunks)
         assert "fig_p01_01.png" in names
         assert "eq_p02_01.png" not in names
+
+
+class TestPercentEscape:
+    """A bare % in prose is a LaTeX line-comment that drops the rest of the
+    line; _clean_latex_artifacts escapes it to \\% (same class as the
+    ampersand escape)."""
+
+    def test_escapes_bare_percent(self):
+        out = _clean_latex_artifacts(
+            "\\item 80% of frequent buyers are under 40.\n"
+        )
+        assert "80\\% of frequent buyers are under 40." in out
+
+    def test_does_not_double_escape(self):
+        out = _clean_latex_artifacts("Captures the middle 50\\% of data.\n")
+        assert "50\\% of data" in out
+        assert "50\\\\%" not in out          # not turned into 50\\%
+
+    def test_multiple_percents_one_line(self):
+        out = _clean_latex_artifacts("Support 2% and confidence 60% here.\n")
+        assert "2\\%" in out and "60\\%" in out
+
+    def test_leaves_comment_line_alone(self):
+        out = _clean_latex_artifacts("% a real comment\nReal body text.\n")
+        assert "% a real comment" in out
+        assert "Real body text." in out

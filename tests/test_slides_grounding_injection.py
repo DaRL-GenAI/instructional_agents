@@ -2,8 +2,9 @@
 
 Exercises `_build_evidence_block` directly (no LLM calls) and confirms:
  - With no retriever: returns ("", "") — vanilla path unchanged.
- - With a retriever: returns a non-empty evidence block + citation rules.
- - Each retrieved chunk's citation token appears in the block.
+ - With a retriever: returns a non-empty evidence block (the second tuple
+   element is always "" now that citation rules are removed).
+ - The mandatory grounding directive leads the block.
  - Word budget is respected.
  - Section filter is honored (passed through to the retriever).
 """
@@ -65,50 +66,32 @@ class TestWithRetriever:
             "numbers and arithmetic operators"
         )
         assert evidence != ""
-        assert rules != ""
+        # The second tuple element is always empty now (citation rules removed).
+        assert rules == ""
 
-    def test_evidence_carries_citation_tokens(self, deliberation):
+    def test_evidence_block_carries_excerpt_passages(self, deliberation):
+        # The retrieved chunk text must reach the writer as labeled excerpts.
         evidence, _ = deliberation._build_evidence_block(
             "numbers and arithmetic operators"
         )
-        # Tokens look like `[mini:ch1.s1:p01]`.
-        assert "[mini:" in evidence
+        assert "EXCERPT" in evidence
+        assert "PASSAGE" in evidence
 
     def test_evidence_block_starts_with_mandatory_directive(self, deliberation):
-        # Citation instruction must lead the block — burying it as a footer
-        # gets ignored by the model on long LaTeX-heavy prompts. See
-        # the 2026-05-26 grounded-run citation-density debug for context.
+        # The grounding directive must lead the block — burying it as a
+        # footer gets ignored by the model on long LaTeX-heavy prompts.
         evidence, _ = deliberation._build_evidence_block(
             "numbers and arithmetic operators"
         )
         assert "MANDATORY" in evidence or "mandatory" in evidence
-        assert "MUST" in evidence
-        # And the directive must appear BEFORE the first excerpt's token, not after.
+        # And the directive must appear BEFORE the excerpts, not after.
         directive_idx = evidence.lower().find("mandatory")
-        first_token_idx = evidence.find("[mini:")
-        assert 0 <= directive_idx < first_token_idx
-
-    def test_evidence_block_contains_concrete_example(self, deliberation):
-        # The example sentence — with a real token from this textbook —
-        # gives the model a literal pattern to imitate. Improves
-        # citation density vs. a generic "cite using a token" instruction.
-        evidence, _ = deliberation._build_evidence_block(
-            "numbers and arithmetic operators"
-        )
-        assert "Example" in evidence or "example" in evidence
-        # Example sentence must contain a real [mini:...] token.
-        # Search the substring that follows the word "Example".
-        example_region = evidence.split("Example", 1)[-1]
-        assert "[mini:" in example_region
-
-    def test_citation_rules_mention_inline_citation(self, deliberation):
-        _, rules = deliberation._build_evidence_block("numbers")
-        assert "cite" in rules.lower() or "citation" in rules.lower()
-        assert "[mini:" in rules  # the example token reference
+        excerpts_idx = evidence.find("EXCERPT")
+        assert 0 <= directive_idx < excerpts_idx
 
     def test_word_budget_respected(self, deliberation):
         evidence, _ = deliberation._build_evidence_block("everything")
-        # Block ≤ budget + headers/directive/example overhead (≈100-200 words).
+        # Block ≤ budget + headers/directive overhead (≈100-200 words).
         assert len(evidence.split()) < deliberation._EVIDENCE_WORD_BUDGET + 200
 
     def test_filter_to_nonexistent_section_returns_empty(self, tmp_path):
@@ -127,20 +110,16 @@ class TestWithRetriever:
         kb = TextbookKnowledgeBase.from_path(FIXTURE, textbook_id="mini", title="Mini")
         retriever = HybridRetriever(kb, embedder=HashEmbedder(dim=64),
                                     cache_dir=tmp_path)
-        # Build a deliberation scoped to one section only.
+        # Build a deliberation scoped to one section only — when scoped to a
+        # real section, retrieval still produces a non-empty evidence block.
         first_section = next(
             s.section_id for c in kb.textbook.chapters for s in c.sections
         )
         d = _make_deliberation(retriever=retriever, section_ids=[first_section])
         evidence, _ = d._build_evidence_block("anything in scope")
+        # Either nothing matched (empty) or we got a real labeled block.
         if evidence:
-            # If anything came back, every citation token must point at the
-            # allowed section.
-            assert all(
-                first_section in line
-                for line in evidence.splitlines()
-                if line.startswith("[mini:")
-            )
+            assert "EXCERPT" in evidence
 
 
 class TestRetrieverFailureDegradesGracefully:
@@ -155,11 +134,10 @@ class TestRetrieverFailureDegradesGracefully:
 
 @pytest.mark.skipif(not FIXTURE.exists(), reason="mini_textbook.pdf missing")
 class TestArtifactModeDifferentiation:
-    """Phase fix (2026-05-27): scripts get a softer rule-set than slides /
-    assessments. The strict "cite every claim + direct-quote definitions"
-    rules hurt script alignment + coherence by -0.66 vs vanilla in the
-    Re-eval #1 numbers; differentiating fixes that without weakening
-    slide-side citation discipline.
+    """Scripts get a softer RULE 2 than slides / assessments: a stiff
+    written voice hurts spoken-script alignment + coherence, so the script
+    rule-set says "paraphrase naturally" while the read-document rule-set
+    says "teach in your own words."
     """
 
     @pytest.fixture
@@ -169,28 +147,28 @@ class TestArtifactModeDifferentiation:
                                     cache_dir=tmp_path)
         return _make_deliberation(retriever=retriever, textbook_id="mini")
 
-    def test_slide_artifact_uses_strict_rule_1(self, deliberation):
+    def test_slide_artifact_uses_read_document_rule_2(self, deliberation):
         evidence, _ = deliberation._build_evidence_block(
             "numbers", artifact="slide",
         )
-        # Slide artifact: "CITE EVERY SOURCED CLAIM" — the strict variant.
-        assert "CITE EVERY SOURCED CLAIM" in evidence
-        # Script-only marker must NOT be present.
-        assert "CITE EACH CONCEPT, NOT EACH SENTENCE" not in evidence
+        # Slide artifact: "TEACH IN YOUR OWN WORDS" — the read-document variant.
+        assert "TEACH IN YOUR OWN WORDS" in evidence
+        # Script-only markers must NOT be present.
+        assert "PARAPHRASE NATURALLY" not in evidence
         assert "SPOKEN SCRIPT" not in evidence
 
-    def test_script_artifact_uses_softer_rule_1(self, deliberation):
+    def test_script_artifact_uses_spoken_rule_2(self, deliberation):
         evidence, _ = deliberation._build_evidence_block(
             "numbers", artifact="script",
         )
-        # Script artifact: "CITE EACH CONCEPT, NOT EACH SENTENCE" + signals
-        # that this is spoken narration.
-        assert "CITE EACH CONCEPT, NOT EACH SENTENCE" in evidence
+        # Script artifact: "PARAPHRASE NATURALLY" + signals that this is
+        # spoken narration.
+        assert "PARAPHRASE NATURALLY" in evidence
         assert "SPOKEN SCRIPT" in evidence or "spoken script" in evidence
-        # Strict-slide phrasing must NOT be there.
-        assert "CITE EVERY SOURCED CLAIM" not in evidence
-        # And the "MANDATORY" safety keyword the wider test suite asserts on
-        # all grounded prompts must still be present.
+        # Read-document phrasing must NOT be there.
+        assert "TEACH IN YOUR OWN WORDS" not in evidence
+        # The "MANDATORY" safety keyword the wider suite asserts on all
+        # grounded prompts must still be present.
         assert "MANDATORY" in evidence
 
     def test_script_artifact_relaxes_direct_quote_rule(self, deliberation):
@@ -200,43 +178,36 @@ class TestArtifactModeDifferentiation:
         # Script rule 2: paraphrase naturally; direct quotation is RESERVED.
         assert "PARAPHRASE NATURALLY" in evidence
         assert "spoken narration" in evidence.lower()
-        # Read-document rule-2 ("TEACH IN YOUR OWN WORDS") must NOT be in
-        # the script's directive block (different framing entirely).
         assert "TEACH IN YOUR OWN WORDS" not in evidence
 
-    def test_assessment_artifact_uses_strict_rules(self, deliberation):
+    def test_assessment_artifact_uses_read_document_rule_2(self, deliberation):
         # Assessments are READ documents (like slides), not spoken —
         # they get the read-document rule-set.
         evidence, _ = deliberation._build_evidence_block(
             "numbers", artifact="assessment",
         )
-        assert "CITE EVERY SOURCED CLAIM" in evidence
         assert "TEACH IN YOUR OWN WORDS" in evidence
         assert "SPOKEN SCRIPT" not in evidence
 
     def test_unknown_artifact_falls_back_to_slide(self, deliberation):
         # Defensive: a mis-wired call site shouldn't crash; default to
-        # the strict rule-set (over-citing > under-citing).
+        # the read-document rule-set.
         evidence_bogus, _ = deliberation._build_evidence_block(
             "numbers", artifact="not_a_real_type",
         )
-        evidence_slide, _ = deliberation._build_evidence_block(
-            "numbers", artifact="slide",
-        )
-        # Same header label, same rule-1 phrasing → fell back to slide mode.
-        assert "CITE EVERY SOURCED CLAIM" in evidence_bogus
-        assert "MANDATORY RULES" in evidence_bogus  # NOT "MANDATORY RULES FOR SPOKEN SCRIPT"
+        # Same header label, same rule-2 phrasing → fell back to slide mode.
+        assert "TEACH IN YOUR OWN WORDS" in evidence_bogus
+        assert "MANDATORY RULES" in evidence_bogus  # NOT "...FOR SPOKEN SCRIPT"
 
     def test_default_artifact_is_slide(self, deliberation):
         # Backward compat: calls without an explicit artifact get the
-        # strict slide rule-set (matches the pre-2026-05-27 behavior).
+        # read-document rule-set.
         evidence_default, _ = deliberation._build_evidence_block("numbers")
         evidence_slide, _ = deliberation._build_evidence_block(
             "numbers", artifact="slide",
         )
-        # Both share the strict rule-1 phrasing.
-        assert "CITE EVERY SOURCED CLAIM" in evidence_default
-        assert "CITE EVERY SOURCED CLAIM" in evidence_slide
+        assert "TEACH IN YOUR OWN WORDS" in evidence_default
+        assert "TEACH IN YOUR OWN WORDS" in evidence_slide
 
     def test_no_retriever_ignores_artifact(self):
         # Vanilla path returns ("","") regardless of artifact — the opt-in
@@ -251,10 +222,10 @@ class TestArtifactModeDifferentiation:
 @pytest.mark.skipif(not FIXTURE.exists(), reason="mini_textbook.pdf missing")
 class TestPerSlideMethodsInjectGrounding:
     """Regression for the bug where the per-slide methods (_generate_slide_*)
-    overwrite the template-stage citations because they regenerate LaTeX /
-    script / assessment per slide WITHOUT grounding context. Each of the
-    four per-slide methods must call _build_evidence_block so the directive
-    + excerpts appear in the prompt sent to the LLM.
+    regenerate LaTeX / script / assessment per slide WITHOUT grounding
+    context. Each of the four per-slide methods must call
+    _build_evidence_block so the directive + excerpts appear in the prompt
+    sent to the LLM.
     """
 
     def _wired_deliberation(self, tmp_path):
@@ -307,7 +278,7 @@ class TestPerSlideMethodsInjectGrounding:
         )
         prompt = self._captured_prompt(agents["teaching_faculty"])
         assert "MANDATORY" in prompt.upper() or "GROUNDING REQUIREMENT" in prompt
-        assert "[mini:" in prompt
+        assert "EXCERPT" in prompt
 
     def test_slide_latex_prompt_contains_grounding(self, tmp_path):
         d, agents = self._wired_deliberation(tmp_path)
@@ -318,7 +289,7 @@ class TestPerSlideMethodsInjectGrounding:
         )
         prompt = self._captured_prompt(agents["teaching_assistant"])
         assert "MANDATORY" in prompt.upper() or "GROUNDING REQUIREMENT" in prompt
-        assert "[mini:" in prompt
+        assert "EXCERPT" in prompt
 
     def test_slide_script_prompt_contains_grounding(self, tmp_path):
         d, agents = self._wired_deliberation(tmp_path)
@@ -329,7 +300,7 @@ class TestPerSlideMethodsInjectGrounding:
         )
         prompt = self._captured_prompt(agents["teaching_assistant"])
         assert "MANDATORY" in prompt.upper() or "GROUNDING REQUIREMENT" in prompt
-        assert "[mini:" in prompt
+        assert "EXCERPT" in prompt
 
     def test_slide_assessment_prompt_contains_grounding(self, tmp_path):
         d, agents = self._wired_deliberation(tmp_path)
@@ -340,4 +311,4 @@ class TestPerSlideMethodsInjectGrounding:
         )
         prompt = self._captured_prompt(agents["teaching_assistant"])
         assert "MANDATORY" in prompt.upper() or "GROUNDING REQUIREMENT" in prompt
-        assert "[mini:" in prompt
+        assert "EXCERPT" in prompt

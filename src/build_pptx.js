@@ -459,7 +459,15 @@ function addPicture(slide, elem, x, y, w, trailingH) {
   // this image (renderStandard lifts images to the top of the slide;
   // bullets that follow need vertical room or they get pushed off).
   const reserve = Math.max(0, trailingH || 0);
-  const remaining = Math.max(0.8, L.maxY - y - buffer - reserve);
+  // Floor the figure height so trailing bullets can't starve it into an
+  // illegible thumbnail. A small square figure sharing a slide with a few
+  // bullets was rendering ~1.5" (unreadable) because the trailing reserve
+  // ate the vertical space; give the figure at least MIN_FIG_H whenever the
+  // slide has the room, even if that tightens the text below. Figure-only
+  // slides are unaffected (reserve 0 → remaining stays the full available).
+  const MIN_FIG_H = 2.5;
+  const available = Math.max(0.8, L.maxY - y - buffer);
+  const remaining = Math.max(Math.min(MIN_FIG_H, available), available - reserve);
   const boxH = Math.min(4.5, remaining);
   const boxW = w;
   // Read PNG dimensions from header so we can pre-fit instead of relying on

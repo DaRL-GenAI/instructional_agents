@@ -74,7 +74,7 @@ An AI-powered instructional design system based on the ADDIE model for automated
 | 📄 **LaTeX/PDF Output** | Generate professional LaTeX slides and compile to PDF format |
 | 🎨 **PowerPoint (PPTX) Export** | Convert LaTeX Beamer slides to visually rich PPTX using pptxgenjs with icons, shadows, and Slide Masters |
 | ✅ **Automatic Evaluation** | Built-in evaluation system for assessing generated course materials |
-| 📖 **Textbook Grounding** | *(opt-in)* Ground course content in a PDF or markdown textbook; inline citation tokens are inserted in slides, scripts, and assessments. Built-in verifier checks each citation's faithfulness. Available on CLI, API, and Web UI. |
+| 📖 **Textbook Grounding** | *(opt-in)* Ground course content in a PDF or markdown textbook; each slide is written from retrieved textbook evidence. An advisory verifier checks claim faithfulness and a Grounding Fidelity % is reported. Available on CLI, API, and Web UI. |
 
 ### 🎬 How It Works
 
@@ -449,8 +449,8 @@ python run.py "AI Fundamentals" --catalog ai_catalog
 python run.py "Educational Psychology" --copilot --catalog edu_psy
 
 # Ground the course in a textbook (PDF/markdown file or directory)
-python run.py "Data Mining" --catalog mwe_catalog \
-    --use-textbook data/textbooks/han_data_mining_3e
+python run.py "Data Mining" --catalog default_catalog \
+    --use-textbook path/to/textbook.pdf
 ```
 
 **Minimal Working Example** (generates a small 3-week course in ~5 min):
@@ -476,7 +476,7 @@ Options:
   --use-textbook PATH      Ground course generation in a textbook (PDF or
                            markdown file, or a directory of either). When
                            omitted, generation runs identically to a vanilla
-                           run — no citations are emitted.
+                           run — no grounding is applied.
   --optimize STORAGE_ID    Optimize mode: provide storage_id of uploaded PDFs
   --requirements TEXT      User requirements for optimization (with --optimize)
   --chapter NAME           Specific chapter to optimize (with --optimize)
@@ -528,8 +528,8 @@ For complete API documentation, see [API Documentation](docs/API_DOCUMENTATION.m
 | **Course Generation** | Generate complete course materials based on ADDIE model | Web interface, CLI (`run.py`), or RESTful API |
 | **Catalog Mode** | Use structured catalog files for guided generation | `--catalog` flag or upload in web interface |
 | **Copilot Mode** | Interactive feedback during generation | `--copilot` flag in CLI or enable in web interface |
-| **Textbook Grounding** | Ground content in a PDF/markdown textbook with inline citations | `--use-textbook PATH` flag in CLI, `textbook_path` in API, file picker in web interface |
-| **Evaluation** | Automatic assessment of generated materials, with optional citation verification | `python evaluate.py --exp <exp_name> [--use-textbook PATH]` |
+| **Textbook Grounding** | Ground content in a PDF/markdown textbook from retrieved evidence | `--use-textbook PATH` flag in CLI, `textbook_path` in API, file picker in web interface |
+| **Evaluation** | Automatic assessment of generated materials, with an optional Grounding Fidelity % | `python evaluate.py --exp <exp_name> [--rigorous]` |
 | **Web Interface** | Visual interface for course generation | Open `frontend/index.html` in browser |
 | **API Server** | RESTful API for programmatic access | `python api_server.py` or Docker |
 
@@ -575,20 +575,20 @@ python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 
 ### Textbook Grounding
 
-Opt-in. Pass `--use-textbook PATH` (a PDF, markdown file, or directory of either) and the system retrieves relevant textbook passages per chapter and inserts inline citation tokens like `[han_data_mining_3e:ch6.s3:p15]` (textbook id, section, page) in slides, scripts, and assessments. Without the flag, vanilla output is unchanged.
+Opt-in. Pass `--use-textbook PATH` (a PDF, markdown file, or directory of either) and the system retrieves relevant textbook passages per chapter and writes each slide grounded in that retrieved evidence — teaching in its own words from the source rather than the model's parametric memory. Without the flag, vanilla output is unchanged.
 
 ```bash
-python run.py "Data Mining" --catalog mwe_catalog --exp dm_grounded \
-    --use-textbook data/textbooks/han_data_mining_3e
+python run.py "Data Mining" --catalog default_catalog --exp dm_grounded \
+    --use-textbook path/to/textbook.pdf
 ```
 
-Embeddings are cached on disk after the first ingest (`~5-10s` one-time per textbook). Per-chapter generation is ~10-25% slower than vanilla because prompts carry retrieved excerpts. Verify each emitted citation with the evaluation step below.
+Embeddings are cached on disk after the first ingest (one-time per textbook). Per-chapter generation is modestly slower than vanilla because prompts carry retrieved excerpts.
 
 **How the grounding works under the hood:**
-- Each chapter is decomposed into 3 subtopics by the LLM; each subtopic is HyDE-expanded into a hypothetical textbook paragraph and used as a retrieval query (multi-query retrieval).
-- Per-section rankings across queries are fused via Reciprocal Rank Fusion (RRF, k=60). The contract binds each chapter to the top sections.
-- Coverage gating: if no textbook section scores above a threshold for a chapter, that chapter is marked "off-textbook" and writes without citations (rather than fabricate them against weak retrieval).
-- Writing prompts carry a five-rule mandatory grounding directive: cite-every-sourced-claim, anchor-to-source-wording, abstain-if-unsupported, exact-tokens-only, cite-correct-excerpt. Scripts (spoken narration) get a softer variant that allows natural paraphrase and once-per-concept citation. A worked example uses a real snippet from the top retrieved chunk so the model has a literal pattern to imitate.
+- The textbook is ingested (`pymupdf4llm`) into a chapter → section → paragraph IR; equation-shaped image crops are converted to native LaTeX by a focused VLM pass (cached). Paragraphs are chunked (~512 tokens) and indexed for BM25 + dense (`text-embedding-3-large`) retrieval.
+- Each chapter is decomposed into subtopics by the LLM; each subtopic is HyDE-expanded into a hypothetical textbook paragraph and used as a retrieval query. Per-section rankings across queries are fused via Reciprocal Rank Fusion (RRF, k=60), and a **book-relative gate** binds each chapter to its top sections — or **abstains** (writes ungrounded) when nothing scores well, rather than fabricate against weak retrieval.
+- The writer injects a per-slide block of retrieved evidence with mandatory grounding rules (teach in your own words, abstain if unsupported, preserve worked examples / math notation). Deterministic post-passes handle figure placement, textbook captions, navigation frames, and LaTeX cleanup.
+- After each chapter, an advisory content-fidelity verifier checks the generated claims against the writer's evidence and logs `content_verification.json` (claims supported / unsupported) — log-only, it never edits the deck. This feeds the Grounding Fidelity metric in evaluation.
 
 ### Automatic Evaluation
 
@@ -598,11 +598,11 @@ Embeddings are cached on disk after the first ingest (`~5-10s` one-time per text
 # Rubric scoring + Program-Chair / Test-Student validation
 python evaluate.py --exp web_dev_v1
 
-# Add textbook-citation verification (only meaningful on grounded runs)
-python evaluate.py --exp dm_grounded --use-textbook data/textbooks/han_data_mining_3e
+# Measurement-grade scoring + a binary Grounding Fidelity % on grounded runs
+python evaluate.py --exp dm_grounded --rigorous
 ```
 
-Evaluation results are saved in `eval/{experiment_name}/` directory. With `--use-textbook`, a `grounding_results/` subdirectory is added containing per-citation faithfulness scores (1–5), citation precision, malformed-token counts, and a **failure-mode breakdown** (`good` / `loose_paraphrase` / `hallucination` / `retrieval_bad` / `wrong_chunk_cited` / `judge_uncertain`) that pinpoints which lever to pull when precision is below target.
+Evaluation results are saved in the `eval/{experiment_name}/` directory. The default run is a 1–5 multi-agent rubric. `--rigorous` adds deterministic scoring (fixed seed, median-of-3), a `core_quality` headline (excluding metrics a slide deck structurally can't satisfy), and — on grounded runs — a **Grounding Fidelity %** aggregated from the per-chapter content-fidelity reports (claims supported vs. unsupported). That binary percentage is the sharp, A/B-comparable grounding signal the coarse 1–5 rubric can't provide.
 
 ### LaTeX-to-PPTX Conversion
 
@@ -686,15 +686,14 @@ python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 
 ```bash
 # Step 1: Generate course grounded in a textbook
-python run.py "Data Mining" --catalog mwe_catalog --exp dm_grounded \
-  --use-textbook data/textbooks/han_data_mining_3e
+python run.py "Data Mining" --catalog default_catalog --exp dm_grounded \
+  --use-textbook path/to/textbook.pdf
 
-# Step 2: Evaluate + verify every citation
-python evaluate.py --exp dm_grounded \
-  --use-textbook data/textbooks/han_data_mining_3e
+# Step 2: Evaluate with the Grounding Fidelity % (rigorous mode)
+python evaluate.py --exp dm_grounded --rigorous
 
-# Step 3: Review the citation report
-open eval/gpt-4o-mini-Evaluation_dm_grounded/grounding_results/grounding_summary.md
+# Step 3: Review per-chapter content-fidelity logs (claims supported vs. unsupported)
+open exp/dm_grounded/chapter_1/content_verification.json
 ```
 
 ---

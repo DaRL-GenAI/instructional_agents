@@ -10,9 +10,9 @@ so it can be applied to every page of a textbook before any expensive
 extraction. Pages flagged ``complex`` are candidates for VLM-based
 extraction; pages flagged ``prose`` can use the standard text path.
 
-Routing thresholds were chosen empirically against Han (21.4 % of pages
-classified complex) and Agentic Design Patterns (13.3 %). They are
-generic across textbooks — no per-source tuning.
+Routing thresholds were chosen empirically against two reference textbooks
+(≈21 % and ≈13 % of pages classified complex). They are generic across
+textbooks — no per-source tuning.
 """
 
 from __future__ import annotations

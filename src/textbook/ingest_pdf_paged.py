@@ -30,6 +30,10 @@ from typing import List, Optional
 from .ingest_md import _blocks_to_chapters, _extract_blocks
 from .ingest_pdf import _file_sort_key, _normalize_pdf_markdown_headings, _renumber_chapter
 from .schema import Chapter, PageSpan, Textbook
+from .equation_vlm import (
+    looks_like_equation as _looks_like_equation,
+    extract_equation_latex as _extract_equation_latex,
+)
 
 
 # Math signal regex — Greek letters, calculus operators, comparison
@@ -225,6 +229,36 @@ def _stitch_cross_page_dangles(blocks: list[dict]) -> list[dict]:
     return out
 
 
+# Figure caption lines in a page's markdown, e.g. "Figure 10.14 A density-based
+# clustering..." or "**Figure 8.2:** ...". Anchored to line start (after optional
+# bold markers) so inline references ("see Figure 10.14") are not mistaken for
+# captions. Captures (number, caption-text). Textbook-agnostic — the universal
+# "Figure N(.M)" convention, no per-book vocabulary.
+_FIGURE_CAPTION_RE = re.compile(
+    r"(?:^|\n)\s*\**\s*(?:Figure|Fig\.?)\s+(\d+(?:\.\d+)?)\b[:.\s]*([^\n]{0,200})",
+    re.IGNORECASE,
+)
+
+# pymupdf4llm emits a markdown image ref ![alt](file) for each extracted image,
+# pointing at the ORIGINAL filename. We rename those files and re-emit each image
+# as an [IMAGE_PATH:] paragraph, so the markdown refs are both duplicate and
+# dangling — strip them so every image is represented exactly once.
+_MD_IMAGE_REF_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+
+def _extract_figure_captions(md_text: str) -> list[tuple[str, str]]:
+    """Pull ``(figure_number, caption_text)`` pairs from a page's markdown in
+    reading order so each extracted image can be paired with its real caption.
+    Caption text is the remainder of the ``Figure N.M ...`` line with markdown
+    bold/italic markers stripped."""
+    out: list[tuple[str, str]] = []
+    for m in _FIGURE_CAPTION_RE.finditer(md_text or ""):
+        num = m.group(1)
+        cap = re.sub(r"[*_`]+", "", (m.group(2) or "")).strip()
+        out.append((num, cap))
+    return out
+
+
 def _extract_blocks_with_page(md_text: str, page_num: int,
                               seen_chapter: bool) -> tuple[list[dict], bool]:
     """Extract blocks from one page's markdown and tag them with ``page``.
@@ -252,6 +286,8 @@ def ingest_pdf_file_paged(
     authors: Optional[List[str]] = None,
     edition: Optional[str] = None,
     figures_dir: Optional[Path] = None,
+    extract_equations: bool = True,
+    equation_vlm_model: str = "gpt-4o-mini",
 ) -> Textbook:
     """Ingest a single PDF via PyMuPDF4LLM with per-page granularity.
 
@@ -265,6 +301,13 @@ def ingest_pdf_file_paged(
             ``[IMAGE_PATH: ...]`` markers on the corresponding pages.
             When None (default), no image files are written and no
             image markers appear in the IR — vanilla preservation.
+        extract_equations: When True (default) AND images are being
+            extracted, equation-shaped crops are converted to native
+            ``[LATEX: ...]`` via one focused VLM call each (figures keep
+            their image). Bound to the grounded path, not a separate
+            flag; fail-open (no API key / error → keep the image); cached
+            in the IR so the VLM runs once per textbook.
+        equation_vlm_model: model for that equation→LaTeX call.
 
     Returns:
         A :class:`Textbook` with REAL per-paragraph page numbers
@@ -338,6 +381,12 @@ def ingest_pdf_file_paged(
         # pymupdf4llm returns a list of either dicts (with 'text', etc.)
         # or bare strings depending on the version. Handle both.
         md_text = page["text"] if isinstance(page, dict) else page
+        # Drop pymupdf4llm's markdown image refs: each image is re-emitted below
+        # as an [IMAGE_PATH:] paragraph pointing at the renamed file, so the
+        # markdown refs are duplicate AND dangling. Only when images are being
+        # extracted (figures_dir_p set); otherwise there are none to strip.
+        if figures_dir_p is not None and md_text:
+            md_text = _MD_IMAGE_REF_RE.sub("", md_text)
         # PyMuPDF page numbers are 1-based externally; we report
         # page_idx + 1 to align with what the verifier expects.
         page_num = page_idx + 1
@@ -351,14 +400,50 @@ def ingest_pdf_file_paged(
         # Each paragraph carries an [IMAGE_PATH: ...] marker pointing
         # at the saved PNG; the writer's visual-content rules turn it
         # into ``\includegraphics`` on the slide.
+        # Pair each extracted image with the page's i-th "Figure N.M" caption
+        # (reading order) so the figure paragraph carries its real caption text
+        # instead of a bare marker — this is what downstream figure<->slide
+        # matching and figure-query retrieval read. Falls back to the bare form
+        # when the page has no matching caption (decorative image / count mismatch).
+        page_captions = (
+            _extract_figure_captions(md_text) if (md_text and md_text.strip()) else []
+        )
         for img_idx, img_path in enumerate(images_by_page.get(page_num, []), start=1):
+            fig_num, cap_text = ("", "")
+            if img_idx - 1 < len(page_captions):
+                fig_num, cap_text = page_captions[img_idx - 1]
+            marker = f"[IMAGE_PATH: {img_path.resolve()}]"
+            # Equation crops → native LaTeX (editable, faithful) instead of a
+            # small non-editable image thumbnail. Equation-ONLY + fail-open:
+            # the aspect-ratio pre-filter skips figure-shaped crops, and any
+            # VLM failure (no key / non-equation / error) returns "" and we
+            # fall back to the image path below. Runs only on the grounded
+            # path (images exist only when figures_dir is set) and is cached
+            # in the IR, so the VLM runs once per textbook, not per run.
+            eq_latex = ""
+            if extract_equations and _looks_like_equation(img_path):
+                eq_latex = _extract_equation_latex(
+                    img_path, model=equation_vlm_model
+                )
+            if eq_latex:
+                label = f"Equation {fig_num}: " if fig_num else "Equation: "
+                all_blocks.append({
+                    "type": "paragraph",
+                    "kind": "equation",
+                    "text": f"{label}[LATEX: {eq_latex}]",
+                    "page": page_num,
+                })
+                continue
+            if fig_num and cap_text:
+                text = f"Figure {fig_num}: {cap_text} {marker}"
+            elif fig_num:
+                text = f"Figure {fig_num}: {marker}"
+            else:
+                text = f"Figure (p{page_num}, item {img_idx}): {marker}"
             all_blocks.append({
                 "type": "paragraph",
                 "kind": "figure_cap",
-                "text": (
-                    f"Figure (p{page_num}, item {img_idx}): "
-                    f"[IMAGE_PATH: {img_path.resolve()}]"
-                ),
+                "text": text,
                 "page": page_num,
             })
 

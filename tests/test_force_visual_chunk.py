@@ -23,7 +23,7 @@ class _StubChunk:
     text: str
     page_start: int = 1
     page_end: int = 1
-    textbook_id: str = "han"
+    textbook_id: str = "tb"
     chapter_title: str = "Ch"
     section_title: str = "Sec"
 
@@ -49,9 +49,8 @@ def _make_delib(prose_chunks, all_kb_chunks):
     d = SlidesDeliberation.__new__(SlidesDeliberation)
     d.retriever = retriever
     d.section_ids = None
-    d.textbook_id = "han"
+    d.textbook_id = "tb"
     d._evidence_top_k = 6
-    d.citation_usage_tracker = None
     return d
 
 
@@ -139,9 +138,9 @@ class TestInjectVisualChunkIfAvailable:
         out = d._inject_visual_chunk_if_available([], None)
         assert out == []
 
-    def test_multiple_visuals_in_scope_all_hoisted_up_to_cap(self):
-        # Four visual chunks in the same section as the top result;
-        # all four should be hoisted to the front (cap is 4).
+    def test_visuals_in_scope_hoisted_up_to_cap(self):
+        # Several candidate visuals in the same section as the top result;
+        # exactly _VISUAL_INJECT_CAP of them are hoisted to the front.
         prose = [_StubChunk("ch1.s1", text="prose 1"),
                  _StubChunk("ch1.s1", text="prose 2"),
                  _StubChunk("ch1.s1", text="prose 3"),
@@ -154,13 +153,15 @@ class TestInjectVisualChunkIfAvailable:
         out = d._inject_visual_chunk_if_available(
             [_StubResult(c) for c in prose], None,
         )
-        # All four visuals at the front
-        assert all("[IMAGE_PATH:" in out[i].chunk.text for i in range(4))
+        cap = d._VISUAL_INJECT_CAP
+        # Exactly `cap` visuals hoisted to the front
+        assert all("[IMAGE_PATH:" in out[i].chunk.text for i in range(cap))
+        assert sum(1 for r in out if "[IMAGE_PATH:" in r.chunk.text) == cap
         # Result count stable — lower-ranked prose chunks dropped
         assert len(out) == len(prose)
 
     def test_cap_respected_even_with_many_visuals_in_kb(self):
-        # Five visual chunks in scope; cap is 4 — only 4 should land.
+        # Five visual chunks in scope; only _VISUAL_INJECT_CAP should land.
         prose = [_StubChunk("ch1.s1", text=f"prose {i}") for i in range(5)]
         visuals = [_StubChunk("ch1.s1", text=f"fig {i} [IMAGE_PATH: /f{i}.png]")
                    for i in range(5)]
@@ -169,15 +170,16 @@ class TestInjectVisualChunkIfAvailable:
         out = d._inject_visual_chunk_if_available(
             [_StubResult(c) for c in prose], None,
         )
-        # At most cap visuals (4) — never 5
+        # At most _VISUAL_INJECT_CAP visuals land — never all five
         visual_count = sum(1 for r in out if "[IMAGE_PATH:" in r.chunk.text)
-        assert visual_count == 4
+        assert visual_count == d._VISUAL_INJECT_CAP
         # Result count stable when prose has enough slots
         assert len(out) == len(prose)
 
-    def test_same_section_visuals_come_before_out_of_section(self):
-        # Two visuals — one in same section as top result, one elsewhere.
-        # The same-section one should rank ahead.
+    def test_same_section_visual_preferred_under_cap(self):
+        # Two candidate visuals — one in the same section as the top result,
+        # one elsewhere. With _VISUAL_INJECT_CAP == 1 only one is injected, and
+        # the same-section visual must be the one chosen.
         prose = [_StubChunk("ch1.s1", text="prose ch1.s1")]
         v_same = _StubChunk("ch1.s1", text="same [IMAGE_PATH: /same.png]")
         v_other = _StubChunk("ch9.s9", text="other [IMAGE_PATH: /other.png]")
@@ -186,6 +188,8 @@ class TestInjectVisualChunkIfAvailable:
         out = d._inject_visual_chunk_if_available(
             [_StubResult(c) for c in prose], None,
         )
-        # Same-section visual first; out-of-section visual second
+        joined = " ".join(r.chunk.text for r in out)
+        # same-section visual is injected (hoisted to the front)...
         assert "/same.png" in out[0].chunk.text
-        assert "/other.png" in out[1].chunk.text
+        # ...and the out-of-section one is dropped by the one-figure-per-slide cap
+        assert "/other.png" not in joined

@@ -175,6 +175,172 @@ def _is_dominant_binding(ranked: list[tuple[str, float]]) -> bool:
 # threshold. Multi-query reliably pushes good matches well above 0.025.
 COVERAGE_FLOOR_RRF = 0.012
 
+# Scale-invariant normalization. The raw fused score sums 1/(K+rank) over a
+# VARIABLE number of queries (1 base + up to SUBTOPICS_PER_CHAPTER), so the
+# absolute floors above drift when the query count or section granularity
+# changes — a transfer hazard across textbooks. Dividing by the max attainable
+# score (n_queries / K) maps it to [0, 1] (1.0 == ranked #1 by every query),
+# making the abstain floors query-count-invariant. The normalized floors are
+# the equivalents of the raw floors at the reference query count (1 base + 5
+# subtopics = 6), so the default-config behavior is preserved.
+NORM_COVERAGE_FLOOR = 0.12       # ~ COVERAGE_FLOOR_RRF (0.012) at 6 queries
+NORM_META_ABSTAIN_FLOOR = 0.25   # ~ META_ABSTAIN_RRF_FLOOR (0.025) at 6 queries
+
+# Book-RELATIVE abstain floors. The fixed floors above were tuned on the eval
+# textbooks; a denser/sparser book could mass-abstain or mass-bind. Instead the
+# floors adapt to the book's OWN median top_norm: a chapter abstains when its
+# top section scores weakly RELATIVE to the typical chapter. A small absolute
+# backstop keeps a uniformly-weak book from binding pure noise. On the eval
+# books (median top_norm ~0.5) these resolve to ≈ the legacy fixed floors, so
+# behavior is preserved there.
+REL_COVERAGE_FRACTION = 0.25
+REL_META_FRACTION = 0.50
+NORM_COVERAGE_FLOOR_MIN = 0.05
+NORM_META_ABSTAIN_MIN = 0.10
+
+
+def _median(values):
+    """Median of a list of floats; 0.0 for an empty list."""
+    vals = sorted(values)
+    n = len(vals)
+    if n == 0:
+        return 0.0
+    mid = n // 2
+    return vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2.0
+
+# Coverage cap for chapters that span many sections (raised from 10). A
+# clustering chapter covers K-Means, K-Medoids, hierarchical, density, grid, and
+# evaluation — ~15 textbook sections — and was previously truncated to a third
+# of itself. The relative-score floor still gates which sections actually bind.
+MAX_SECTIONS_PER_TOPIC = 16
+
+
+def _normalized_top(top_score: float, n_queries: int) -> float:
+    """Map a raw fused RRF top-score to [0, 1] (1.0 == ranked #1 by every
+    query) so the abstain floors are invariant to the query count."""
+    return top_score * QUERY_FUSION_RRF_K / max(1, n_queries)
+
+
+def _count_sections_above_floor(ranked, floor_fraction: float) -> int:
+    """Number of sections within ``floor_fraction`` of the top score — the size
+    of the on-topic 'plateau' that coverage widening should try to bind."""
+    if not ranked:
+        return 0
+    floor = floor_fraction * ranked[0][1]
+    return sum(1 for _sid, sc in ranked if sc >= floor)
+
+
+_FILLER_TITLE_WORDS = (
+    "summary", "bibliographic notes", "bibliography", "exercises", "problems",
+    "index", "references", "glossary", "acknowledgment", "acknowledgement",
+    "preface", "contents", "about the author", "further reading",
+)
+
+
+def _is_filler_section(title: str) -> bool:
+    """True for non-teaching boilerplate sections (Summary, Exercises,
+    Bibliographic Notes, Index, References, ...) that shouldn't consume a
+    binding slot. Textbook-agnostic — universal academic section conventions,
+    matched after stripping leading section numbers and markdown emphasis."""
+    t = re.sub(r"[*_`\[\]]+", "", title or "").strip().lower()
+    t = re.sub(r"^\d+(?:\.\d+)*\s*", "", t).strip()
+    return any(t == w or t.startswith(w) for w in _FILLER_TITLE_WORDS)
+
+
+_SECTION_NUM_RE = re.compile(r"\s*\**\[?\s*(\d+)\.\d+")
+
+
+def _section_chapter_num(title: str):
+    """Leading chapter number from an 'N.M ...' section title, else None."""
+    m = _SECTION_NUM_RE.match(title or "")
+    return int(m.group(1)) if m else None
+
+
+def _chapter_coherence_filter(ranked, title_by_sid, span: int = 1):
+    """Drop bound sections from textbook chapters far from the dominant chapter
+    of the top-scored sections. Controls HyDE drift (a clustering chapter
+    pulling in a data-preprocessing section) using the section NUMBERING, which
+    stays reliable even when the IR's chapter-boundary detection is broken.
+    No-op when sections aren't numbered (un-numbered sources degrade safely)."""
+    numbered = [
+        (sid, sc, _section_chapter_num(title_by_sid.get(sid, "")))
+        for sid, sc in ranked
+    ]
+    if sum(1 for _s, _c, n in numbered if n is not None) < 3:
+        return ranked  # not enough numbering signal to judge coherence
+    mass: dict = {}
+    for _sid, sc, n in numbered[:8]:  # the top sections define the topic's chapter
+        if n is not None:
+            mass[n] = mass.get(n, 0.0) + sc
+    if not mass:
+        return ranked
+    dominant = max(mass, key=mass.get)
+    kept = [
+        (sid, sc) for sid, sc, n in numbered
+        if n is None or abs(n - dominant) <= span
+    ]
+    return kept or ranked
+
+
+def _score_chapter(ch, retriever, llm, title_by_sid, *,
+                   use_hyde, use_subtopics, num_subtopics):
+    """Score one chapter for binding: build queries (subtopics + HyDE),
+    multi-query retrieve, fuse to ranked sections, compute the normalized top
+    score. Returns a record dict, or None when the chapter has no description.
+    Pure scoring — the abstain GATE is applied by the caller so its floors can
+    be set relative to the whole book's score distribution."""
+    title = (ch.get("title") or "").strip()
+    desc = (ch.get("description") or "").strip()
+    base_query = f"{title}. {desc}".strip()
+    if not base_query:
+        return None
+    queries: List[str] = [base_query]
+    rationale_parts: List[str] = []
+    if llm is not None and use_subtopics:
+        subtopics = _extract_subtopics(title, desc, llm, n=num_subtopics)
+        if subtopics:
+            queries.extend(subtopics)
+            rationale_parts.append(f"{len(subtopics)} subtopics")
+    if llm is not None and use_hyde:
+        expanded: List[str] = []
+        for q in queries:
+            hyde = _hyde_expand(q, title, llm)
+            # If HyDE fails, keep the original — never lose the baseline query.
+            expanded.append(hyde if hyde else q)
+        queries = expanded
+        rationale_parts.append("HyDE-expanded")
+    # Multi-query retrieval: each query retrieves independently; section IDs are
+    # fused across queries via reciprocal-rank fusion (best rank per query).
+    section_scores: dict[str, float] = {}
+    for q in queries:
+        try:
+            results = retriever.search(q, top_k=RETRIEVE_PER_TOPIC)
+        except Exception as e:
+            print(f"[contract] retrieval failed for query (skipped): {e}")
+            continue
+        seen_in_query: set[str] = set()
+        for rank, r in enumerate(results):
+            sid = r.chunk.section_id
+            if sid in seen_in_query:
+                continue
+            seen_in_query.add(sid)
+            section_scores[sid] = (
+                section_scores.get(sid, 0.0) + 1.0 / (QUERY_FUSION_RRF_K + rank)
+            )
+    # Drop boilerplate sections; control HyDE drift to within ±1 chapter.
+    ranked = sorted(section_scores.items(), key=lambda kv: -kv[1])
+    ranked = [
+        (sid, sc) for sid, sc in ranked
+        if not _is_filler_section(title_by_sid.get(sid, ""))
+    ]
+    ranked = _chapter_coherence_filter(ranked, title_by_sid)
+    top_score = ranked[0][1] if ranked else 0.0
+    return {
+        "title": title, "desc": desc, "queries": queries, "ranked": ranked,
+        "top_norm": _normalized_top(top_score, len(queries)),
+        "rationale_parts": rationale_parts,
+    }
+
 
 def build_course_contract(
     course_id: str,
@@ -200,75 +366,60 @@ def build_course_contract(
     to the prior behavior.
     """
     mappings: List[TopicMapping] = []
-    for ch in chapters:
-        title = (ch.get("title") or "").strip()
-        desc = (ch.get("description") or "").strip()
-        base_query = f"{title}. {desc}".strip()
-        if not base_query:
+    # section_id -> title, to drop non-teaching boilerplate sections from binding.
+    title_by_sid = {
+        s.section_id: s.title
+        for ch in kb.textbook.chapters for s in ch.sections
+    }
+    # Pass 1 — score every chapter (query expansion + retrieval + ranking),
+    # collected FIRST so the abstain floors can be set RELATIVE to the book's
+    # own score distribution (transfer-robust) instead of fixed scalars.
+    records = [
+        _score_chapter(
+            ch, retriever, llm, title_by_sid,
+            use_hyde=use_hyde, use_subtopics=use_subtopics,
+            num_subtopics=num_subtopics,
+        )
+        for ch in chapters
+    ]
+    # Book-relative floors: a chapter abstains when its top section scores
+    # weakly RELATIVE to the typical chapter. Small absolute backstop so a
+    # uniformly-weak book can't bind noise. On the eval books (median top_norm
+    # ~0.5) these ≈ the legacy fixed floors, preserving behavior there.
+    _norms = [r["top_norm"] for r in records if r and r["top_norm"] > 0]
+    _ref = _median(_norms)
+    if _ref > 0:
+        coverage_floor = max(NORM_COVERAGE_FLOOR_MIN, REL_COVERAGE_FRACTION * _ref)
+        meta_floor = max(NORM_META_ABSTAIN_MIN, REL_META_FRACTION * _ref)
+    else:
+        coverage_floor, meta_floor = NORM_COVERAGE_FLOOR, NORM_META_ABSTAIN_FLOOR
+
+    # Pass 2 — gate each chapter against the (book-relative) floors.
+    for rec, ch in zip(records, chapters):
+        if rec is None:
             mappings.append(TopicMapping(
-                topic=title, section_ids=[], rationale="empty chapter description",
+                topic=(ch.get("title") or "").strip(), section_ids=[],
+                rationale="empty chapter description",
             ))
             continue
-
-        # Assemble the query set: the raw chapter as baseline, plus
-        # LLM-extracted subtopics, each optionally HyDE-expanded.
-        queries: List[str] = [base_query]
-        rationale_parts: List[str] = []
-
-        if llm is not None and use_subtopics:
-            subtopics = _extract_subtopics(title, desc, llm, n=num_subtopics)
-            if subtopics:
-                queries.extend(subtopics)
-                rationale_parts.append(f"{len(subtopics)} subtopics")
-
-        if llm is not None and use_hyde:
-            expanded: List[str] = []
-            for q in queries:
-                hyde = _hyde_expand(q, title, llm)
-                # If HyDE fails, keep the original — never lose the baseline query.
-                expanded.append(hyde if hyde else q)
-            queries = expanded
-            rationale_parts.append("HyDE-expanded")
-
-        # Multi-query retrieval: each query retrieves independently;
-        # section IDs are fused across queries via reciprocal-rank fusion.
-        section_scores: dict[str, float] = {}
-        first_chunks_by_section: dict[str, object] = {}
-        for q in queries:
-            try:
-                results = retriever.search(q, top_k=RETRIEVE_PER_TOPIC)
-            except Exception as e:
-                # Per-query failure shouldn't sink the whole contract;
-                # log and continue with whatever other queries succeed.
-                print(f"[contract] retrieval failed for query (skipped): {e}")
-                continue
-            seen_in_query: set[str] = set()
-            for rank, r in enumerate(results):
-                sid = r.chunk.section_id
-                if sid in seen_in_query:
-                    # Each section contributes once per query — score by
-                    # the BEST rank, not by how many chunks of it landed.
-                    continue
-                seen_in_query.add(sid)
-                section_scores[sid] = (
-                    section_scores.get(sid, 0.0) + 1.0 / (QUERY_FUSION_RRF_K + rank)
-                )
-                first_chunks_by_section.setdefault(sid, r.chunk)
-
-        # Top sections by fused score, take up to sections_per_topic.
-        ranked = sorted(section_scores.items(), key=lambda kv: -kv[1])
-        top_score = ranked[0][1] if ranked else 0.0
+        title = rec["title"]
+        desc = rec["desc"]
+        queries = rec["queries"]
+        ranked = rec["ranked"]
+        top_norm = rec["top_norm"]
+        rationale_parts = list(rec["rationale_parts"])
+        n_queries = len(queries)
 
         # Coverage gating: if the top section barely registered, this
         # chapter doesn't map to anything in the textbook. Better to
         # generate ungrounded content than to fabricate citations to a
         # weakly-related section. Downstream sees `section_ids=[]` and
         # falls back to the vanilla (no-citation) prompt for that chapter.
-        if top_score < COVERAGE_FLOOR_RRF:
+        if top_norm < coverage_floor:
             section_ids: List[str] = []
             coverage_status = (
-                f"off-textbook (top RRF={top_score:.4f} < floor "
-                f"{COVERAGE_FLOOR_RRF:.4f})"
+                f"off-textbook (top normalized RRF={top_norm:.3f} < floor "
+                f"{coverage_floor:.3f})"
             )
         else:
             # Smart intro widening. If the chapter looks like a
@@ -278,12 +429,21 @@ def build_course_contract(
             # default sections_per_topic.
             effective_top_n = sections_per_topic
             smart_widen_trigger = None
+            n_above_floor = _count_sections_above_floor(
+                ranked, SECTION_RELATIVE_SCORE_FLOOR
+            )
             if _is_generic_intro_chapter(title, desc):
-                effective_top_n = max(effective_top_n, SMART_INTRO_SECTIONS_PER_TOPIC)
                 smart_widen_trigger = "generic-keyword"
             elif _is_dominant_binding(ranked):
-                effective_top_n = max(effective_top_n, SMART_INTRO_SECTIONS_PER_TOPIC)
                 smart_widen_trigger = "dominant-binding"
+            elif n_above_floor > sections_per_topic:
+                # Chapter genuinely spans many sections (broad/survey) — widen to
+                # cover the on-topic plateau instead of truncating to a third.
+                smart_widen_trigger = "broad-binding"
+            if smart_widen_trigger:
+                effective_top_n = max(
+                    effective_top_n, min(MAX_SECTIONS_PER_TOPIC, n_above_floor)
+                )
 
             # Meta-chapter abstain — if the chapter was widened but the
             # top section's score is STILL below the abstain floor, the
@@ -291,11 +451,11 @@ def build_course_contract(
             # Evaluation", "Project Work"). Force section_ids=[] so the
             # writer falls back to vanilla rather than fabricate
             # citations against weakly-related sections.
-            if smart_widen_trigger and top_score < META_ABSTAIN_RRF_FLOOR:
+            if smart_widen_trigger and top_norm < meta_floor:
                 section_ids = []
                 rationale_parts.append(
-                    f"META-ABSTAIN (widened but top RRF={top_score:.4f} < "
-                    f"META_ABSTAIN_RRF_FLOOR={META_ABSTAIN_RRF_FLOOR})"
+                    f"META-ABSTAIN (widened but top normalized RRF={top_norm:.3f} "
+                    f"< meta_floor={meta_floor:.3f})"
                 )
                 mappings.append(TopicMapping(
                     topic=title,
@@ -317,14 +477,14 @@ def build_course_contract(
             dropped = min(effective_top_n, len(ranked)) - len(section_ids)
             if smart_widen_trigger:
                 coverage_status = (
-                    f"top section RRF={top_score:.4f} · "
-                    f"smart-intro widened to {len(section_ids)} sections "
+                    f"top normalized RRF={top_norm:.3f} · "
+                    f"widened to {len(section_ids)} sections "
                     f"({smart_widen_trigger}; "
                     f"{dropped} below {SECTION_RELATIVE_SCORE_FLOOR:.0%} "
                     f"relative floor dropped)"
                 )
             else:
-                coverage_status = f"top section RRF={top_score:.4f}"
+                coverage_status = f"top normalized RRF={top_norm:.3f}"
 
         rationale_pieces = [f"{len(queries)} queries"] + rationale_parts + [
             coverage_status

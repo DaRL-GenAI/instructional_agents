@@ -1,12 +1,9 @@
 """Tests for the slide/assessment RULE 2 — teach in your own words.
 
-The earlier "anchor-then-paraphrase" rule mandated a verbatim quote before
-any paraphrase. That was a holdover from the removed post-hoc grounding
-scorer: the citation token it required is stripped at save time, leaving a
-"quote" — gloss pattern on every slide. RULE 2 now instructs the writer to
-teach in its own words (the write-time verifier checks semantic support,
-not verbatim wording). This locks in the new wording so an accidental
-revert to quote-dumping is caught.
+An earlier "anchor-then-paraphrase" rule mandated a verbatim quote before
+any paraphrase, leaving a "quote" — gloss pattern on every slide. RULE 2
+now instructs the writer to teach in its own words. This locks in the new
+wording so an accidental revert to quote-dumping is caught.
 """
 
 from __future__ import annotations
@@ -23,7 +20,7 @@ class _StubChunk:
     section_id: str
     page_start: int = 1
     page_end: int = 1
-    textbook_id: str = "han"
+    textbook_id: str = "tb"
     chapter_title: str = "Ch"
     section_title: str = "Sec"
     text: str = "K-means clustering partitions n observations into k clusters"
@@ -50,9 +47,8 @@ def _build_deliberation():
     retriever.kb = MagicMock(chunks=[_StubChunk("ch1.s1")])
     d.retriever = retriever
     d.section_ids = None
-    d.textbook_id = "han"
+    d.textbook_id = "tb"
     d._evidence_top_k = 6
-    d.citation_usage_tracker = None
     return d
 
 

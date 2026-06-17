@@ -185,13 +185,13 @@ class EvidenceChunk(BaseModel):
     text: str
     section_id: str
     page: int
-    citation: str           # "[CSAPP:Ch3§2 p.45]"
+    citation: str           # e.g. "[textbook:ch3.s2:p45]"
     embedding: Optional[List[float]]
     bm25_terms: List[str]
 
 class GeneratedClaim(BaseModel):
     text: str
-    citation: Optional[str] = None   # any citation token attached; full shape expanded in PR #6 when verifier lands
+    citation: Optional[str] = None   # optional source token
 
 class GroundingReport(BaseModel):
     chapter_id: str

@@ -2,7 +2,7 @@
 
 Reads a markdown file or a directory of chapter_NAME/*.md files and produces
 a pydantic Textbook instance (see schema.py for the data model). Designed
-against the d2l-en (Dive into Deep Learning) layout but works for any
+against a section-per-file deep-learning markdown layout but works for any
 CommonMark / MyST-flavored markdown source.
 
 Source format quirks handled:
@@ -123,10 +123,41 @@ def _extract_blocks(md_text: str) -> List[dict]:
     return blocks
 
 
+# Chapter/section heading titles from PDF extraction often carry markdown
+# emphasis and a trailing page-number artifact, e.g. "**K-Means Clustering 445**"
+# or "1.1 **Why Data Mining? 1**". These titles are exactly what the course
+# contract binds topics against, so polluted titles degrade binding precision.
+# Cleaned at the single point where Chapter/Section are constructed.
+_HEADING_EMPHASIS_RE = re.compile(r"[*_`\[\]]+")
+_HEADING_TRAILING_PAGENUM_RE = re.compile(r"^(.*\S)\s+(\d{1,3})$")
+_HEADING_COUNTING_WORDS = {
+    "chapter", "section", "part", "appendix", "unit", "lecture", "week",
+    "vol", "volume", "no", "chap", "figure", "fig", "table", "eq", "equation",
+    "problem", "exercise", "step", "phase", "level", "lesson", "module",
+}
+
+
+def _clean_heading_title(title: str) -> str:
+    """Strip markdown emphasis and a trailing page-number artifact from a
+    heading title. Conservative on the page number: only removes a trailing
+    1-3 digit integer when the remaining title still has >= 2 words and the
+    word before the number is not a counting word, so 'Chapter 8' /
+    'Section 3' / 'Top 10 Algorithms' are preserved. Textbook-agnostic."""
+    t = _HEADING_EMPHASIS_RE.sub("", title or "").strip()
+    m = _HEADING_TRAILING_PAGENUM_RE.match(t)
+    if m:
+        head = m.group(1).rstrip()
+        words = head.split()
+        last_word = words[-1].lower().strip(".:,;") if words else ""
+        if len(words) >= 2 and last_word not in _HEADING_COUNTING_WORDS:
+            t = head
+    return t.strip()
+
+
 def _new_section(chapter_num: int, section_idx: int, title: str) -> Section:
     return Section(
         section_id=f"ch{chapter_num}.s{section_idx}",
-        title=title,
+        title=_clean_heading_title(title),
         pages=PageSpan(start=0, end=0),
         paragraphs=[],
         concepts=[],
@@ -137,7 +168,7 @@ def _new_chapter(chapter_num: int, title: str) -> Chapter:
     return Chapter(
         chapter_id=f"ch{chapter_num}",
         number=chapter_num,
-        title=title,
+        title=_clean_heading_title(title),
         pages=PageSpan(start=0, end=0),
         sections=[],
         learning_objectives=[],
@@ -283,7 +314,7 @@ def ingest_directory(
 ) -> Textbook:
     """Read a directory of chapter_*/ subdirs and return a Textbook IR.
 
-    Layout (e.g. d2l-en):
+    Layout (chapter-per-directory markdown):
         path/
           chapter_introduction/
             index.md          (chapter intro / single-file chapters)

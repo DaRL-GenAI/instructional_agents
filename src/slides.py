@@ -268,15 +268,6 @@ def _is_visual_chunk_text(text: str) -> bool:
     return any(m in text for m in _VISUAL_CHUNK_MARKERS)
 
 
-# Canonical citation token shape — matches what Chunk.citation_token()
-# emits. Anything that LOOKS like a citation (starts with the textbook
-# id and ends with a closing bracket) but doesn't match this shape is
-# considered malformed.
-_CITATION_TOKEN_CANONICAL_RE = __import__("re").compile(
-    r"\[([A-Za-z0-9_]+):([A-Za-z0-9._]+):p(\d+)\]"
-)
-
-
 # LaTeX cleanup: regexes used by _clean_latex_artifacts to catch
 # common writer-side LaTeX bugs that break PDF conversion.
 import re as _re_for_latex_cleanup
@@ -290,14 +281,6 @@ _FAKE_PATH_INCLUDEGRAPHICS_RE = _re_for_latex_cleanup.compile(
     _re_for_latex_cleanup.IGNORECASE,
 )
 
-# Citation tokens accidentally wrapped in \cite{}. The writer emitted
-# \cite{textbook_id:ch1.s1:p01} (BibTeX syntax) which needs a
-# bibliography file to compile. Rewrite to the canonical plain-bracket
-# form [textbook_id:ch1.s1:p01].
-_BIBTEX_WRAPPED_CITE_RE = _re_for_latex_cleanup.compile(
-    r"\\cite\{([^}]+_data_mining_3e:ch\d+(?:\.s\d+)?:p\d+)\}"
-)
-
 # Unescaped ampersands in slide TEXT (not in tabular/align). Detect
 # lines that contain "& " outside of \begin{tabular}/\begin{align}
 # environments. Replace with "\&".
@@ -308,13 +291,6 @@ _TABULAR_OR_ALIGN_CLOSE = _re_for_latex_cleanup.compile(
     r"\\end\{(tabular|align|array|matrix|pmatrix|bmatrix)\}"
 )
 
-
-# Citation token escaping for use inside plain LaTeX text. We wrap each
-# [textbook:section:page] token in \texttt{...} and escape the underscores
-# so LaTeX doesn't treat them as subscript markers.
-_CITATION_TOKEN_IN_TEXT_RE = _re_for_latex_cleanup.compile(
-    r"(?<!\\texttt\{)\[([a-zA-Z][a-zA-Z0-9_]*:ch\d+(?:\.s\d+)?:p\d+(?:-p\d+)?)\]"
-)
 
 # \graphicspath declaration we want in every preamble so .grounding_cache/
 # figure paths resolve from the project root regardless of where the
@@ -412,35 +388,22 @@ _UNICODE_REPLACEMENTS = {
 }
 
 
-def _escape_citation_token(match):
-    """Helper: wrap a citation token in \\texttt{} so LaTeX
-    treats the underscores and colons as monospaced inline text rather
-    than math operators."""
-    token = match.group(1)
-    # Escape underscores so they print as underscores, not subscripts
-    escaped = token.replace("_", r"\_")
-    return r"\texttt{[" + escaped + r"]}"
-
-
 def _clean_latex_artifacts(text):
     """LaTeX cleanup: scrub writer-side LaTeX bugs that
-    break PDF conversion. Runs alongside _strip_malformed_citation_tokens
-    on the final artifact text. Safe-by-default — only fixes
-    well-characterized failure patterns; ambiguous edits left alone.
+    break PDF conversion. Runs on the final artifact text.
+    Safe-by-default — only fixes well-characterized failure patterns;
+    ambiguous edits left alone.
 
     Fixes:
       1. \\includegraphics{/path/to/file.png} (hallucinated path) →
          remove the entire \\includegraphics line so the slide still
          compiles.
-      2. \\cite{textbook_id:ch1.s1:p01} → bare bracket form
-         [textbook_id:ch1.s1:p01] (BibTeX → inline citation).
-      3. Bare ampersands in slide text outside tabular/align → \\&.
+      3. Bare ampersands and percent signs in slide text outside
+         tabular/align → \\& / \\% (an unescaped % is a LaTeX line-comment
+         that silently drops the rest of the line, e.g. "80% of buyers").
       4. Unicode em-dash, en-dash, curly quotes, ellipsis →
          LaTeX-native ASCII equivalents (---, --, ``...'', \\ldots{})
          so the default beamer font (ec-lmss10) can render them.
-      5. Citation tokens in plain text → \\texttt{[...]} with escaped
-         underscores, so LaTeX doesn't parse the token as math.
-         Tokens already inside \\texttt{} are not double-wrapped.
       6. Inject \\graphicspath{...} into the preamble (right after
          \\usepackage{graphicx}) so .grounding_cache/ paths resolve
          from the project root no matter where slides.tex is compiled.
@@ -449,8 +412,6 @@ def _clean_latex_artifacts(text):
         return text
     # Fix 1: drop hallucinated includegraphics paths
     text = _FAKE_PATH_INCLUDEGRAPHICS_RE.sub("", text)
-    # Fix 2: unwrap \cite{} BibTeX wrapping back to plain brackets
-    text = _BIBTEX_WRAPPED_CITE_RE.sub(r"[\1]", text)
     # Fix 4a: strip VLM-extraction markers the writer should have processed
     # but copy-pasted as raw text instead. ([DESCRIPTION:], [INSIGHT:],
     # [IMAGE_PATH:], [LATEX:], [TABLE:], [ALGORITHM_STEPS:]) — all become
@@ -485,8 +446,6 @@ def _clean_latex_artifacts(text):
     for src, dst in _UNICODE_REPLACEMENTS.items():
         if src in text:
             text = text.replace(src, dst)
-    # Fix 5: wrap citation tokens in \texttt{} with escaped underscores
-    text = _CITATION_TOKEN_IN_TEXT_RE.sub(_escape_citation_token, text)
     # Fix 6: inject \graphicspath into the preamble if missing
     if (r"\graphicspath" not in text
             and r"\usepackage{graphicx}" in text):
@@ -508,69 +467,17 @@ def _clean_latex_artifacts(text):
                 line = _re_for_latex_cleanup.sub(
                     r"(?<!\\)&", r"\\&", line,
                 )
+                # Escape a literal percent in prose ("80%" → "80\%"). A bare
+                # % is a LaTeX line-comment, so "80% of buyers" silently
+                # dropped everything after it at render. Skips an already
+                # escaped \%; same class of fix as the ampersand escape above.
+                line = _re_for_latex_cleanup.sub(
+                    r"(?<!\\)%", r"\\%", line,
+                )
         if _TABULAR_OR_ALIGN_CLOSE.search(line):
             in_math_env = max(0, in_math_env - 1)
         out_lines.append(line)
     return "\n".join(out_lines)
-
-
-def _strip_malformed_citation_tokens(text: str, textbook_id, valid_tokens=None):
-    """Remove malformed citation-shaped tokens from generated text.
-
-    Detects bracketed tokens that START with the configured
-    ``textbook_id`` followed by ``:`` but FAIL to match the canonical
-    citation shape (textbook_id : section_id : p<page>). Common cases:
-
-      * ``[textbook_id:c]`` — section truncated mid-word
-      * ``[textbook_id]`` — section + page missing
-      * ``[textbook_id:ch1.s1]`` — page missing
-      * ``[textbook_id:ch99.s99:p01]`` — well-formed but the
-        section/page combination doesn't resolve to any chunk in the
-        knowledge base. When ``valid_tokens`` is supplied (a set of
-        every token the KB recognises), well-formed tokens that
-        aren't in the set are stripped too. Without this guard the
-        verifier counts them as ``malformed``.
-
-    These would otherwise be counted as ``malformed`` by the verifier
-    and inflate the failure-mode bucket. Stripping them at write-time
-    leaves the surrounding claim text intact and lets the verifier
-    score only the well-formed citations the writer produced.
-
-    When ``textbook_id`` is None / empty (vanilla path) this is a
-    no-op — vanilla artifacts contain no citation tokens at all.
-    """
-    if not textbook_id or not text:
-        return text
-    import re as _re
-    # Match any bracketed token starting with the textbook_id (the prefix
-    # has to be followed by either ":" or "]" so we don't accidentally
-    # match a substring of a different identifier).
-    suspect_re = _re.compile(
-        r"\[" + _re.escape(textbook_id) + r"(?::[^\]]*)?\]"
-    )
-    out_parts = []
-    last = 0
-    for m in suspect_re.finditer(text):
-        tok = m.group(0)
-        if _CITATION_TOKEN_CANONICAL_RE.fullmatch(tok):
-            # Well-formed; check it actually resolves to a real KB chunk
-            # when caller supplied the valid-token set.
-            if valid_tokens is None or tok in valid_tokens:
-                continue  # leave it alone
-            # Else: well-formed but unresolvable → strip it (treated
-            # the same as a syntactically broken token).
-        # Malformed (syntactic) or unresolvable (semantic):
-        # keep everything up to this token, drop the token.
-        out_parts.append(text[last:m.start()])
-        last = m.end()
-        # Also collapse one preceding space if it was attached to the
-        # token (e.g. "word [bad_tok]" → "word" not "word ").
-        if out_parts and out_parts[-1].endswith(" "):
-            out_parts[-1] = out_parts[-1][:-1]
-    out_parts.append(text[last:])
-    if last == 0:
-        return text  # no malformed found; return original
-    return "".join(out_parts)
 
 
 _SECTION_TITLE_DECOR_RE = re.compile(
@@ -681,6 +588,32 @@ def _section_word_counts(chunks):
     return counts
 
 
+# Slide-budget scaling (grounded path). The configured slide count is treated
+# as the budget for a typical chapter of _BUDGET_REFERENCE_SECTIONS bound
+# sections; chapters that bind more/less content scale up/down within
+# [_BUDGET_MIN_SCALE, _BUDGET_MAX_SCALE] so a content-rich chapter (e.g.
+# clustering, ~12 sections) gets more slides than a thin one — without the
+# per-chapter cost running away. Reference is set slightly above the historical
+# default so the course-wide total stays close to the configured budget.
+_BUDGET_REFERENCE_SECTIONS = 8
+_BUDGET_MIN_SCALE = 0.7
+_BUDGET_MAX_SCALE = 1.3
+
+
+def _scaled_slide_budget(base_target: int, n_sections: int) -> int:
+    """Scale the per-chapter slide budget by how many textbook sections are
+    bound (more content -> more slides) relative to a reference chapter,
+    clamped so per-chapter cost stays bounded. Falls back to ``base_target``
+    when no sections are bound (vanilla / off-textbook chapters)."""
+    if n_sections <= 0:
+        return base_target
+    scaled = round(base_target * n_sections / _BUDGET_REFERENCE_SECTIONS)
+    return max(
+        round(_BUDGET_MIN_SCALE * base_target),
+        min(round(_BUDGET_MAX_SCALE * base_target), scaled),
+    )
+
+
 _EXAMPLE_ID_RE = re.compile(
     r"\bExample\s+(\d+\.\d+)\b[^.]{0,180}",
     re.IGNORECASE,
@@ -781,6 +714,111 @@ def _extract_includegraphics(text):
     return _INCLUDEGRAPHICS_RE.findall(text)
 
 
+# A figure placement = the \includegraphics line plus an optional \caption line
+# right after it. Used to dedupe an image the matcher placed on more than one
+# slide (each with an invented caption).
+_FIGURE_PLACEMENT_RE = re.compile(
+    r"[ \t]*\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}[^\n]*\n"
+    r"(?:[ \t]*\\caption\{[^}]*\}[^\n]*\n)?"
+)
+
+
+def _dedupe_repeated_figures(text):
+    """Keep each image's FIRST placement in the deck and strip later ones — the
+    \\includegraphics together with its \\caption, so no orphan caption is left
+    behind. The figure matcher can pick the same image for several slides; a
+    figure reused 3x with three different invented captions is a defect. Matched
+    by image basename. No-op when the deck has no figures."""
+    if not text or "\\includegraphics" not in text:
+        return text
+    seen = set()
+
+    def _repl(m):
+        key = m.group(1).strip().rsplit("/", 1)[-1]
+        if key in seen:
+            return ""
+        seen.add(key)
+        return m.group(0)
+
+    return _FIGURE_PLACEMENT_RE.sub(_repl, text)
+
+
+_FRAMETITLE_RE = re.compile(r"\\frametitle\{([^}]*)\}")
+_NAV_SKIP_TITLES = frozenset(
+    {"learning objectives", "key takeaways", "outline", "agenda", "summary"}
+)
+
+_FRAME_RE = re.compile(r"\\begin\{frame\}(?:\[[^\]]*\])?(.*?)\\end\{frame\}", re.S)
+
+
+def _drop_empty_frames(text):
+    """Remove frames that render blank — a frametitle with no figure and no
+    text body. The writer sometimes emits a figure-dedicated slide ("Diagram:
+    ...", "Illustration of ...") that never receives a figure, leaving an
+    empty frame that ships as a blank slide. Run after the figure passes
+    (which can empty a frame by stripping its only image) and before
+    navigation insertion (so the agenda/recap never list a dropped slide).
+    No-op when every frame carries content."""
+    if not text or "\\begin{frame}" not in text:
+        return text
+
+    def _has_content(body):
+        if "\\includegraphics" in body:
+            return True
+        b = _FRAMETITLE_RE.sub("", body)                # drop the title
+        b = re.sub(r"\\(begin|end)\{[^}]*\}", "", b)    # env delimiters (name isn't content)
+        b = re.sub(r"\[[^\]]*\]", "", b)                # bracket options like [fragile]
+        b = re.sub(r"\\[a-zA-Z]+\*?", "", b)            # command tokens, keep braced text
+        b = re.sub(r"[{}]", "", b)                      # remaining braces
+        return bool(re.search(r"[A-Za-z0-9]", b))
+
+    return _FRAME_RE.sub(
+        lambda m: m.group(0) if _has_content(m.group(1)) else "", text
+    )
+
+
+def _insert_navigation_frames(text):
+    """Insert a 'Learning Objectives' frame after the opening slide and a 'Key
+    Takeaways' recap at the end, derived from the deck's own topic titles. The
+    soft-prompt instruction for these is unreliable, so this guarantees the
+    author-style scaffolding deterministically. No-op on a deck with no frames."""
+    if not text or "\\begin{frame}" not in text:
+        return text
+    titles = _FRAMETITLE_RE.findall(text)
+    topics = []
+    for t in titles[1:]:  # skip the opening slide's title
+        tl = re.sub(r"\s+", " ", t).strip()
+        if not tl or tl.lower() in _NAV_SKIP_TITLES or tl in topics:
+            continue
+        topics.append(tl)
+    if not topics:
+        return text
+    n = min(6, len(topics))
+    step = max(1, len(topics) // n)
+    chosen = topics[::step][:6]
+    items = "\n".join(f"\\item {t}" for t in chosen)
+    obj_frame = (
+        "\\begin{frame}\n\\frametitle{Learning Objectives}\n"
+        "By the end of this chapter, you should be able to understand and apply:\n"
+        "\\begin{itemize}\n" + items + "\n\\end{itemize}\n\\end{frame}\n\n"
+    )
+    rec_frame = (
+        "\n\\begin{frame}\n\\frametitle{Key Takeaways}\n"
+        "This chapter covered:\n"
+        "\\begin{itemize}\n" + items + "\n\\end{itemize}\n\\end{frame}\n"
+    )
+    end1 = text.find("\\end{frame}")
+    if end1 != -1:
+        cut = end1 + len("\\end{frame}")
+        text = text[:cut] + "\n\n" + obj_frame + text[cut:]
+    doc_end = text.rfind("\\end{document}")
+    if doc_end != -1:
+        text = text[:doc_end] + rec_frame + text[doc_end:]
+    else:
+        text = text + rec_frame
+    return text
+
+
 # A bullet / line that promises a visual but supplies none — "...can be
 # illustrated graphically:", "...as shown below:", "Visual Representation:
 # ... depicted here:". When the enclosing frame has no \includegraphics,
@@ -799,17 +837,40 @@ _VISUAL_LEADIN_LINE_RE = re.compile(
     r"illustration|graphic(?:al)? (?:representation|depiction))\b[^.\n]*:\s*$"
 )
 
-# A pointer sentence that refers to a figure which isn't there — "refer to
-# the accompanying figure", "this figure highlights …", "the following
-# figure shows …". Stripped only on frames with no resolving figure.
+# Deictic figure-pointer language — phrases that point AT a figure rather than
+# describe one in the abstract: "the following figure", "the figure below", "in
+# the following figure, we illustrate …", "in Figure 1.9", "we include a
+# relevant figure", "refer to the accompanying figure". On a frame with no
+# resolving figure (the guard in _strip_dangling_figure_promises) such a pointer
+# is necessarily dangling. Indefinite "a figure that shows …" is NOT a pointer
+# and is deliberately excluded.
+_DEICTIC_FIGURE = (
+    r"(?:in |on )?the following figure|"
+    r"the figure below|figure below|"
+    r"the (?:above|adjacent|accompanying|preceding) figure|"
+    r"this figure|that figure|"
+    r"(?:refer to|see|consider|note) (?:the )?(?:accompanying |following |above )?"
+    r"(?:figure|diagram|illustration|image|plot)|"
+    r"in (?:figure|fig\.?)\s*\d+(?:\.\d+)?|"
+    r"(?:we|i) (?:include|provide|present|add|show|illustrate|depict|visualize)"
+    r"[^.\n]*\bfigure|"
+    r"(?:this|the) figure\b[^.\n]*\b(?:shows|highlights|depicts|illustrates|"
+    r"displays|represents|provides|presents|demonstrates|captures|reveals|"
+    r"indicates|visualizes|visualises|conveys|summarizes|summarises|"
+    r"reflects|portrays|outlines)|"
+    r"as (?:shown|depicted|illustrated) in the figure"
+)
+# A LINE that BEGINS with a figure pointer is a pure promise — drop the whole
+# line, including any continuation clause ("… It shows three clusters:").
+_FIGURE_PROMISE_LEADING_LINE_RE = re.compile(
+    r"(?im)^[ \t]*(?:\\item\s+)?(?:" + _DEICTIC_FIGURE + r")\b.*$"
+)
+# A figure pointer that appears MID-line, AFTER a real sentence — strip only
+# that one sentence (bounded by the surrounding periods) so the real leading
+# sentence on the same line is preserved (don't blank a content slide that
+# merely ends with a dangling "The following figure illustrates …").
 _FIGURE_REFERENCE_SENTENCE_RE = re.compile(
-    r"(?im)^[^.\n]*\b(?:refer to the (?:accompanying |following )?figure|"
-    r"(?:this|the|the accompanying|the following) figure (?:shows|"
-    r"highlights|depicts|illustrates|displays|represents|provides|"
-    r"presents|details|demonstrates|gives|offers|outlines|captures|"
-    r"shows the|portrays)|"
-    r"as (?:shown|depicted|illustrated) in the figure(?: below)?)\b"
-    r"[^.\n]*[.:]\s*$"
+    r"(?im)[^.\n]*\b(?:" + _DEICTIC_FIGURE + r")\b[^.\n]*[.:]"
 )
 
 
@@ -842,41 +903,25 @@ def _strip_dangling_figure_promises(text):
             return frame  # a real figure renders — leave the text alone
         frame = _FIGURE_PROMISE_LINE_RE.sub("", frame)
         frame = _VISUAL_LEADIN_LINE_RE.sub("", frame)
+        frame = _FIGURE_PROMISE_LEADING_LINE_RE.sub("", frame)
         frame = _FIGURE_REFERENCE_SENTENCE_RE.sub("", frame)
+        # No figure on this frame resolves to a real file, so any
+        # \includegraphics here is a hallucinated path / external URL (the
+        # real ones were guarded above) and any \caption is now orphaned.
+        # Strip both so a frame left with nothing but a figure that never
+        # appears is recognised as empty by _drop_empty_frames downstream
+        # (it treats a bare \includegraphics as content, so the dead command
+        # must go for the empty-frame drop to fire).
+        frame = re.sub(
+            r"[ \t]*\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}[^\n]*\n?", "", frame
+        )
+        frame = re.sub(r"[ \t]*\\caption\*?\{[^{}]*\}[^\n]*\n?", "", frame)
         return frame
 
     return re.sub(
         r"\\begin\{frame\}.*?\\end\{frame\}",
         _process_frame, text, flags=re.DOTALL,
     )
-
-
-# Sourcing figure captions from the textbook's own "Figure N.M <caption>"
-# lines, matched to an extracted figure by the page number embedded in
-# its filename. Lets the save chain caption any figure the writer left
-# bare, using the book's wording rather than a generic placeholder.
-_FIGURE_CAPTION_SOURCE_RE = re.compile(
-    r"Figure\s+(\d+\.\d+)\*{0,2}\s+([A-Z][^\n]{8,110}?)(?:\.|\n|$)"
-)
-_FIGURE_PATH_PAGE_RE = re.compile(r"[_p\-](\d{3,4})[_\-]\d+\.png")
-
-
-def _build_figure_caption_map(kb_chunks):
-    """Map ``page_number -> [(figure_number, caption_text), ...]`` parsed
-    from the textbook's own ``Figure N.M <caption>`` lines. Source for
-    captioning figures the writer left bare. Empty input → empty map."""
-    from collections import defaultdict
-    out = defaultdict(list)
-    for c in kb_chunks or []:
-        pg = getattr(c, "page_start", 0) or 0
-        if not pg:
-            continue
-        for m in _FIGURE_CAPTION_SOURCE_RE.finditer(c.text or ""):
-            cap = re.sub(r"[*_]+", "", m.group(2)).strip()
-            cap = re.sub(r"\b([A-Za-z]) -([A-Za-z])", r"\1-\2", cap)
-            if cap:
-                out[pg].append((m.group(1), cap))
-    return dict(out)
 
 
 _IMAGE_PATH_MARKER_RE = re.compile(
@@ -933,28 +978,53 @@ def _first_image_path(text):
     return (m.group(1) or m.group(2) or "").strip()
 
 
-def _caption_for_figure_path(path, caption_map):
-    """Best textbook caption for a figure path, matched by the page
-    number in its filename (then nearby pages). Returns
-    ``"Figure N.M: <caption>"`` or ``""`` when none is found."""
-    if not caption_map:
-        return ""
-    m = _FIGURE_PATH_PAGE_RE.search(path or "")
-    if not m:
-        return ""
-    pg = int(m.group(1))
-    for dp in (0, -1, 1, -2, 2):
-        cands = caption_map.get(pg + dp)
-        if cands:
-            num, cap = cands[0]
-            return f"Figure {num}: {cap}"
-    return ""
+def _build_figure_caption_by_path(kb_chunks):
+    """Map image FILENAME -> its OWN caption, pairing each figure's
+    ``[IMAGE_PATH: ...]`` with the ``Figure N: <caption>`` text in the SAME
+    chunk (atomic — the caption travels with its image). Preferred over the
+    page-based map, which returns the first caption on a page and so
+    mis-captions multi-figure pages. Empty input → empty map."""
+    out = {}
+    for c in kb_chunks or []:
+        text = c.text or ""
+        pm = _IMAGE_PATH_MARKER_RE.search(text)
+        if not pm:
+            continue
+        fname = (pm.group(1) or pm.group(2) or "").strip().rsplit("/", 1)[-1]
+        if not fname:
+            continue
+        cm = re.search(
+            r"Figure\s+[\d.]+\*{0,2}\s*[:.]?\s*(.+)", text[: pm.start()], re.S
+        )
+        if not cm:
+            continue
+        cap = re.sub(r"[*_]+", "", cm.group(1)).strip()
+        if cap:
+            out[fname] = cap
+    return out
 
 
-def _inject_missing_figure_captions(text, caption_map, figure_filenames=None):
+def _caption_for_figure_path(path, by_path=None):
+    """Textbook caption for a figure path — **strictly atomic**. Returns ONLY
+    the caption that shipped in the SAME chunk as this exact image (``by_path``,
+    keyed on filename); if this image has no paired caption, returns ``""`` and
+    the figure renders bare (the converter still adds a generic "Figure."
+    label). There is deliberately NO page-based fallback: a page lookup can only
+    guess among the captions on that page, which is exactly how a scatter plot
+    ends up under a "data characterization" label — a confidently-wrong caption
+    is worse than none. Strict atomicity means zero downstream guessing."""
+    if not by_path:
+        return ""
+    return by_path.get((path or "").rsplit("/", 1)[-1], "")
+
+
+def _inject_missing_figure_captions(text, figure_filenames=None,
+                                    by_path=None):
     """Add a ``\\caption{}`` after any ``\\includegraphics`` that has none,
-    sourced from the textbook's own figure caption (matched by page) so no
-    figure renders bare. Writer-supplied captions are left untouched.
+    sourced from the textbook's **atomic** caption for THAT exact image
+    (``by_path`` — the caption that shipped in the same chunk as the image), so
+    a caption can never describe a different figure. An image with no paired
+    caption is left bare. Writer-supplied captions are left untouched.
 
     Two guards keep captions honest:
       * the image path must RESOLVE on disk — a caption for a missing
@@ -963,8 +1033,8 @@ def _inject_missing_figure_captions(text, caption_map, figure_filenames=None):
         figure (not an equation crop), so a formula never gets a
         "Figure N.M" caption.
 
-    No-op when caption_map is empty or there are no figures."""
-    if not text or not caption_map or "\\includegraphics" not in text:
+    No-op when there is no caption source or no figures."""
+    if not text or not by_path or "\\includegraphics" not in text:
         return text
     out = []
     pos = 0
@@ -982,48 +1052,13 @@ def _inject_missing_figure_captions(text, caption_map, figure_filenames=None):
             name = path.rsplit("/", 1)[-1]
             if name not in figure_filenames:
                 continue  # equation crop / non-figure — don't label it "Figure"
-        cap = _caption_for_figure_path(path, caption_map)
+        cap = _caption_for_figure_path(path, by_path=by_path)
         if cap:
             cap_tex = (cap.replace("&", "\\&").replace("%", "\\%")
                           .replace("_", "\\_").replace("#", "\\#"))
             out.append("\n    \\caption{" + cap_tex + "}")
     out.append(text[pos:])
     return "".join(out)
-
-
-_CITATION_TOKEN_ANY_RE = re.compile(
-    r"\s*\[[A-Za-z][A-Za-z0-9_]*:ch\d+(?:\.s\d+)?:p\d+\]"
-)
-
-_CITATION_TOKEN_LATEX_WRAPPED_RE = re.compile(
-    r"\s*\\texttt\{\[[A-Za-z](?:[A-Za-z0-9_]|\\_)*:ch\d+(?:\.s\d+)?:p\d+\]\}"
-)
-
-
-def _strip_all_citation_tokens(text):
-    """Drop every well-formed citation token from a user-facing artifact.
-
-    Runs LAST in the strip chain — after the malformed-strip /
-    Gate B / write-time-verifier passes have already removed the bad
-    tokens. Author-curated lecture decks do not surface inline source
-    tags; carrying them through to slides / script / assessment
-    clutters the reader and the surrounding claim text stays intact
-    after the token is removed.
-
-    Matches the canonical ``[textbook_id:ch{N}(.s{M})?:p{N}]`` shape
-    only. Any malformed token that survived earlier passes also gets
-    cleaned here because the regex enforces the canonical shape.
-
-    The pattern absorbs a leading whitespace character so a removed
-    token does not leave a double space behind. Returns the original
-    string unchanged when no tokens are present (vanilla path).
-    """
-    if not text:
-        return text
-    if "[" not in text:
-        return text
-    text = _CITATION_TOKEN_LATEX_WRAPPED_RE.sub("", text)
-    return _CITATION_TOKEN_ANY_RE.sub("", text)
 
 
 def _dedupe_results(results):
@@ -1091,9 +1126,7 @@ class SlidesDeliberation:
                  retriever=None,
                  section_ids=None,
                  textbook_id: str = None,
-                 citation_usage_tracker=None,
-                 semantic_gate=None,
-                 write_time_verifier=None,
+                 content_verifier=None,
                  ):
         """
         Initialize SlidesDeliberation
@@ -1126,20 +1159,11 @@ class SlidesDeliberation:
         self.retriever = retriever
         self.section_ids = section_ids
         self.textbook_id = textbook_id
-        # Diversity cap. When set, retrieval results whose chunks have
-        # already been cited cap-many times across the run are dropped
-        # from the evidence block, forcing the writer onto fresh chunks.
+        # Advisory content-fidelity verifier. When set (grounded path only),
+        # the finished artifacts are judged against retrieved evidence after
+        # the save and a report is logged. Log-only — never mutates artifacts.
         # Vanilla path leaves this None and behavior is byte-identical.
-        self.citation_usage_tracker = citation_usage_tracker
-        # Gate A + Gate B: claim-chunk similarity filter. When set,
-        # Gate A pre-filters retrieval results before evidence block
-        # construction; Gate B post-filters citation tokens after the
-        # writer commits. Vanilla path leaves this None.
-        self.semantic_gate = semantic_gate
-        # LLM write-time citation verifier. Per-citation YES/NO check
-        # after Gate B (semantic) catches the obvious cases for free.
-        # Runs LAST in the strip chain.
-        self.write_time_verifier = write_time_verifier
+        self.content_verifier = content_verifier
         # Per-chapter top_k tuned by the density of chunks in the
         # chapter's bound sections. Dense chapters (many candidate
         # chunks) get a wider window so the LLM sees more options;
@@ -1164,18 +1188,13 @@ class SlidesDeliberation:
     _EVIDENCE_TOP_K_MIN = 5        # floor for thin chapters
     _EVIDENCE_TOP_K_MAX = 12       # ceiling — beyond this hits the word budget
     _CHUNKS_PER_TOP_K_STEP = 12    # ~12 chunks of density per top_k step
-    _EXAMPLE_SNIPPET_WORDS = 22    # how much of the top excerpt to mirror as the worked example
 
     # Artifact-type vocabulary for `_build_evidence_block`. The strict
     # rule-set ("slide") applies to slides + assessments — both are
-    # READ documents where inline citations don't disrupt the reader.
-    # The relaxed rule-set ("script") applies to speaker scripts —
-    # SPOKEN narration where back-to-back inline citations and
-    # mandatory direct quotation break narrative flow. An earlier
-    # uplift re-eval showed slide_scripts:alignment + :coherence
-    # dropping monotonically across baselines (-0.66 vs vanilla on each)
-    # while the same metrics held / improved on slides + assessments —
-    # the differentiated rule-set is the structural fix.
+    # READ documents. The relaxed rule-set ("script") applies to
+    # speaker scripts — SPOKEN narration where mandatory direct
+    # quotation breaks narrative flow, so RULE 2 softens to "paraphrase
+    # naturally."
     _ARTIFACT_TYPES = ("slide", "script", "assessment")
 
     # Inline markers carried by chunks that came through the hybrid
@@ -1222,31 +1241,23 @@ class SlidesDeliberation:
     ) -> tuple:
         """Retrieve textbook evidence for `query` and format it for a prompt.
 
-        Returns ``(evidence_block, citation_rules)`` — both empty strings
-        when ``self.retriever is None`` (vanilla path) or retrieval yielded
-        nothing in scope. ``evidence_block`` is a chunk of plain text the
-        caller prepends to its prompt; ``citation_rules`` is an instruction
-        the caller appends.
+        Returns ``(evidence_block, "")`` — the second element is always an
+        empty string (the 2-tuple shape is kept so callers need no signature
+        change). ``evidence_block`` is empty too when ``self.retriever is
+        None`` (vanilla path) or retrieval yielded nothing in scope; it is a
+        chunk of plain text the caller prepends to its prompt.
 
         ``artifact`` is one of ``"slide" | "script" | "assessment"``; it
-        toggles rules 1 + 2 between strict (slide/assessment — cite every
-        claim, anchor exactly) and relaxed (script — cite each concept
-        once at sentence end, paraphrase naturally). Rules 3 / 4 / 5
-        (abstain, exact tokens, cite-correct-excerpt) are universal and
-        identical across artifacts.
+        toggles RULE 2 (paraphrase / teach-in-own-words) between the slide
+        and spoken-script phrasings. RULES 3 / 6 / 7 (abstain, preserve
+        worked examples, preserve math notation) are universal.
 
-        Design notes (faithfulness uplift over the prior format):
-          * Structured per-excerpt headers (TOKEN / SOURCE / PAGE / PASSAGE)
-            give the LLM clear labels to anchor on, vs a flat token+text.
-          * Five numbered rules covering the three failure modes the
-            verifier surfaced (hallucination, wrong-cite, loose paraphrase),
-            plus an abstain rule for unsupported claims.
-          * The worked example mirrors a real snippet from the TOP retrieved
-            chunk so the LLM has a literal pattern to imitate — not a
-            generic placeholder.
-          * Script mode (2026-05-27 fix) softens RULE 1 + RULE 2 so
-            spoken narration doesn't get peppered with sentence-interrupting
-            citation tokens and broken-voice direct quotes.
+        Design notes:
+          * Structured per-excerpt headers (SOURCE / PAGE / KIND / PASSAGE)
+            give the LLM clear labels to anchor on, vs a flat text dump.
+          * Visual-content rules (the [IMAGE_PATH:] -> \\includegraphics
+            directive) are appended only when the evidence carries hybrid-
+            ingester markers, so vanilla prompts are unaffected.
         """
         if self.retriever is None:
             return "", ""
@@ -1278,11 +1289,11 @@ class SlidesDeliberation:
             # Defense-in-depth cost protection: if retrieval has failed
             # the same way many times in a row, the run is no longer
             # producing grounded output but is still spending money on
-            # writer + verifier calls. Abort cleanly rather than letting
-            # the loop drift indefinitely. Threshold is intentionally
-            # generous (allows real transient blips like brief rate
-            # limits) but short enough to catch genuinely-broken
-            # retrieval before it racks up cost.
+            # writer calls. Abort cleanly rather than letting the loop
+            # drift indefinitely. Threshold is intentionally generous
+            # (allows real transient blips like brief rate limits) but
+            # short enough to catch genuinely-broken retrieval before it
+            # racks up cost.
             cls = type(self)
             count_attr = "_consecutive_retrieval_failures"
             last_attr = "_last_retrieval_error_type"
@@ -1300,8 +1311,8 @@ class SlidesDeliberation:
                 raise RuntimeError(
                     f"Grounding retrieval failed {n} times in a row with the "
                     f"same error class ({err_type}). Aborting run to prevent "
-                    f"further cost (writer + verifier calls keep running even "
-                    f"though no grounded evidence is reaching the prompt). "
+                    f"further cost (writer calls keep running even though no "
+                    f"grounded evidence is reaching the prompt). "
                     f"Last error: {e!r}"
                 )
             return "", ""
@@ -1317,12 +1328,11 @@ class SlidesDeliberation:
         # The chunker emits OVERLAP_TOKENS of overlap between adjacent
         # prose chunks, so the retriever can occasionally rank two
         # neighboring chunks both in the top-K. Without dedup the LLM
-        # sees redundant content and may cite the wrong instance
-        # (manifests as `wrong_chunk_cited` or `loose_paraphrase` in the
-        # verifier). We drop later occurrences of any chunk whose text
-        # is byte-for-byte equal to an earlier kept chunk OR whose first
-        # ~40 words match an earlier kept chunk (catches the overlap
-        # case where the start of chunk N+1 equals the end of chunk N).
+        # sees redundant content. We drop later occurrences of any chunk
+        # whose text is byte-for-byte equal to an earlier kept chunk OR
+        # whose first ~40 words match an earlier kept chunk (catches the
+        # overlap case where the start of chunk N+1 equals the end of
+        # chunk N).
         results = _dedupe_results(results)
 
         # Coverage diversification — for chapter-level retrieval (not
@@ -1352,26 +1362,6 @@ class SlidesDeliberation:
                         deferred.append(r)
                 results = diverse + deferred
 
-        # Gate A — pre-evidence semantic filter: drop results whose
-        # chunk text scores below the claim-chunk similarity threshold.
-        # Sentence-transformer cosine ($0, CPU). When the gate is None
-        # or encoder load failed, this is a no-op.
-        gate = getattr(self, "semantic_gate", None)
-        if gate is not None:
-            results = gate.gate_a_filter_results(query, results)
-
-        # Diversity cap: drop results whose chunk has already been
-        # cited cap-many times across the run. When the tracker is None
-        # (vanilla path) this is a no-op. Defensive ``getattr`` lets
-        # bypass-init test skeletons skip the wiring.
-        tracker = getattr(self, "citation_usage_tracker", None)
-        if tracker is not None:
-            results = [r for r in results if not tracker.is_over_cap(r.chunk)]
-            if not results:
-                # All candidates were over cap — fall through to vanilla
-                # behavior rather than emitting an empty evidence block.
-                return "", ""
-
         # Guarantee visual chunk inclusion for slide / assessment
         # artifacts. An earlier baseline lost 9 of 11 \includegraphics
         # tokens: the forensic replay traced it to visual chunks being
@@ -1399,56 +1389,61 @@ class SlidesDeliberation:
                 text = " ".join(words[:budget]) + " …"
             else:
                 text = " ".join(words)
-            chapter_title = (getattr(r.chunk, "chapter_title", "") or "").strip()
-            section_title = (getattr(r.chunk, "section_title", "") or "").strip()
-            source_line = " / ".join(s for s in (chapter_title, section_title) if s) or "(untitled)"
-            # Show the page RANGE for multi-page chunks so the LLM can
-            # cite the most relevant page within the chunk's span (the
-            # verifier index registers every page in the range, so any
-            # page-in-range token resolves to this chunk).
-            try:
-                page_label = r.chunk.page_range_label()
-            except AttributeError:
-                page_label = f"p{r.chunk.page_start}"
-            # Surface the chunk's kind tag so the writer knows whether
-            # an excerpt is a worked example, an equation, a figure
-            # caption, or plain prose. Used by RULE 6 (example
-            # preservation) and RULE 7 (visual marker handling) in the
-            # slide rule set; harmless when the kind is plain prose.
-            kinds = getattr(r.chunk, "kinds", None) or ["prose"]
-            kind_label = "+".join(kinds)
-            block = (
-                f"━━ EXCERPT {idx} of {len(results)} "
-                f"{'━' * max(0, 50 - len(str(idx)) - len(str(len(results))))}\n"
-                f"  TOKEN   : {r.chunk.citation_token()}\n"
-                f"  SOURCE  : {source_line}\n"
-                f"  PAGE    : {page_label}\n"
-                f"  KIND    : {kind_label}\n"
-                f"  PASSAGE :\n"
-                f"  «{text}»"
-            )
-            blocks.append(block)
+            blocks.append(self._excerpt_block(r, idx, len(results), text))
             budget -= len(text.split())
             if budget <= 0:
                 break
 
-        first_token = results[0].chunk.citation_token()
-        # Mirror a short snippet of the top excerpt as the worked example —
-        # gives the model a literal in-context pattern to imitate rather
-        # than a generic placeholder sentence.
-        snippet_words = results[0].chunk.text.split()[: self._EXAMPLE_SNIPPET_WORDS]
-        example_snippet = " ".join(snippet_words).rstrip(",.;:") + "…"
+        # Artifact-conditioned RULE 2 (teach / paraphrase). RULES 3, 6, 7
+        # are universal.
+        evidence_block = (
+            self._evidence_directive(artifact, len(blocks))
+            + "\n\n".join(blocks)
+            + "\n\n"
+            "════════════════════════════════════════════════════════════════════\n"
+        )
 
-        # Artifact-conditioned RULES 1 + 2. RULES 3, 4, 5 are universal.
+        # ---- Visual-content rules: only added when the evidence
+        # ---- actually contains hybrid-ingester markers. Vanilla
+        # ---- chunks contain none of these, so the rules block is empty
+        # ---- and the prompt is byte-identical to the prior behavior.
+        joined_text = "\n".join(blocks)
+        visual_rules = self._build_visual_content_rules(joined_text, artifact)
+        if visual_rules:
+            evidence_block = evidence_block + visual_rules
+
+        return evidence_block, ""
+
+    def _excerpt_block(self, r, idx, total, text):
+        """Format one retrieval result as a structured excerpt block
+        (SOURCE / PAGE / KIND / PASSAGE). ``total`` may be an int (flat block)
+        or a placeholder string (grouped block)."""
+        chunk = r.chunk
+        chapter_title = (getattr(chunk, "chapter_title", "") or "").strip()
+        section_title = (getattr(chunk, "section_title", "") or "").strip()
+        source_line = " / ".join(
+            s for s in (chapter_title, section_title) if s
+        ) or "(untitled)"
+        try:
+            page_label = chunk.page_range_label()
+        except AttributeError:
+            page_label = f"p{getattr(chunk, 'page_start', '?')}"
+        kinds = getattr(chunk, "kinds", None) or ["prose"]
+        kind_label = "+".join(kinds)
+        bar = "━" * max(0, 50 - len(str(idx)) - len(str(total)))
+        return (
+            f"━━ EXCERPT {idx} of {total} {bar}\n"
+            f"  SOURCE  : {source_line}\n"
+            f"  PAGE    : {page_label}\n"
+            f"  KIND    : {kind_label}\n"
+            f"  PASSAGE :\n"
+            f"  «{text}»"
+        )
+
+    def _evidence_directive(self, artifact, n_excerpts):
+        """The mandatory-rules header (RULE 2/3/6/7) that precedes the
+        excerpts — shared by the flat and grouped evidence blocks."""
         if artifact == "script":
-            rule_1 = (
-                "  RULE 1 (CITE EACH CONCEPT, NOT EACH SENTENCE). This is a "
-                "SPOKEN SCRIPT, not a written document. Cite the textbook ONCE "
-                "per major concept, placed at a natural sentence boundary so "
-                "it does not interrupt narrative flow. Avoid back-to-back "
-                f"citations. Format: \"...nearest-mean assignment {first_token}.\"\n"
-                "  — not \"...nearest-mean {first_token} assignment...\""
-            )
             rule_2 = (
                 "  RULE 2 (PARAPHRASE NATURALLY). This is spoken narration — "
                 "use plain, conversational language while keeping the textbook's "
@@ -1459,23 +1454,7 @@ class SlidesDeliberation:
                 "teacher explaining, not someone reading aloud from a book."
             )
             header_label = "TEXTBOOK GROUNDING — MANDATORY RULES FOR SPOKEN SCRIPT"
-            footer_intro = (
-                "GROUNDING REMINDER (apply while writing this spoken script):"
-            )
-            footer_rule_1 = (
-                f"  • Each major concept gets ONE citation token (e.g. "
-                f"{first_token}), placed at a natural sentence boundary."
-            )
-            footer_rule_2 = (
-                "  • Paraphrase naturally in the speaker's voice — direct "
-                "quotation only when technical precision demands it."
-            )
         else:  # "slide" or "assessment"
-            rule_1 = (
-                "  RULE 1 (CITE EVERY SOURCED CLAIM). Every factual claim drawn "
-                "from an excerpt MUST end with that excerpt's citation token, "
-                f"exactly as printed in its header (e.g. {first_token})."
-            )
             rule_2 = (
                 "  RULE 2 (TEACH IN YOUR OWN WORDS — no quote-dumping). "
                 "Write each bullet as clear instructional prose, the way a "
@@ -1499,36 +1478,18 @@ class SlidesDeliberation:
                 "of it."
             )
             header_label = "TEXTBOOK GROUNDING — MANDATORY RULES"
-            footer_intro = "GROUNDING REMINDER (apply while writing):"
-            footer_rule_1 = (
-                f"  • Every textbook-derived claim ends with its citation token "
-                f"(e.g. {first_token})."
-            )
-            footer_rule_2 = (
-                "  • Teach in your own clear words; reserve direct quotes for "
-                "precise definitions or formulas only (at most one per slide)."
-            )
-
-        evidence_block = (
+        return (
             "════════════════════════════════════════════════════════════════════\n"
             f"{header_label}\n"
             "════════════════════════════════════════════════════════════════════\n\n"
-            f"You have {len(blocks)} excerpts from the textbook below. They are your "
+            f"You have {n_excerpts} excerpts from the textbook below. They are your "
             "AUTHORITATIVE source for this topic. Follow these rules without "
             "exception:\n\n"
-            + rule_1 + "\n\n"
             + rule_2 + "\n\n"
             "  RULE 3 (ABSTAIN IF UNSUPPORTED). If you cannot ground a claim in "
             "ANY excerpt below, either drop the claim or restate what the textbook "
             "DOES cover on that topic. Do NOT make textbook-attributed claims that "
             "the excerpts do not support.\n\n"
-            "  RULE 4 (EXACT TOKENS ONLY). Each citation token must appear EXACTLY "
-            "as printed in the excerpt header — no truncation, no modification, "
-            "never invented. A token like \"[textbook_id:c]\" is wrong and "
-            "will be flagged.\n\n"
-            "  RULE 5 (CITE THE CORRECT EXCERPT). If a claim is supported by "
-            "Excerpt 2, cite Excerpt 2's token — not Excerpt 1's. The cited "
-            "excerpt must be the one that actually supports the claim.\n\n"
             "  RULE 6 (PRESERVE WORKED EXAMPLES). If an excerpt's KIND "
             "header contains \"example\", preserve the concrete trace — "
             "specific data points, iteration steps, intermediate values. "
@@ -1544,47 +1505,77 @@ class SlidesDeliberation:
             "prose (\"the sum of squared distances\") when the source "
             "shows them in notation — preserving the notation is what "
             "makes the slide pedagogically equivalent to the textbook.\n\n"
-            "Example of a well-formed claim drawn from Excerpt 1:\n"
-            f"  \"{example_snippet}\" {first_token}\n\n"
             "═══════════════════════════ EXCERPTS ═══════════════════════════\n\n"
-            + "\n\n".join(blocks)
+        )
+
+    _GROUPED_PER_SLIDE_K = 3
+
+    def _build_grouped_evidence_block(self, outline, artifact="slide"):
+        """Group evidence BY outline slide: each slide-topic gets its own
+        labeled set of excerpts, so the writer sees focused per-slide context
+        instead of one undifferentiated chapter dump. Retrieves per
+        slide-topic (scoped to the bound sections — cheap index lookups, no
+        LLM), dedupes chunks globally so none repeats across slides, and shares
+        one rule header + the total word budget. Returns ``("", "")`` when
+        there is no retriever (vanilla) or no usable outline — the caller then
+        falls back to the flat chapter-level block."""
+        if self.retriever is None or not outline:
+            return "", ""
+        groups = []
+        seen_ids = set()
+        idx = 0
+        budget = self._EVIDENCE_WORD_BUDGET
+        for slide in outline:
+            if budget <= 0:
+                break
+            if not isinstance(slide, dict):
+                continue
+            title = (slide.get("title") or "").strip()
+            desc = (slide.get("description") or "").strip()
+            q = f"{title}. {desc}".strip(". ")
+            if not q:
+                continue
+            try:
+                results = self.retriever.search(
+                    q, top_k=self._GROUPED_PER_SLIDE_K,
+                    section_ids=self.section_ids,
+                )
+            except Exception:
+                continue
+            excerpts = []
+            for r in _dedupe_results(results):
+                cid = getattr(r.chunk, "chunk_id", None) or id(r.chunk)
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                words = (r.chunk.text or "").split()
+                if len(words) > budget:
+                    if budget < 30:
+                        break
+                    text = " ".join(words[:budget]) + " …"
+                else:
+                    text = " ".join(words)
+                idx += 1
+                excerpts.append(self._excerpt_block(r, idx, "—", text))
+                budget -= len(text.split())
+                if budget <= 0:
+                    break
+            if excerpts:
+                label = f"▼ EVIDENCE FOR SLIDE: {title or '(topic)'}"
+                groups.append(label + "\n\n" + "\n\n".join(excerpts))
+        if not groups:
+            return "", ""
+        evidence_block = (
+            self._evidence_directive(artifact, idx)
+            + "\n\n".join(groups)
             + "\n\n"
             "════════════════════════════════════════════════════════════════════\n"
         )
-        citation_rules = (
-            "\n" + footer_intro + "\n"
-            + footer_rule_1 + "\n"
-            + footer_rule_2 + "\n"
-            "  • If you can't find support for a claim in the excerpts above, "
-            "do NOT make that claim. State what the textbook covers instead.\n"
-            "  • Citation tokens must appear EXACTLY as in the excerpt headers. "
-            "Never truncate, modify, or invent tokens.\n"
-            "  • Cite the excerpt that actually supports the claim — not "
-            "whichever token you happen to remember.\n"
-            "  • Any special LaTeX characters from excerpts (& % $ # _ { } ~ ^) "
-            "must be escaped in LaTeX output (e.g. \\& \\% \\_).\n"
-        )
-
-        # ---- Visual-content rules: only added when the evidence
-        # ---- actually contains hybrid-ingester markers. Vanilla
-        # ---- chunks contain none of these, so the rules block is empty
-        # ---- and the prompt is byte-identical to the prior behavior.
-        joined_text = "\n".join(blocks)
+        joined_text = "\n".join(groups)
         visual_rules = self._build_visual_content_rules(joined_text, artifact)
         if visual_rules:
             evidence_block = evidence_block + visual_rules
-
-        return evidence_block, citation_rules
-
-    def _record_emitted_citations(self, text) -> None:
-        """Scan an LLM output for emitted citation tokens and bump the
-        diversity-cap counter. No-op on vanilla path (tracker is None)
-        or when text is empty. Defensive ``getattr`` lets bypass-init
-        test skeletons skip the wiring."""
-        tracker = getattr(self, "citation_usage_tracker", None)
-        if tracker is None or not text:
-            return
-        tracker.scan_and_increment(text)
+        return evidence_block, ""
 
     # Per-slide section binding.
     _PER_SLIDE_TOP_SECTIONS = 2
@@ -1672,10 +1663,10 @@ class SlidesDeliberation:
             kb_chunks = self.retriever.kb.chunks
         except AttributeError:
             return {}
-        cmap = getattr(self, "_fig_caption_map_cache", None)
-        if cmap is None:
-            cmap = _build_figure_caption_map(kb_chunks)
-            self._fig_caption_map_cache = cmap
+        bymap = getattr(self, "_fig_caption_by_path_cache", None)
+        if bymap is None:
+            bymap = _build_figure_caption_by_path(kb_chunks)
+            self._fig_caption_by_path_cache = bymap
         try:
             qv = self.retriever.embedder.embed([query])[0]
             qv = qv / (float(np.linalg.norm(qv)) + 1e-9)
@@ -1684,7 +1675,7 @@ class SlidesDeliberation:
         scores = {}
         for c in candidates:
             path = _first_image_path(c.text)
-            rep = _caption_for_figure_path(path, cmap) if path else ""
+            rep = _caption_for_figure_path(path, by_path=bymap) if path else ""
             if not rep:
                 # Equation / uncaptioned chunk: embed its own prose
                 # (drop the visual markers first).
@@ -1846,8 +1837,7 @@ class SlidesDeliberation:
                     "in a column layout next to descriptive bullets. Do NOT "
                     "tell the student to 'see the textbook' — the actual image "
                     "is included via the path. A slide whose evidence carries an "
-                    "[IMAGE_PATH:] marker and emits NO \\includegraphics is a "
-                    "defect that the verifier will flag."
+                    "[IMAGE_PATH:] marker MUST emit a \\includegraphics for it."
                 )
             else:  # script
                 rule_lines.append(
@@ -2110,41 +2100,10 @@ class SlidesDeliberation:
         assessment_path = os.path.join(self.output_dir, f"assessment.md")
 
         os.makedirs(self.output_dir, exist_ok=True)
-        # Build the set of EVERY citation token the KB recognises so
-        # the stripper can drop well-formed-but-non-resolving tokens
-        # the writer occasionally hallucinates (e.g. plausible-looking
-        # [textbook_id:ch99.s99:p01] that doesn't exist).
-        valid_tokens = None
-        if self.retriever is not None:
-            try:
-                kb_chunks = self.retriever.kb.chunks
-                valid_tokens = set()
-                for c in kb_chunks:
-                    try:
-                        valid_tokens.update(c.citation_tokens_in_range())
-                    except AttributeError:
-                        valid_tokens.add(c.citation_token())
-            except Exception as e:
-                print(f"[grounding] Could not build valid-token set "
-                      f"({type(e).__name__}: {e}); skipping KB-existence check.")
-                valid_tokens = None
-        # Strip malformed citation-shaped tokens before saving so the
-        # downstream verifier doesn't waste judge calls on truncated
-        # tokens like "[textbook_id:c]" or "[textbook_id]". The LLM's
-        # claim text stays; only the broken token is removed.
-        latex_source = _strip_malformed_citation_tokens(
-            latex_source, self.textbook_id, valid_tokens=valid_tokens,
-        )
-        slides_script_md = _strip_malformed_citation_tokens(
-            slides_script_md, self.textbook_id, valid_tokens=valid_tokens,
-        )
-        assessment_md = _strip_malformed_citation_tokens(
-            assessment_md, self.textbook_id, valid_tokens=valid_tokens,
-        )
         # LaTeX cleanup pass — fixes hallucinated \includegraphics
-        # paths, BibTeX-wrapped citations, and ampersand-escape bugs
-        # that broke PDF compilation in earlier baselines. Only affects
-        # LaTeX output (slides.tex); markdown unchanged.
+        # paths, unicode, and ampersand-escape bugs that broke PDF
+        # compilation in earlier baselines. Only affects LaTeX output
+        # (slides.tex); markdown unchanged.
         latex_source = _clean_latex_artifacts(latex_source)
         # Drop dangling "...illustrated graphically:" promises on frames
         # that carry no figure, so a missing [IMAGE_PATH:] marker doesn't
@@ -2152,57 +2111,61 @@ class SlidesDeliberation:
         # only — vanilla frames carry no figure markers, so this stays a
         # no-op there and vanilla output is preserved byte-for-byte.
         if self.retriever is not None:
+            # A figure appears once per deck — keep its first placement and strip
+            # later \includegraphics (+ caption) so the same image isn't reused
+            # across slides with invented captions. Run before the dangling-promise
+            # strip so a slide that loses its duplicate figure gets cleaned up.
+            latex_source = _dedupe_repeated_figures(latex_source)
             latex_source = _strip_dangling_figure_promises(latex_source)
             # Caption any figure the writer left bare, using the textbook's
-            # own "Figure N.M <caption>" line matched by page number. Only
-            # real, on-disk figures get captioned (not equation crops or
-            # missing images).
+            # OWN caption for THAT exact image (atomic — paired in the same IR
+            # chunk). Only real, on-disk figures get captioned (not equation
+            # crops or missing images); an image with no paired caption stays
+            # bare rather than borrow a neighbour's.
             try:
                 kb_chunks = self.retriever.kb.chunks
-                caption_map = _build_figure_caption_map(kb_chunks)
+                caption_by_path = _build_figure_caption_by_path(kb_chunks)
                 figure_filenames = _build_real_figure_filenames(kb_chunks)
                 latex_source = _inject_missing_figure_captions(
-                    latex_source, caption_map, figure_filenames
+                    latex_source, figure_filenames,
+                    by_path=caption_by_path,
                 )
             except AttributeError:
                 pass
 
-        # Gate B — post-emit semantic strip. For each citation token
-        # remaining in the final artifacts, computes claim-chunk
-        # similarity and strips tokens below the gentle threshold (0.30).
-        # Catches "wrong-section-named" cites the writer committed to
-        # despite Gate A's pre-filter — different signal than the
-        # diversity cap and the malformed-token strip.
-        gate = getattr(self, "semantic_gate", None)
-        if gate is not None:
-            latex_source = gate.gate_b_strip_low_similarity(latex_source)
-            slides_script_md = gate.gate_b_strip_low_similarity(slides_script_md)
-            assessment_md = gate.gate_b_strip_low_similarity(assessment_md)
+            # Drop frames the writer emitted as figure-dedicated ("Diagram:
+            # ...", "Illustration of ...") that never received a figure — they
+            # ship as blank slides. After the figure passes (which can empty a
+            # frame) and before nav insertion (so the agenda never lists one).
+            latex_source = _drop_empty_frames(latex_source)
 
-        # LLM write-time verifier. Runs LAST after malformed strip +
-        # Gate B semantic strip have caught the cheap-to-detect cases.
-        # For each remaining citation, asks gpt-4o-mini "does this
-        # excerpt support this claim? YES/NO" and strips on NO.
-        # Cost: ~$0.0001/cite × ~1000 surviving cites ≈ $0.10-0.15/run.
-        verifier = getattr(self, "write_time_verifier", None)
-        if verifier is not None:
-            print(f"[grounding] running write-time verifier on final artifacts...")
-            latex_source = verifier.strip_unsupported(latex_source)
-            slides_script_md = verifier.strip_unsupported(slides_script_md)
-            assessment_md = verifier.strip_unsupported(assessment_md)
-            print(f"[grounding] {verifier.report()}")
-        # Final pass: drop every surviving citation token from the
-        # user-facing artifacts. The writer used citations during
-        # generation to anchor claims; the verifier used them to score;
-        # the malformed-strip / Gate B / write-time-verifier stack
-        # already removed the bad ones. Everything that remains is a
-        # supported citation that the reader does not need to see —
-        # author-curated lecture decks do not show inline source tags
-        # and they cluttered the slides in earlier baselines. The
-        # underlying claims stay intact.
-        latex_source = _strip_all_citation_tokens(latex_source)
-        slides_script_md = _strip_all_citation_tokens(slides_script_md)
-        assessment_md = _strip_all_citation_tokens(assessment_md)
+            # Insert author-style navigation scaffolding deterministically (the
+            # soft-prompt request for it is unreliable): a Learning Objectives
+            # agenda after the opener and a Key Takeaways recap at the end.
+            latex_source = _insert_navigation_frames(latex_source)
+
+        # Advisory content-fidelity check on the finished, figure-cleaned
+        # artifacts. Judges generated claims against the chapter's retrieved
+        # evidence and logs a report — advisory only, never mutates the files.
+        # Grounded path only; gated so the vanilla pipeline never runs it.
+        if self.retriever is not None and getattr(self, "content_verifier", None) is not None:
+            try:
+                from src.grounding.content_verifier import report_line
+                report = self.content_verifier.verify_chapter(
+                    self.id,
+                    chapter.get("title", self.name),
+                    {"slides": latex_source, "script": slides_script_md},
+                    self.section_ids,
+                    writer_evidence=getattr(self, "_writer_evidence", None),
+                )
+                print(report_line(report))
+                with open(
+                    os.path.join(self.output_dir, "content_verification.json"), "w"
+                ) as f:
+                    json.dump(report, f, indent=2)
+            except Exception as e:
+                print(f"[grounding] content verifier failed (advisory): {e}")
+
         with open(latex_path, "w") as f:
             f.write(latex_source)
         with open(script_path, "w") as f:
@@ -2255,10 +2218,15 @@ class SlidesDeliberation:
              "description": "<one-sentence specific summary>"}
             ]"""
 
-        target_count = int(self.catalog_dict.get("slides_length", 30)) // 3
+        base_target = int(self.catalog_dict.get("slides_length", 30)) // 3
+        target_count = base_target
 
         textbook_hints = ""
         if self.retriever is not None and self.section_ids:
+            # Scale the slide budget by how much textbook content is bound to
+            # this chapter instead of a flat course-wide count, so a rich
+            # chapter gets more slides than a thin one (grounded path only).
+            target_count = _scaled_slide_budget(base_target, len(self.section_ids))
             try:
                 kb_chunks = self.retriever.kb.chunks
                 bound = [c for c in kb_chunks if c.section_id in self.section_ids]
@@ -2376,9 +2344,12 @@ class SlidesDeliberation:
                 "bibliography, or \"literature overview\" slide — those "
                 "belong at the very end, if at all, and are not the "
                 "lecture's content. Walk the sections in the numeric order "
-                "given in the SECTION BUDGET. Aim for substantive slides: "
-                "each content slide should carry 3–5 teaching bullets, not "
-                "one thin line.\n"
+                "given in the SECTION BUDGET. Aim for substantive, DENSE "
+                "slides: each content slide should carry 4–6 teaching bullets "
+                "that fill the slide — a slide with only 1–2 short bullets and "
+                "large empty space is a defect; deepen it with the textbook's "
+                "detail (definitions, steps, trade-offs, a worked number) or "
+                "merge it with a neighbour.\n"
                 "NO REDUNDANCY — every slide must teach NEW material. Do "
                 "NOT repeat the chapter overview, the \"what is "
                 "clustering\" definition, the hierarchical-methods "
@@ -2387,10 +2358,35 @@ class SlidesDeliberation:
                 "concept has its slide, move on — do not circle back to it "
                 "near the end of the deck."
             )
+            navigation_block = (
+                "NAVIGATION & RECAP — author-curated lecture decks scaffold "
+                "the learner. In ADDITION to the content slides include: "
+                "(1) a \"Learning Objectives\" slide right after the opening "
+                "intro, listing 3-5 measurable things the learner will be "
+                "able to do; (2) a \"Key Takeaways\" recap slide at the very "
+                "end summarizing the chapter's main results in 4-6 bullets. "
+                "For a long chapter, add a one-line section-divider slide at "
+                "each major section boundary. These are concise scaffolding, "
+                "not new content."
+            )
+            audience_block = (
+                "AUDIENCE & APPROPRIATENESS — write for one consistent learner "
+                "level (infer it from the chapter's framing; do not drift "
+                "between trivial and expert-terse). For every content slide:\n"
+                "  - Define each technical term the FIRST time it appears, in "
+                "one plain clause (e.g. \"a centroid (the mean point of a "
+                "group)\"). Assume no prior vocabulary.\n"
+                "  - Anchor each abstract idea with ONE concrete example or "
+                "everyday analogy beside the formal statement — not only the "
+                "textbook's numerical worked-examples.\n"
+                "  - Teach the WHY or mechanism in at least one bullet, so a "
+                "learner could reconstruct the idea, not just list facts."
+            )
             textbook_hints = "\n\n".join(
                 b for b in (
-                    structure_block, topic_block, example_block,
-                    comparison_block, forbidden_block, budget_block,
+                    structure_block, audience_block, navigation_block,
+                    topic_block, example_block, comparison_block,
+                    forbidden_block, budget_block,
                 ) if b
             )
 
@@ -2425,7 +2421,6 @@ class SlidesDeliberation:
         )
         self.time_slides += elapsed_time
         self.token_slides += token_usage
-        self._record_emitted_citations(response)
         
         # Parse the JSON response
         try:
@@ -2462,10 +2457,22 @@ class SlidesDeliberation:
         if not teaching_assistant:
             raise ValueError("Teaching Assistant agent not found")
 
-        # Textbook grounding (no-op when self.retriever is None).
-        evidence_block, citation_rules = self._build_evidence_block(
-            f"{chapter['title']}. {chapter.get('description', '')}"
+        # Textbook grounding (no-op when self.retriever is None). Group the
+        # evidence BY outline slide so the writer sees focused per-slide
+        # context instead of one chapter-wide dump; fall back to the flat
+        # chapter-level block when there's no outline / retriever / in-scope
+        # results (preserves the vanilla no-op).
+        evidence_block, _ = self._build_grouped_evidence_block(
+            getattr(self, "slides_outline", None)
         )
+        if not evidence_block:
+            evidence_block, _ = self._build_evidence_block(
+                f"{chapter['title']}. {chapter.get('description', '')}"
+            )
+        # Remember the exact evidence the writer was given so the content
+        # verifier can check "did the writer stay faithful to THIS context?"
+        # rather than re-retrieving coarsely on the chapter title.
+        self._writer_evidence = evidence_block
 
         # Create the prompt for the agent
         prompt = f"""
@@ -2502,7 +2509,6 @@ class SlidesDeliberation:
 
         1. Don't use non-English characters directly, e.g. use $\\gamma$ instead of γ, $\\epsilon$ instead of ε
         2. If any of symbols has a special meaning, add a slash. e.g. use \\& instead of &
-        {citation_rules}
 
         Your response should be LaTeX code that can be compiled directly.
         """
@@ -2519,7 +2525,6 @@ class SlidesDeliberation:
         )
         self.time_slides += elapsed_time
         self.token_slides += token_usage
-        self._record_emitted_citations(response)
         
         # Store the full LaTeX source
         self.full_latex_source = response
@@ -2617,12 +2622,12 @@ class SlidesDeliberation:
 
         # Textbook grounding: use the outline as the query so script lines
         # can be supported by the textbook excerpts. Script artifact uses
-        # the SOFTER rule-set (cite-each-concept-once, paraphrase-naturally)
-        # since this is spoken narration where inline citations break flow.
+        # the SOFTER rule-set (paraphrase-naturally) since this is spoken
+        # narration where a stiff written voice breaks flow.
         outline_query = " ".join(
             s.get("title", "") for s in self.slides_outline
         ) if self.slides_outline else ""
-        evidence_block, citation_rules = self._build_evidence_block(
+        evidence_block, _ = self._build_evidence_block(
             outline_query, artifact="script"
         )
 
@@ -2644,7 +2649,6 @@ class SlidesDeliberation:
         {script_template}
 
         Each script entry should include a brief placeholder description of what would be said when presenting that slide.
-        {citation_rules}
 
         Your response must be valid JSON that can be parsed programmatically.
         """
@@ -2661,7 +2665,6 @@ class SlidesDeliberation:
         )
         self.time_script += elapsed_time
         self.token_script += token_usage
-        self._record_emitted_citations(response)
         
         # Parse the JSON response
         try:
@@ -2721,11 +2724,30 @@ class SlidesDeliberation:
         # Assessments draw on cross-chapter context (review questions
         # span the syllabus). Use the full KB instead of the chapter's
         # bound section_ids. No-op when off.
-        evidence_block, citation_rules = self._build_evidence_block(
+        evidence_block, _ = self._build_evidence_block(
             f"{chapter['title']}. {chapter.get('description', '')}",
             artifact="assessment",
             cross_chapter=True,
         )
+
+        # Grounded-path-only assessment-quality directives (author-curated
+        # standard). Gated so the vanilla assessment prompt stays byte-identical.
+        quality_block = ""
+        if self.retriever is not None:
+            quality_block = (
+                "ASSESSMENT QUALITY — author-curated standard:\n"
+                "- VARIETY: do NOT make every item multiple-choice. For each "
+                "slide, mix in at least one short-answer, scenario/application, "
+                "or compute-this item alongside any MCQ, and span cognitive "
+                "levels (recall, application, analysis) rather than all recall.\n"
+                "- FEEDBACK: for every multiple-choice item, explain why EACH "
+                "distractor is wrong (a per-option rationale), not only why the "
+                "correct answer is right, and point back to the relevant slide "
+                "or section for remediation.\n"
+                "- RUBRICS: every open-ended activity or discussion MUST ship "
+                "with a short grading rubric (criteria + what full marks look "
+                "like) and explicit deliverables, not a bare prompt.\n\n        "
+            )
 
         # Create the prompt for the agent
         prompt = f"""
@@ -2755,7 +2777,7 @@ class SlidesDeliberation:
         1. Multiple choice questions (with options and correct answers)
         2. Practical activities or exercises
         3. Learning objectives for the slide
-        {citation_rules}
+        {quality_block}
 
         Your response must be valid JSON that can be parsed programmatically.
         """
@@ -2772,7 +2794,6 @@ class SlidesDeliberation:
         )
         self.time_assessment += elapsed_time
         self.token_assessment += token_usage
-        self._record_emitted_citations(response)
         
         # Parse the JSON response
         try:
@@ -2846,7 +2867,7 @@ class SlidesDeliberation:
         # Grounding: per-slide retrieval narrowed to the slide's
         # best-matched sections within the chapter binding (no-op when
         # self.retriever is None — vanilla path).
-        evidence_block, citation_rules = self._build_per_slide_evidence(
+        evidence_block, _ = self._build_per_slide_evidence(
             f"{slide['title']}. {slide.get('description', '')}"
         )
 
@@ -2917,7 +2938,6 @@ class SlidesDeliberation:
         2. Examples or illustrations where appropriate
         3. Key points to emphasize
         {figure_directive}{style_directive}
-        {citation_rules}
 
         Focus on making the content educational, engaging, and aligned with the chapter's learning objectives.
         Note: Your output length needs to be kept within a reasonable range so that it can fit on a single PPT slide.
@@ -2932,7 +2952,6 @@ class SlidesDeliberation:
         )
         self.time_slides += elapsed_time
         self.token_slides += token_usage
-        self._record_emitted_citations(response)
 
         return response
 
@@ -2958,7 +2977,7 @@ class SlidesDeliberation:
 
         # Grounding: wrap with per-slide narrowed evidence (no-op when
         # self.retriever is None — vanilla path).
-        evidence_block, citation_rules = self._build_per_slide_evidence(
+        evidence_block, _ = self._build_per_slide_evidence(
             f"{slide['title']}. {slide.get('description', '')}"
         )
         # Adjacent-slide context — only injected on the grounded path
@@ -2985,7 +3004,7 @@ class SlidesDeliberation:
                     "reference \"as discussed earlier\" / \"we will see next\"):\n  "
                     + "\n  ".join(adjacency_lines) + "\n"
                 )
-        prompt = f"{evidence_block}\n{base_prompt}{adjacency_block}\n{citation_rules}"
+        prompt = f"{evidence_block}\n{base_prompt}{adjacency_block}"
         
         # Reset agent history to ensure clean context
         teaching_assistant.reset_history()
@@ -2999,7 +3018,6 @@ class SlidesDeliberation:
         )
         self.time_slides += elapsed_time
         self.token_slides += token_usage
-        self._record_emitted_citations(response)
         
         # Use utility function to extract frames
         frame_matches = SlideUtils.extract_latex_frames(response)
@@ -3096,7 +3114,7 @@ class SlidesDeliberation:
         # Grounding: per-slide narrowed retrieval (no-op when
         # self.retriever is None — vanilla path).
         # Script artifact uses softer rules — spoken narration, not text.
-        evidence_block, citation_rules = self._build_per_slide_evidence(
+        evidence_block, _ = self._build_per_slide_evidence(
             f"{slide['title']}. {slide.get('description', '')}",
             artifact="script",
         )
@@ -3156,7 +3174,6 @@ class SlidesDeliberation:
         [For overall]{json.dumps(self.user_feedback['overall'], indent=2)}
 
         {script_directive}
-        {citation_rules}
         """
         
         # Reset agent history to ensure clean context
@@ -3171,7 +3188,6 @@ class SlidesDeliberation:
         )
         self.time_script += elapsed_time
         self.token_script += token_usage
-        self._record_emitted_citations(response)
         
         # Update the slides script dictionary
         self.slides_script[slide_idx] = {
@@ -3193,7 +3209,7 @@ class SlidesDeliberation:
         # Grounding: per-slide assessments use cross-chapter retrieval
         # (review questions span the course). Skip per-slide narrowing
         # here. No-op when self.retriever is None.
-        evidence_block, citation_rules = self._build_evidence_block(
+        evidence_block, _ = self._build_evidence_block(
             f"{slide['title']}. {slide.get('description', '')}",
             artifact="assessment",
             cross_chapter=True,
@@ -3222,7 +3238,6 @@ class SlidesDeliberation:
         2. Practical activities or exercises related to the slide content
         3. Clear learning objectives for this slide
         4. Discussion questions for student engagement
-        {citation_rules}
 
         The assessment should test understanding of the key concepts presented in this slide.
         
@@ -3261,7 +3276,6 @@ class SlidesDeliberation:
         )
         self.time_assessment += elapsed_time
         self.token_assessment += token_usage
-        self._record_emitted_citations(response)
         
         # Parse the JSON response
         try:

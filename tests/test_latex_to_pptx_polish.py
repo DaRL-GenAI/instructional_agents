@@ -185,7 +185,7 @@ class TestEmptyItemFiltering:
         tex = (
             r"\begin{document}\begin{frame}{T}"
             r"\begin{itemize}"
-            r"\item Strong content with citations [han_data_mining_3e:ch1.s1:p01]"
+            r"\item Strong content with citations [my_textbook:ch1.s1:p01]"
             r"\item Another fact about K-means clustering"
             r"\item Third bullet"
             r"\end{itemize}"
@@ -379,3 +379,98 @@ class TestCaptionAndCapBug:
         elements = LaTeXParser()._parse_content(body)
         assert [e for e in elements if e.type == "caption"] == []
         assert [e for e in elements if e.type == "image"] == []
+
+
+class TestStripTextbookFigureNumber:
+    def test_drops_leading_figure_number(self):
+        from src.latex_to_pptx import _strip_textbook_figure_number
+        assert _strip_textbook_figure_number(
+            "Figure 13.3: Other data mining methodologies"
+        ) == "Other data mining methodologies"
+        assert _strip_textbook_figure_number(
+            "Figure 10.8. Hierarchical clustering") == "Hierarchical clustering"
+        assert _strip_textbook_figure_number(
+            "Fig 2.16 — visualization") == "visualization"
+
+    def test_leaves_normal_caption(self):
+        from src.latex_to_pptx import _strip_textbook_figure_number
+        cap = "Cluster assignment across iterations"
+        assert _strip_textbook_figure_number(cap) == cap
+
+
+class TestPercentRendering:
+    """The comment-strip used to drop from % to end-of-line even for an
+    escaped \\%, truncating "50\\% of data" to "50". The negative lookbehind
+    keeps \\% so unescape_latex turns it into a literal %."""
+
+    def test_escaped_percent_renders_as_literal(self):
+        out = strip_latex_formatting("Captures the middle 50\\% of data here.")
+        assert "50% of data here" in out
+
+    def test_bare_percent_still_strips_as_comment(self):
+        # A genuinely unescaped % is still a LaTeX comment (upstream behavior).
+        out = strip_latex_formatting("visible text % hidden tail")
+        assert "visible text" in out
+        assert "hidden tail" not in out
+
+
+class TestTabularToText:
+    """A tabular renders as readable rows, not a bare placeholder."""
+
+    def test_flattens_rows_and_cells(self):
+        from src.latex_to_pptx import _tabular_to_text
+        body = (
+            "{|l|l|}\n\\hline\nName & Type \\\\\n\\hline\n"
+            "cust\\_id & integer \\\\\nname & string \\\\\n\\hline\n"
+        )
+        out = _tabular_to_text(body)
+        assert "Name  |  Type" in out
+        assert "cust_id  |  integer" in out
+        assert "name  |  string" in out
+
+    def test_unwraps_text_command_cells(self):
+        # \text{...} / \textbf{...} cells must keep their content — the
+        # generic command-strip would otherwise drop them and blank the row.
+        from src.latex_to_pptx import _tabular_to_text
+        body = (
+            "{|c|c|}\n\\hline\n\\textbf{Table} & \\textbf{Attributes} \\\\\n\\hline\n"
+            "\\text{Customer} & \\text{cust ID, name, age} \\\\\n\\hline\n"
+        )
+        out = _tabular_to_text(body)
+        assert "Table  |  Attributes" in out
+        assert "Customer  |  cust ID, name, age" in out
+
+    def test_empty_returns_blank(self):
+        from src.latex_to_pptx import _tabular_to_text
+        assert _tabular_to_text("{ll}\n\\hline\n") == ""
+
+    def test_parser_emits_table_text_not_placeholder(self):
+        tex = (
+            "\\begin{document}\n\\begin{frame}\\frametitle{T}\n"
+            "\\begin{tabular}{ll}\nApple & Fruit \\\\\nCarrot & Veg \\\\\n"
+            "\\end{tabular}\n\\end{frame}\n\\end{document}"
+        )
+        frames = LaTeXParser().parse(tex)
+        joined = "\n".join(
+            e.content for e in frames[0].elements if e.type == "text"
+        )
+        assert "see LaTeX source" not in joined
+        assert "Apple  |  Fruit" in joined
+
+
+class TestUndelimitedMathTextUnwrap:
+    """A rule written as bare (no-$) LaTeX with \\text{} must keep its content.
+    Without the unwrap in _convert_math_macros, the generic command-strip ate
+    "\\text{computer}" whole — the literal "buys(X, ) ⇒ buys(X, )" defect."""
+
+    def test_strip_latex_formatting_keeps_text_content(self):
+        rule = (r'\text{buys}(X, \text{"computer"}) \Rightarrow '
+                r'\text{buys}(X, \text{"software"})')
+        out = strip_latex_formatting(rule)
+        assert "buys" in out and "computer" in out and "software" in out
+        assert "⇒" in out
+
+    def test_convert_math_macros_unwraps_text(self):
+        from src.latex_to_pptx import _convert_math_macros
+        assert _convert_math_macros(r"\text{support}") == "support"
+        assert _convert_math_macros(r"\mathbf{x}") == "x"

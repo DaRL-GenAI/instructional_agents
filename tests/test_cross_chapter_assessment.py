@@ -20,7 +20,7 @@ class _StubChunk:
     section_id: str
     page_start: int = 1
     page_end: int = 1
-    textbook_id: str = "han"
+    textbook_id: str = "tb"
     chapter_title: str = "Ch"
     section_title: str = "Sec"
     text: str = "passage"
@@ -57,9 +57,8 @@ def _build_deliberation(retriever, section_ids):
     d = SlidesDeliberation.__new__(SlidesDeliberation)
     d.retriever = retriever
     d.section_ids = section_ids
-    d.textbook_id = "han"
+    d.textbook_id = "tb"
     d._evidence_top_k = 6
-    d.citation_usage_tracker = None
     return d
 
 
@@ -105,7 +104,6 @@ class TestCrossChapterFlag:
         d.section_ids = None
         d.textbook_id = None
         d._evidence_top_k = 6
-        d.citation_usage_tracker = None
         ev, rules = d._build_evidence_block("q", cross_chapter=True)
         # Vanilla path returns empty regardless of flag
         assert ev == ""

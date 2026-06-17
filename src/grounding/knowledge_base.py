@@ -285,6 +285,30 @@ def _paragraph_chunks(section: Section, chapter: Chapter, textbook_id: str) -> I
         i = max(k + 1, i + 1)
 
 
+def _heading_collapse_warning(textbook) -> Optional[str]:
+    """Detect a book that ingested with NO sub-section structure — most
+    chapters collapsed to a single section because the PDF lacks the headings
+    the segmenter recognizes. Grounding then operates at chapter granularity
+    (coarser per-section slide budgets + binding). The pipeline still works
+    (the chunker sentence-splits within the coarse section, and the slide
+    writer's global evidence dedup prevents redundant excerpts), but the
+    operator should KNOW granularity is reduced rather than discover it as a
+    silent quality drop. Returns ``None`` on a normally structured book."""
+    chapters = getattr(textbook, "chapters", []) or []
+    n = len(chapters)
+    if n < 3:
+        return None
+    flat = sum(1 for ch in chapters
+               if len(getattr(ch, "sections", []) or []) <= 1)
+    if flat >= 0.8 * n:
+        return (
+            f"{flat}/{n} chapters have no sub-section structure — grounding "
+            f"will be chapter-granular (coarser section budgets / binding). "
+            f"This PDF lacks the headings the segmenter expects."
+        )
+    return None
+
+
 @dataclass
 class TextbookKnowledgeBase:
     """A loaded textbook + its retrievable chunks."""
@@ -394,6 +418,10 @@ class TextbookKnowledgeBase:
                 f"{max_len} chars, ceiling: {MAX_CHUNK_CHARS}).",
                 flush=True,
             )
+
+        collapse = _heading_collapse_warning(textbook)
+        if collapse:
+            print(f"[grounding] {collapse}", flush=True)
 
         return cls(textbook=textbook, chunks=chunks)
 
