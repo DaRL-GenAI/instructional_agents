@@ -34,7 +34,7 @@ def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catal
     return data_catalog
 
 
-def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False):
+def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False):
     """
     Main function to run the instructional design workflow by sequentially
     executing the six deliberation processes
@@ -95,7 +95,7 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
 
 
     from src.ADDIE import ADDIE
-    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume)
+    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume, textbook_path=textbook_path, vlm_extraction=vlm_extraction)
 
     # Run the workflow
     output_dir = f"./exp/{exp_name}/"
@@ -216,6 +216,29 @@ def main():
              "from the last incomplete chapter (or mid-chapter checkpoint)."
     )
 
+    parser.add_argument(
+        "--use-textbook",
+        dest="textbook_path",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Ground course generation in a textbook. PATH may be a PDF file, "
+             "a markdown file, or a directory of either. When omitted (the "
+             "default), generation runs exactly as in the vanilla pipeline."
+    )
+
+    parser.add_argument(
+        "--vlm-extraction",
+        dest="vlm_extraction",
+        action="store_true",
+        help="When ingesting a PDF textbook, route pages classified "
+             "as complex (figures, equations, diagrams) through GPT-4o-mini "
+             "vision for structured extraction. Cropped page PNGs are saved "
+             "to .grounding_cache/figures/ so the slide generator can include "
+             "real figures alongside the extracted descriptions. No effect "
+             "without --use-textbook."
+    )
+
     # Optimize mode arguments
     parser.add_argument(
         "--optimize",
@@ -299,6 +322,8 @@ def main():
             seed=args.seed,
             temperature=args.temperature,
             resume=args.resume,
+            textbook_path=args.textbook_path,
+            vlm_extraction=args.vlm_extraction,
         )
 
 

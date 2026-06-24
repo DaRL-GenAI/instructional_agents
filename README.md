@@ -74,6 +74,7 @@ An AI-powered instructional design system based on the ADDIE model for automated
 | 📄 **LaTeX/PDF Output** | Generate professional LaTeX slides and compile to PDF format |
 | 🎨 **PowerPoint (PPTX) Export** | Convert LaTeX Beamer slides to visually rich PPTX using pptxgenjs with icons, shadows, and Slide Masters |
 | ✅ **Automatic Evaluation** | Built-in evaluation system for assessing generated course materials |
+| 📖 **Textbook Grounding** | *(opt-in)* Ground course content in a PDF or markdown textbook; each slide is written from retrieved textbook evidence. An advisory verifier checks claim faithfulness and a Grounding Fidelity % is reported. Available on CLI, API, and Web UI. |
 
 ### 🎬 How It Works
 
@@ -190,6 +191,7 @@ python -m http.server 8080
      - Select "Not Use" for basic generation
      - Select "Upload Catalog File" to upload a custom catalog JSON
      - Select "Use Default Catalog" to use the default catalog
+   - **Textbook grounding** *(optional)*: upload one or more PDF/markdown files via the picker labelled "Textbook grounding (optional)". Leave empty to skip.
 
 2. **Click "Generate Course"** to start the task
 
@@ -353,11 +355,20 @@ For developers who want to run the system locally from source:
 ### 2. Install Dependencies
 
 ```bash
-# Python dependencies
-pip install -r requirements.txt
-
-# Or install in editable mode
+# Vanilla install — minimal footprint, supports the standard
+# course-writing pipeline (no textbook grounding).
 pip install -e .
+
+# Light install + textbook grounding (`--use-textbook PATH`).
+# Adds pymupdf, markdown-it-py, rank-bm25, fastembed (ONNX-based
+# bi-encoder and cross-encoder via onnxruntime; no torch dep).
+# ~100 MB total on top of the base install.
+pip install -e ".[grounding]"
+
+# All-in-one (also installs the optional chromadb extras and any
+# grounding deps): keeps the prior `requirements.txt`-based workflow
+# working unchanged.
+pip install -r requirements.txt
 
 # Node.js dependencies (for PPTX generation)
 npm install -g pptxgenjs
@@ -436,6 +447,10 @@ python run.py "AI Fundamentals" --catalog ai_catalog
 
 # Combine catalog and copilot
 python run.py "Educational Psychology" --copilot --catalog edu_psy
+
+# Ground the course in a textbook (PDF/markdown file or directory)
+python run.py "Data Mining" --catalog default_catalog \
+    --use-textbook path/to/textbook.pdf
 ```
 
 **Minimal Working Example** (generates a small 3-week course in ~5 min):
@@ -458,6 +473,10 @@ Options:
   --exp EXP_NAME           Experiment name for saving output (default: exp1)
   --seed SEED              Random seed for reproducibility
   --temperature TEMP       Sampling temperature for LLM
+  --use-textbook PATH      Ground course generation in a textbook (PDF or
+                           markdown file, or a directory of either). When
+                           omitted, generation runs identically to a vanilla
+                           run — no grounding is applied.
   --optimize STORAGE_ID    Optimize mode: provide storage_id of uploaded PDFs
   --requirements TEXT      User requirements for optimization (with --optimize)
   --chapter NAME           Specific chapter to optimize (with --optimize)
@@ -490,6 +509,12 @@ curl http://localhost:8000/api/course/results/{task_id}/files
 # Download a file
 curl http://localhost:8000/api/course/results/{task_id}/download/chapter_1/slides.pdf \
   --output slides.pdf
+
+# Textbook grounding (optional) — upload a textbook, then pass its
+# returned `path` as `textbook_path` in /api/course/generate above
+curl -X POST http://localhost:8000/api/textbooks/upload \
+  -F "files=@chapter_1.pdf" -F "files=@chapter_2.pdf"
+curl http://localhost:8000/api/textbooks/list
 ```
 
 For complete API documentation, see [API Documentation](docs/API_DOCUMENTATION.md).
@@ -503,7 +528,8 @@ For complete API documentation, see [API Documentation](docs/API_DOCUMENTATION.m
 | **Course Generation** | Generate complete course materials based on ADDIE model | Web interface, CLI (`run.py`), or RESTful API |
 | **Catalog Mode** | Use structured catalog files for guided generation | `--catalog` flag or upload in web interface |
 | **Copilot Mode** | Interactive feedback during generation | `--copilot` flag in CLI or enable in web interface |
-| **Evaluation** | Automatic assessment of generated materials | `python evaluate.py --exp <exp_name>` |
+| **Textbook Grounding** | Ground content in a PDF/markdown textbook from retrieved evidence | `--use-textbook PATH` flag in CLI, `textbook_path` in API, file picker in web interface |
+| **Evaluation** | Automatic assessment of generated materials, with an optional Grounding Fidelity % | `python evaluate.py --exp <exp_name> [--rigorous]` |
 | **Web Interface** | Visual interface for course generation | Open `frontend/index.html` in browser |
 | **API Server** | RESTful API for programmatic access | `python api_server.py` or Docker |
 
@@ -547,16 +573,36 @@ Interactive mode that prompts for feedback after each phase of the ADDIE workflo
 python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 ```
 
+### Textbook Grounding
+
+Opt-in. Pass `--use-textbook PATH` (a PDF, markdown file, or directory of either) and the system retrieves relevant textbook passages per chapter and writes each slide grounded in that retrieved evidence — teaching in its own words from the source rather than the model's parametric memory. Without the flag, vanilla output is unchanged.
+
+```bash
+python run.py "Data Mining" --catalog default_catalog --exp dm_grounded \
+    --use-textbook path/to/textbook.pdf
+```
+
+Embeddings are cached on disk after the first ingest (one-time per textbook). Per-chapter generation is modestly slower than vanilla because prompts carry retrieved excerpts.
+
+**How the grounding works under the hood:**
+- The textbook is ingested (`pymupdf4llm`) into a chapter → section → paragraph IR; equation-shaped image crops are converted to native LaTeX by a focused VLM pass (cached). Paragraphs are chunked (~512 tokens) and indexed for BM25 + dense (`text-embedding-3-large`) retrieval.
+- Each chapter is decomposed into subtopics by the LLM; each subtopic is HyDE-expanded into a hypothetical textbook paragraph and used as a retrieval query. Per-section rankings across queries are fused via Reciprocal Rank Fusion (RRF, k=60), and a **book-relative gate** binds each chapter to its top sections — or **abstains** (writes ungrounded) when nothing scores well, rather than fabricate against weak retrieval.
+- The writer injects a per-slide block of retrieved evidence with mandatory grounding rules (teach in your own words, abstain if unsupported, preserve worked examples / math notation). Deterministic post-passes handle figure placement, textbook captions, navigation frames, and LaTeX cleanup.
+- After each chapter, an advisory content-fidelity verifier checks the generated claims against the writer's evidence and logs `content_verification.json` (claims supported / unsupported) — log-only, it never edits the deck. This feeds the Grounding Fidelity metric in evaluation.
+
 ### Automatic Evaluation
 
 **Entry Point**: `evaluate.py` – Automatic assessment and scoring
 
 ```bash
-# Evaluate a specific experiment
+# Rubric scoring + Program-Chair / Test-Student validation
 python evaluate.py --exp web_dev_v1
+
+# Measurement-grade scoring + a binary Grounding Fidelity % on grounded runs
+python evaluate.py --exp dm_grounded --rigorous
 ```
 
-Evaluation results are saved in `eval/{experiment_name}/` directory.
+Evaluation results are saved in the `eval/{experiment_name}/` directory. The default run is a 1–5 multi-agent rubric. `--rigorous` adds deterministic scoring (fixed seed, median-of-3), a `core_quality` headline (excluding metrics a slide deck structurally can't satisfy), and — on grounded runs — a **Grounding Fidelity %** aggregated from the per-chapter content-fidelity reports (claims supported vs. unsupported). That binary percentage is the sharp, A/B-comparable grounding signal the coarse 1–5 rubric can't provide.
 
 ### LaTeX-to-PPTX Conversion
 
@@ -634,6 +680,20 @@ python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 # - Analysis → feedback on goals, resources, audience
 # - Design → feedback on syllabus, assessments
 # - Development → feedback on chapter materials
+```
+
+### Textbook-Grounded Course
+
+```bash
+# Step 1: Generate course grounded in a textbook
+python run.py "Data Mining" --catalog default_catalog --exp dm_grounded \
+  --use-textbook path/to/textbook.pdf
+
+# Step 2: Evaluate with the Grounding Fidelity % (rigorous mode)
+python evaluate.py --exp dm_grounded --rigorous
+
+# Step 3: Review per-chapter content-fidelity logs (claims supported vs. unsupported)
+open exp/dm_grounded/chapter_1/content_verification.json
 ```
 
 ---

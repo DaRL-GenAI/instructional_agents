@@ -1,27 +1,54 @@
-# Core dependencies
+# Core dependencies for the vanilla course-writing path.
+# For a light install, prefer:  pip install -e .
+# This file contains BOTH the base deps AND the optional grounding
+# deps (clearly sectioned below) so that
+#   pip install -r requirements.txt
+# still gets every supported feature, matching prior behaviour.
+
+# --- Base (always required) -------------------------------------------------
 openai>=1.0.0
 pandas>=2.0.0
 pathlib2>=2.3.7; python_version < '3.4'
 
-# API server dependencies
+# API server
 fastapi>=0.104.1
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
-# PDF processing dependencies
+# PDF reading for the upstream artifacts pipeline (NOT for the grounding
+# ingester; the grounding ingester uses pymupdf below)
 PyPDF2>=3.0.0
 pdfplumber>=0.10.0
 
-# Vector database (optional - for advanced features)
-chromadb>=0.4.0
-
-# Data processing
+# Numerics
 numpy>=1.24.0
 
 # PPTX generation (pptxgenjs via Node.js) + content QA
 markitdown[pptx]>=0.1.0
+
+# --- Optional: vector database extras --------------------------------------
+# Same as the `vector-db` extras group in pyproject.toml.
+chromadb>=0.4.0
+
+# --- Optional: grounding (textbook ingestion + retrieval + semantic gates) -
+# These are needed ONLY when `--use-textbook PATH` is passed to run.py or
+# evaluate.py. The vanilla path does not import any of them. Mirrors the
+# `[grounding]` extras group in pyproject.toml — prefer
+#   pip install -e ".[grounding]"
+# for new installs.
+#
+# fastembed bundles both the bi-encoder (semantic gates) and the
+# cross-encoder reranker via onnxruntime — no torch dep. The previous
+# stack (sentence-transformers + torch + transformers, ~400 MB) was
+# replaced with fastembed (~50 MB onnxruntime + small model downloads)
+# in mid-2026; numerical scores are identical (verified against the
+# original sentence-transformers backend on the same MiniLM weights).
+pymupdf>=1.24.0
+markdown-it-py>=3.0.0
+rank-bm25>=0.2.2
+fastembed>=0.8,<1
 
 # Note: pdflatex is installed via system package manager in Docker
 #
