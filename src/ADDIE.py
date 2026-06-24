@@ -346,7 +346,12 @@ class ADDIERunner:
 
         print("\n[grounding] Appending administrative scaffolding to syllabus...")
         prompt = self._ADMIN_SCAFFOLDING_INSTRUCTIONS.format(syllabus_content=current)
-        response = self.addie.llm.generate_response(prompt)
+        # generate_response expects a chat message LIST, not a bare string —
+        # a string is rejected by the SDK, the error is swallowed below, and the
+        # scaffolding is silently skipped (+ --resume retries it forever).
+        response = self.addie.llm.generate_response(
+            [{"role": "user", "content": prompt}]
+        )
         # `LLM.generate_response` returns (text, elapsed, tokens); be
         # defensive in case the error path returned a bare string in a
         # historical build.

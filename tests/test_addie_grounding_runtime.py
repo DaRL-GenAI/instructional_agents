@@ -128,10 +128,30 @@ class TestMaybeAugmentSyllabusWithAdmin:
         assert sentinel.read_text() == original
         # The LLM was called exactly once.
         runner.addie.llm.generate_response.assert_called_once()
-        # And the prompt included the original syllabus content.
-        call_prompt = runner.addie.llm.generate_response.call_args[0][0]
-        assert "Week 1: Introduction" in call_prompt
-        assert "Course Policies" in call_prompt
+        # generate_response must receive a chat message LIST (the prompt content
+        # lives in the first message) — not a bare string.
+        messages = runner.addie.llm.generate_response.call_args[0][0]
+        assert isinstance(messages, list) and messages[0]["role"] == "user"
+        content = messages[0]["content"]
+        assert "Week 1: Introduction" in content
+        assert "Course Policies" in content
+
+    def test_calls_llm_with_message_list_not_string(self, tmp_path):
+        # Regression: the prompt must be passed as a chat message LIST, never a
+        # bare string. A string is rejected by the SDK, the error is swallowed
+        # below, and the scaffolding is silently skipped (the .bak is never
+        # written, so --resume retries the failing call forever). MagicMock
+        # accepts any argument type, so assert the format explicitly.
+        syllabus = tmp_path / "result_syllabus_design.md"
+        syllabus.write_text("# Original Syllabus\n\nWeek 1: Intro")
+        runner = self._runner(
+            knowledge_base=MagicMock(), output_dir=tmp_path,
+            llm_response="# augmented\n\n## Course Policies\n",
+        )
+        runner._maybe_augment_syllabus_with_admin()
+        arg = runner.addie.llm.generate_response.call_args[0][0]
+        assert isinstance(arg, list), f"expected a message list, got {type(arg).__name__}"
+        assert arg and arg[0].get("role") == "user" and "content" in arg[0]
 
     def test_resume_skips_when_sentinel_exists(self, tmp_path):
         # Idempotency: a sentinel file from a prior run is sufficient signal
