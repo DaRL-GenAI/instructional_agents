@@ -116,7 +116,8 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
 
 
 def run_optimization(storage_id: str, user_requirements: str, model_name: str = "gpt-4o-mini",
-                     exp_name: str = "optimize", chapter_name: str = None):
+                     exp_name: str = "optimize", chapter_name: str = None,
+                     mode: str = "regenerate"):
     """
     Run the optimization workflow on existing slide materials.
 
@@ -126,6 +127,8 @@ def run_optimization(storage_id: str, user_requirements: str, model_name: str = 
         model_name: Name of the LLM model to use
         exp_name: Experiment name for output directory
         chapter_name: Specific chapter to optimize (None = all chapters)
+        mode: "regenerate" (per-slide full rewrite) or "refine" (localized
+            frame-level rewrite via SlideRefiner)
     """
     # Ensure the OPENAI_API_KEY is set
     if not os.environ.get("OPENAI_API_KEY"):
@@ -146,6 +149,7 @@ def run_optimization(storage_id: str, user_requirements: str, model_name: str = 
         output_dir=output_dir,
         exp_name=exp_name,
         chapter_name=chapter_name,
+        mode=mode,
     )
 
 

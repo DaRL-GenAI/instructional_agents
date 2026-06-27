@@ -78,6 +78,13 @@
                         <input type="text" id="exp-name" name="exp_name" 
                                placeholder="默认：default" value="default" data-i18n-placeholder="expNamePlaceholder">
                     </div>
+                    
+                    <div class="form-group">
+                        <label for="textbook-file" data-i18n="textbookFileLabel">上传教材参考文件（可选）</label>
+                        <input type="file" id="textbook-file" accept=".pdf,.txt,.md">
+                        <small data-i18n="textbookFileTip">支持 PDF/TXT/MD；系统会先提取前若干页并保存为 textbook catalog JSON 供检查。</small>
+                    </div>
+                    
 
                     <div class="form-group checkbox-group">
                         <label>
@@ -101,6 +108,9 @@
                             <option value="upload" data-i18n="catalogOptionUpload">上传 Catalog 文件</option>
                             <option value="select" data-i18n="catalogOptionSelect">选择已有 Catalog</option>
                         </select>
+                        <small id="textbook-catalog-note" style="display:none;color:#856404;background:#fff3cd;padding:4px 8px;border-radius:4px;margin-top:4px;display:none;">
+                            Textbook file uploaded above — the extracted catalog will be used automatically. Catalog mode selection is ignored.
+                        </small>
                     </div>
 
                     <div class="form-group" id="catalog-upload-group" style="display: none;">
@@ -177,6 +187,15 @@
                             <option value="gpt-4o" data-i18n="modelOptionGpt4o">GPT-4o</option>
                             <option value="gpt-4-turbo" data-i18n="modelOptionGpt4Turbo">GPT-4 Turbo</option>
                         </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="optimize-mode-select" data-i18n="optimizeModeLabel">优化方式</label>
+                        <select id="optimize-mode-select" name="mode">
+                            <option value="regenerate" selected data-i18n="optimizeModeRegenerate">逐张重新生成（整章重写）</option>
+                            <option value="refine" data-i18n="optimizeModeRefine">局部精修（仅改相关帧）</option>
+                        </select>
+                        <small data-i18n="optimizeModeTip">重新生成：每张幻灯片整体重写。局部精修：只定位并改写与需求相关的帧，其余保持不变。</small>
                     </div>
 
                     <div class="form-group">
