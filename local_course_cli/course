@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+PYTHON="$SCRIPT_DIR/.venv/bin/python"
+
+if [ ! -x "$PYTHON" ]; then
+  echo "Local CLI environment is not installed." >&2
+  echo "Run: ./local_course_cli/setup.sh" >&2
+  exit 2
+fi
+
+cd "$REPO_ROOT"
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PYTHON" -m local_course_cli "$@"
