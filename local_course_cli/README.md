@@ -58,11 +58,16 @@ exp/my-course/
 ├── result_syllabus_design.md
 ├── result_assessment_planning.md
 ├── result_final_exam_project.md
-└── processed_chapters.json
+├── processed_chapters.json
+├── course_slide_style.json
+├── course_slide_style_source.md
+└── statistics_slide_style.json
 ```
 
-It never starts chapter generation. Repeating the same command reloads
-completed foundation files and resumes only missing work. Omitted model,
+It never starts chapter generation. After the six foundation documents, the
+five core agents choose one course-wide slide style and presentation method.
+Repeating the same command reloads completed foundation/style files and resumes
+only missing work. Omitted model,
 catalog, seed, and temperature values inherit the existing manifest on reruns.
 Conflicting settings are rejected instead of mixing outputs.
 
@@ -82,12 +87,33 @@ Generate exactly one chapter:
 
 The chapter command validates the complete foundation, loads it without new
 foundation model calls, and creates only `exp/my-course/chapter_13/`. It
-produces `slides.tex`, `slides.pdf`, `script.md`, `assessment.md`, and chapter
-statistics.
+produces:
+
+```text
+chapter_<number>/
+├── slides.tex
+├── slides.pdf
+├── slides.html
+├── slides-html.pdf
+├── slides-html.pptx
+├── frontend-assets/
+├── frontend-slides-manifest.json
+├── slide-splits.json
+├── script.md
+├── assessment.md
+└── statistics_slides_chapter_<number>.json
+```
+
+The HTML deck is offline-capable when kept beside `frontend-assets/`.
+`slides-html.pptx` preserves the HTML appearance as one full-slide image per
+PowerPoint slide; it is not element-editable.
 
 Interrupted chapter runs resume from `_checkpoint.json`. Completed source
 artifacts are never regenerated automatically. If the source files exist but
-`slides.pdf` does not, the command runs only `pdflatex`.
+`slides.pdf` or a frontend export does not, the command runs only the missing
+deterministic compilation/export stages. Changed LaTeX or course-style hashes
+invalidate and rebuild the corresponding frontend artifacts without repeating
+chapter model calls.
 
 ## Removing the CLI
 

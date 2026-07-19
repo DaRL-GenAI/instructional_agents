@@ -18,6 +18,9 @@ uv pip install --python "$VENV/bin/python" \
   -r "$REPO_ROOT/requirements.txt" \
   pytest
 
+echo "Installing Playwright Chromium for offline slide rendering"
+"$VENV/bin/python" -m playwright install chromium
+
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 if [ "${SKIP_TESTS:-0}" != "1" ]; then

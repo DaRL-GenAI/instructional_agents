@@ -10,7 +10,7 @@ from src.agents import (
 )
 
 from src.slides import SlidesDeliberation
-from src.compile import LaTeXCompiler
+from src.frontend_slides import ensure_course_slide_style, finalize_chapter
 
 class SyllabusProcessor(Agent):
     """
@@ -119,6 +119,7 @@ class ADDIERunner:
         # Store these for retry logic with slides
         self.latex_source = None
         self.slides_script = None
+        self.course_slide_style = None
     
     def setup(self):
         """Setup the runner by getting user input and creating output directory"""
@@ -210,6 +211,12 @@ class ADDIERunner:
 
         # After running the syllabus design deliberation, process the syllabus
         self._process_syllabus()
+        self.course_slide_style = ensure_course_slide_style(
+            self.addie,
+            self.output_dir,
+            self.results,
+            self.chapters,
+        )
     
     def _process_syllabus(self):
         """Process the syllabus to extract chapters"""
@@ -284,31 +291,30 @@ class ADDIERunner:
             chapter_dir = os.path.join(self.output_dir, f"chapter_{chapter_idx+1}")
             os.makedirs(chapter_dir, exist_ok=True)
 
-            # Resume: skip this chapter entirely if all three final outputs
-            # already exist and are non-empty. Partial chapters (e.g. empty
-            # dir, or missing one of the three) fall through — the inner
-            # SlidesDeliberation will pick up from its own checkpoint.
-            if self.resume:
-                required = ["slides.tex", "script.md", "assessment.md"]
-                if all(
-                    os.path.exists(os.path.join(chapter_dir, f))
-                    and os.path.getsize(os.path.join(chapter_dir, f)) > 0
-                    for f in required
-                ):
-                    print(f"[resume] Skipped chapter_{chapter_idx+1} — all outputs present")
-                    continue
-
-            # Run SlidesDeliberation for this chapter with retry support
-            self._run_slides_generation_with_retry(chapter, chapter_idx, chapter_dir)
+            required = ["slides.tex", "script.md", "assessment.md"]
+            sources_complete = all(
+                os.path.exists(os.path.join(chapter_dir, filename))
+                and os.path.getsize(os.path.join(chapter_dir, filename)) > 0
+                for filename in required
+            )
+            if self.resume and sources_complete:
+                print(
+                    f"[resume] Skipped chapter_{chapter_idx+1} source generation — "
+                    "all source outputs are present"
+                )
+            else:
+                self._run_slides_generation_with_retry(
+                    chapter, chapter_idx, chapter_dir
+                )
+            self.finalize_chapter(chapter_dir)
 
         # All chapters finished successfully — sweep any leftover checkpoint
         # files (belt-and-suspenders; SlidesDeliberation already removes its
         # own on successful completion).
         self._cleanup_checkpoints()
 
-        # After all chapters, compile the LaTeX source and slides script
-        compiler = LaTeXCompiler(self.output_dir)
-        compiler.compile_all()
+        # Each chapter is compiled and exported immediately after its sources
+        # are ready, so failures preserve prior chapters and resume precisely.
 
     def _cleanup_checkpoints(self):
         """Remove any leftover _checkpoint.json files under output_dir.
@@ -411,6 +417,16 @@ class ADDIERunner:
                 satisfaction = input("Your choice (1 or 2): ").strip()
                 if satisfaction == "1":
                     retry_loop = False
+
+    def finalize_chapter(self, chapter_dir):
+        """Compile and create all deterministic frontend artifacts for one chapter."""
+        result = finalize_chapter(self.output_dir, chapter_dir)
+        action = "already current" if result.skipped else "generated"
+        print(
+            f"Frontend slides {action}: {result.html_path.name}, "
+            f"{result.html_pdf_path.name}, {result.html_pptx_path.name}"
+        )
+        return result
     
     def _create_slides_deliberation(self, chapter, chapter_dir_name):
         """
@@ -455,6 +471,11 @@ class ADDIERunner:
             catalog=self.addie.catalog,
             catalog_dict=self.addie.catalog_dict,
             resume=self.resume,
+            slide_style_guidance=(
+                self.course_slide_style.ta_guidance
+                if self.course_slide_style is not None
+                else ""
+            ),
         )
     
     def _save_result(self, deliberation, result):
@@ -579,7 +600,7 @@ class ADDIERunner:
             print(f"Error running ADDIE workflow: {str(e)}")
             import traceback
             traceback.print_exc()
-            return None
+            raise
         
 
 class ADDIE:

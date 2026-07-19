@@ -255,7 +255,16 @@ For each slide, execute the following sub-steps:
 
 ### Final Compilation
 
-After completing SlidesDeliberation for all chapters, the system uses **LaTeXCompiler** to compile all LaTeX files.
+After the foundation documents and chapter list are complete, the five core
+agents run one course-wide style deliberation. The selected Frontend Slides
+asset is materialized into validated design tokens and compact Teaching
+Assistant guidance, then persisted in `course_slide_style.json`.
+
+After each SlidesDeliberation, the system immediately runs the shared chapter
+finalizer. It compiles `slides.tex` into `slides.pdf`, parses and splits the
+Beamer frames, renders the offline `slides.html`, and exports
+`slides-html.pdf` plus the static image-based `slides-html.pptx`. Input/style
+hashes allow missing exports to resume without new model calls.
 
 **Input:**
 - All `slides.tex` files in chapter directories

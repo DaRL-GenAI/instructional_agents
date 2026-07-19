@@ -136,7 +136,8 @@ frame=single
         description: Optional[str] = None,
         current_frames: Optional[str] = None,
         user_feedback: Optional[Dict] = None,
-        max_frames: int = 3
+        max_frames: int = 3,
+        style_guidance: str = "",
     ) -> str:
         """Generate prompt for LaTeX frame creation"""
         feedback_text = ""
@@ -157,6 +158,11 @@ Current LaTeX Frames (for reference):
 """
         
         description_text = f"\nSlide Description: {description}" if description else ""
+        style_text = (
+            f"\nSelected Course Slide Style Guidance:\n{style_guidance}\n"
+            if style_guidance
+            else ""
+        )
         
         return f"""
 Based on the following slide content, generate LaTeX code for a presentation slide.
@@ -167,7 +173,7 @@ Slide Title: {title}{description_text}
 Detailed Content:
 {content[:2000]}
 
-{current_frames_text}{feedback_text}
+{current_frames_text}{feedback_text}{style_text}
 
 Please generate the LaTeX code for this slide using the beamer class format.
 You should first summarize the content and extract key points to A BRIEF SUMMARY.
@@ -247,6 +253,7 @@ class SlidesDeliberation:
                  catalog: bool = False,
                  catalog_dict: Dict[str, Any] = None,
                  resume: bool = False,
+                 slide_style_guidance: str = "",
                  ):
         """
         Initialize SlidesDeliberation
@@ -272,6 +279,7 @@ class SlidesDeliberation:
         self.catalog = catalog
         self.catalog_dict = catalog_dict if catalog_dict else {}
         self.resume = resume
+        self.slide_style_guidance = slide_style_guidance
 
         # Initialize containers for results
         self.slides_outline = []
@@ -610,6 +618,9 @@ class SlidesDeliberation:
         ```latex
         {self.latex_template}
         ```
+
+        Selected Course Slide Style Guidance:
+        {self.slide_style_guidance or "Use the default clear academic presentation treatment."}
         
         Please generate the initial LaTeX code with frame placeholders for each slide in the outline.
         Each slide can have one or more frames based on content complexity.
@@ -625,8 +636,8 @@ class SlidesDeliberation:
             % Content will be added here
         \\end{{frame}}
 
-        1. Don't use non-English characters directly, e.g. use $\gamma$ instead of γ, $\epsilon$ instead of ε
-        2. If any of symbols has a special meaning, add a slash. e.g. use \& instead of &
+        1. Don't use non-English characters directly, e.g. use $\\gamma$ instead of γ, $\\epsilon$ instead of ε
+        2. If any of symbols has a special meaning, add a slash. e.g. use \\& instead of &
 
         Your response should be LaTeX code that can be compiled directly.
         """
@@ -997,7 +1008,8 @@ class SlidesDeliberation:
             description=slide.get('description'),
             current_frames=current_frames_text,
             user_feedback=self.user_feedback,
-            max_frames=3
+            max_frames=3,
+            style_guidance=self.slide_style_guidance,
         )
         
         # Reset agent history to ensure clean context
@@ -1303,8 +1315,7 @@ class SlidesDeliberation:
                     for question in assessment['assessment']['discussion_questions']:
                         assessment_md += f"- {question}\n"
                     assessment_md += "\n"
-                
+
                 assessment_md += "---\n\n"
-        
+
         return assessment_md
-    

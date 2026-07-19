@@ -236,6 +236,32 @@ class LaTeXCompiler:
         if failed_count > 0:
             self.logger.info("Check the compilation logs in the cache directory for details on failed compilations")
 
+    def compile_one(self, tex_file):
+        """Compile one explicit LaTeX file and raise when no valid PDF is produced."""
+        tex_path = Path(tex_file).resolve()
+        self.output_dir = self.output_dir.resolve()
+        self.cache_dir = self.output_dir / ".cache"
+        try:
+            tex_path.relative_to(self.output_dir)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"LaTeX source {tex_path} is outside compiler root {self.output_dir}."
+            ) from exc
+        if not tex_path.is_file() or tex_path.stat().st_size == 0:
+            raise RuntimeError(f"LaTeX source is missing or empty: {tex_path}")
+        if not self.validate_latex_environment():
+            raise RuntimeError("Cannot compile slides.tex because pdflatex is unavailable.")
+
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir = self.create_cache_directory(tex_path)
+        pdf_file = self.compile_latex(tex_path, cache_dir)
+        final_pdf = self.move_pdf_to_source_location(pdf_file, tex_path) if pdf_file else None
+        if final_pdf is None or not final_pdf.is_file() or final_pdf.stat().st_size == 0:
+            raise RuntimeError(
+                f"Failed to compile {tex_path}; inspect logs under {cache_dir}."
+            )
+        return final_pdf
+
     def generate_pptx(self):
         """Convert all .tex files to .pptx (independent of PDF compilation)."""
         from src.latex_to_pptx import LaTeXToPPTXConverter

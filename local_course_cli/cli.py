@@ -33,6 +33,13 @@ FOUNDATION_FILES = (
     "result_final_exam_project.md",
 )
 CHAPTER_SOURCE_FILES = ("slides.tex", "script.md", "assessment.md")
+FRONTEND_CHAPTER_FILES = (
+    "slides.html",
+    "slides-html.pdf",
+    "slides-html.pptx",
+    "frontend-slides-manifest.json",
+    "slide-splits.json",
+)
 REQUIRED_CATALOG_SECTIONS = (
     "student_profile",
     "instructor_preferences",
@@ -374,6 +381,7 @@ def validate_chapter_outputs(chapter_dir: Path, chapter_number: int) -> None:
     required = (
         *CHAPTER_SOURCE_FILES,
         "slides.pdf",
+        *FRONTEND_CHAPTER_FILES,
         chapter_statistics_name(chapter_number),
     )
     missing = [name for name in required if not _is_nonempty_file(chapter_dir / name)]
@@ -381,6 +389,11 @@ def validate_chapter_outputs(chapter_dir: Path, chapter_number: int) -> None:
         raise CliError(
             f"Chapter {chapter_number} did not finish successfully. Missing or empty: "
             f"{', '.join(missing)}. Generated sources and checkpoints were preserved."
+        )
+    runtime = chapter_dir / "frontend-assets" / "mathjax" / "tex-svg.js"
+    if not _is_nonempty_file(runtime):
+        raise CliError(
+            f"Chapter {chapter_number} is missing its offline frontend runtime: {runtime}"
         )
 
 
@@ -394,6 +407,18 @@ def run_chapter(args: argparse.Namespace) -> int:
         raise CliError(
             f"Chapter {args.number} is out of range for {config.course_name!r}. "
             f"Choose a chapter from 1 to {len(disk_chapters)}."
+        )
+    from src.frontend_slides.style import STYLE_FILENAME, STYLE_SOURCE_FILENAME
+
+    missing_style = [
+        name
+        for name in (STYLE_FILENAME, STYLE_SOURCE_FILENAME)
+        if not _is_nonempty_file(output_dir / name)
+    ]
+    if missing_style:
+        raise CliError(
+            "Course slide style is missing. Rerun the foundation command to create: "
+            + ", ".join(missing_style)
         )
 
     runner = build_runner(config, output_dir, resume=True)
@@ -425,12 +450,15 @@ def run_chapter(args: argparse.Namespace) -> int:
             chapter, chapter_index, str(chapter_dir_path)
         )
 
-    if not _is_nonempty_file(chapter_dir_path / "slides.pdf"):
-        compile_chapter(chapter_dir_path)
+    try:
+        runner.finalize_chapter(str(chapter_dir_path))
+    except Exception as exc:
+        raise CliError(f"Chapter frontend finalization failed: {exc}") from exc
 
     validate_chapter_outputs(chapter_dir_path, args.number)
     print(f"\nChapter {args.number} complete: {chapter['title']}")
     print(f"Chapter directory: {chapter_dir_path}")
+    print("Artifacts: slides.tex, slides.pdf, slides.html, slides-html.pdf, slides-html.pptx")
     return 0
 
 
@@ -478,13 +506,24 @@ def run_doctor(args: argparse.Namespace) -> int:
         )
     )
 
-    for module in ("openai", "src.ADDIE"):
+    for module in ("openai", "pylatexenc", "playwright", "pptx", "src.ADDIE"):
         try:
             importlib.import_module(module)
         except Exception as exc:  # pragma: no cover - depends on local install
             checks.append((f"Python import {module}", False, str(exc)))
         else:
             checks.append((f"Python import {module}", True, "available"))
+
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            browser.close()
+    except Exception as exc:
+        checks.append(("Playwright Chromium", False, str(exc)))
+    else:
+        checks.append(("Playwright Chromium", True, "launch succeeded"))
 
     for label, command in (
         ("uv", ("uv", "--version")),

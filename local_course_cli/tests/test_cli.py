@@ -9,6 +9,21 @@ from pathlib import Path
 import pytest
 
 from local_course_cli import cli
+from src.frontend_slides.models import (
+    CourseSlideStyle,
+    PresentationMethod,
+    RenderTheme,
+    SelectedStyle,
+)
+from src.frontend_slides.style import (
+    ASSET_VERSION,
+    STYLE_FILENAME,
+    STYLE_SOURCE_FILENAME,
+    build_style_inventory,
+    selected_asset_text,
+    sha256_text,
+    write_course_style,
+)
 
 
 def make_config(
@@ -41,13 +56,65 @@ def chapters(count: int = 3) -> list[dict[str, str]]:
     ]
 
 
-def write_foundation(output_dir: Path, chapter_count: int = 3) -> None:
+def write_style(output_dir: Path) -> None:
+    selected_style = SelectedStyle("bold_template", "cobalt-grid", "Cobalt Grid")
+    source = selected_asset_text(selected_style)
+    _, inventory_hash = build_style_inventory()
+    style = CourseSlideStyle(
+        schema_version=1,
+        asset_version=ASSET_VERSION,
+        selected_style=selected_style,
+        presentation_method=PresentationMethod(
+            "progressive concepts",
+            "measured",
+            "medium",
+            "worked examples",
+            ["hero", "split", "top"],
+            "guided questions",
+        ),
+        ta_guidance="Use a clear cobalt hierarchy.",
+        render_theme=RenderTheme(
+            colors={
+                "stage_bg": "#111827",
+                "background": "#f8f2df",
+                "background_alt": "#eee2c9",
+                "text": "#1328aa",
+                "muted": "#4b5a8a",
+                "accent": "#1438ff",
+                "accent2": "#111827",
+                "surface": "#fffaf0",
+                "surface_alt": "#e7ddc6",
+                "border": "#1438ff",
+                "panel_fill": "#fffaf0",
+            },
+            display_font="source-serif-4",
+            body_font="dm-sans",
+            mono_font="ibm-plex-mono",
+            title_size=110,
+            heading_size=64,
+            panel_style="filled",
+            border_style="thin",
+            shadow_style="soft",
+            grid_opacity=0.2,
+        ),
+        inventory_sha256=inventory_hash,
+        selected_asset_sha256=sha256_text(source),
+    )
+    write_course_style(output_dir / STYLE_FILENAME, style)
+    (output_dir / STYLE_SOURCE_FILENAME).write_text(source, encoding="utf-8")
+
+
+def write_foundation(
+    output_dir: Path, chapter_count: int = 3, *, with_style: bool = True
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for name in cli.FOUNDATION_FILES:
         (output_dir / name).write_text(f"content for {name}\n", encoding="utf-8")
     (output_dir / "processed_chapters.json").write_text(
         json.dumps(chapters(chapter_count)), encoding="utf-8"
     )
+    if with_style:
+        write_style(output_dir)
 
 
 def write_chapter_sources(output_dir: Path, number: int, *, pdf: bool = False) -> Path:
@@ -84,6 +151,7 @@ class FakeRunner:
         self.chapter_calls: list[tuple[dict[str, str], int, str]] = []
         self.write_foundation_on_run = False
         self.saw_checkpoint = False
+        self.finalize_calls: list[Path] = []
 
     def setup(self) -> None:
         self.setup_calls += 1
@@ -101,6 +169,16 @@ class FakeRunner:
         self.chapter_calls.append((chapter, chapter_index, chapter_dir))
         number = chapter_index + 1
         write_chapter_sources(self.output_dir, number)
+
+    def finalize_chapter(self, chapter_dir: str) -> None:
+        target = Path(chapter_dir)
+        self.finalize_calls.append(target)
+        (target / "slides.pdf").write_bytes(b"%PDF-test")
+        for name in cli.FRONTEND_CHAPTER_FILES:
+            (target / name).write_bytes(b"test artifact")
+        runtime = target / "frontend-assets" / "mathjax"
+        runtime.mkdir(parents=True, exist_ok=True)
+        (runtime / "tex-svg.js").write_text("mathjax", encoding="utf-8")
 
 
 def foundation_args(**overrides: object) -> Namespace:
@@ -229,11 +307,6 @@ def test_chapter_13_maps_to_index_12_and_only_generates_that_chapter(
     runner = FakeRunner(output_dir, chapter_count=13)
     monkeypatch.setattr(cli, "build_runner", lambda *_args, **_kwargs: runner)
 
-    def fake_compile(target: Path) -> None:
-        (target / "slides.pdf").write_bytes(b"%PDF-test")
-
-    monkeypatch.setattr(cli, "compile_chapter", fake_compile)
-
     assert cli.run_chapter(Namespace(course_id="test-course", number=13)) == 0
 
     assert len(runner.chapter_calls) == 1
@@ -279,6 +352,7 @@ def test_completed_chapter_is_not_regenerated(
 
     assert cli.run_chapter(Namespace(course_id="test-course", number=2)) == 0
     assert runner.chapter_calls == []
+    assert runner.finalize_calls == [output_dir / "chapter_2"]
 
 
 def test_pdf_only_recompilation_makes_no_chapter_model_calls(
@@ -289,18 +363,11 @@ def test_pdf_only_recompilation_makes_no_chapter_model_calls(
     write_foundation(output_dir)
     target = write_chapter_sources(output_dir, 2)
     runner = FakeRunner(output_dir)
-    compiled: list[Path] = []
     monkeypatch.setattr(cli, "build_runner", lambda *_args, **_kwargs: runner)
-
-    def fake_compile(chapter_dir: Path) -> None:
-        compiled.append(chapter_dir)
-        (chapter_dir / "slides.pdf").write_bytes(b"%PDF-test")
-
-    monkeypatch.setattr(cli, "compile_chapter", fake_compile)
 
     assert cli.run_chapter(Namespace(course_id="test-course", number=2)) == 0
     assert runner.chapter_calls == []
-    assert compiled == [target]
+    assert runner.finalize_calls == [target]
 
 
 def test_partial_chapter_preserves_and_uses_checkpoint(
@@ -314,15 +381,20 @@ def test_partial_chapter_preserves_and_uses_checkpoint(
     (target / "_checkpoint.json").write_text('{"version": 1}', encoding="utf-8")
     runner = FakeRunner(output_dir)
     monkeypatch.setattr(cli, "build_runner", lambda *_args, **_kwargs: runner)
-    monkeypatch.setattr(
-        cli,
-        "compile_chapter",
-        lambda chapter_dir: (chapter_dir / "slides.pdf").write_bytes(b"%PDF-test"),
-    )
-
     assert cli.run_chapter(Namespace(course_id="test-course", number=2)) == 0
     assert runner.saw_checkpoint is True
     assert len(runner.chapter_calls) == 1
+
+
+def test_legacy_course_requires_foundation_style(
+    isolated_paths: Path,
+) -> None:
+    output_dir = isolated_paths / "test-course"
+    cli.write_manifest(output_dir, make_config())
+    write_foundation(output_dir, with_style=False)
+
+    with pytest.raises(cli.CliError, match="Rerun the foundation command"):
+        cli.run_chapter(Namespace(course_id="test-course", number=1))
 
 
 def test_main_returns_nonzero_for_invalid_course_id(

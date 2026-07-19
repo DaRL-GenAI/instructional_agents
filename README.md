@@ -283,11 +283,20 @@ exp/{experiment_name}/
 ├── result_assessment_planning.md          # Assessment planning
 ├── result_final_exam_project.md           # Final project design
 ├── processed_chapters.json                # Chapter metadata
+├── course_slide_style.json                # Validated course-wide frontend style
+├── course_slide_style_source.md           # Exact selected style source snapshot
+├── statistics_slide_style.json            # Style deliberation timing/tokens
 ├── statistics.json                        # Generation statistics
 │
 ├── chapter_1/                             # Chapter 1 materials
 │   ├── slides.tex                         # LaTeX source
 │   ├── slides.pdf                         # Compiled PDF slides (⭐ ready to use)
+│   ├── slides.html                        # Offline interactive HTML slides
+│   ├── slides-html.pdf                    # PDF exported from the HTML deck
+│   ├── slides-html.pptx                   # Static image-based HTML export
+│   ├── frontend-assets/                   # Offline MathJax and selected fonts
+│   ├── frontend-slides-manifest.json       # Hashes, counts, warnings, artifacts
+│   ├── slide-splits.json                   # Dense Beamer frame split report
 │   ├── slides.pptx                        # PowerPoint slides (⭐ editable)
 │   ├── script.md                          # Presentation script
 │   ├── assessment.md                      # Assessment materials

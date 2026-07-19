@@ -39,6 +39,9 @@ dependencies = [
     "pdfplumber>=0.10.0",
     "numpy>=1.24.0",
     "markitdown[pptx]>=0.1.0",
+    "pylatexenc>=2.10",
+    "playwright>=1.61.0",
+    "python-pptx>=1.0.2",
 ]
 
 [project.optional-dependencies]
@@ -71,6 +74,13 @@ include = ["src*"]
     "frontend/*.css",
     "src/*.js",
 ]
+"src.frontend_slides" = [
+    "skill_assets/frontend_slides/**/*",
+    "runtime_assets/**/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "playwright: browser-based frontend slide rendering and export smoke tests",
+]
