@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test-key"}):
     with patch("openai.OpenAI"):
-        from src.slides import SlideUtils
+        from src.slides import SlideUtils, SlidesDeliberation
 
 
 class TestSlideUtils:
@@ -105,11 +105,12 @@ class TestSlideUtils:
         prompt = SlideUtils.generate_latex_frame_prompt(
             title="Intro to ML",
             content="Machine learning is a field of AI.",
-            max_frames=2,
         )
         assert "Intro to ML" in prompt
         assert "Machine learning" in prompt
-        assert "2" in prompt  # max frames
+        assert "exactly one Beamer frame" in prompt
+        assert "multiple frames" not in prompt
+        assert "Part X" not in prompt
         assert "Never nest itemize/enumerate environments more than 3 levels" in prompt
 
     def test_generate_latex_frame_prompt_with_feedback(self):
@@ -128,3 +129,18 @@ class TestSlideUtils:
             description="Overview of the topic",
         )
         assert "Overview of the topic" in prompt
+
+    def test_legacy_checkpoint_is_rejected(self, tmp_path):
+        deliberation = SlidesDeliberation(
+            id="slides",
+            name="Slides",
+            agents={},
+            llm=None,
+            output_dir=str(tmp_path),
+        )
+        (tmp_path / deliberation.CHECKPOINT_FILENAME).write_text(
+            '{"version":1,"latex_dict":{"0":{"frames":[]}}}',
+            encoding="utf-8",
+        )
+
+        assert deliberation._load_checkpoint() is None

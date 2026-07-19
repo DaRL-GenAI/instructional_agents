@@ -17,7 +17,6 @@ from .models import (
     StyleCandidate,
     StylePlan,
 )
-from .split import expand_units
 from .style import renderer_theme
 from .weights import element_weight as _element_weight
 from .weights import item_weight
@@ -793,9 +792,8 @@ def render_deck_html(
         }}
 
         /* === OVERFLOW AUTO-FIT ===
-           Overloaded frames are split into multiple slides at build time, so this
-           only needs to absorb small residual overflows. The 0.80 floor keeps body
-           text at readable size (roughly 19-21px minimum). */
+           Keep each Beamer frame on one HTML slide. Dense source frames may shrink
+           to 60% before validation reports that the content still does not fit. */
         function fitSlide(slide) {{
             const content = slide.querySelector('.slide-content');
             const body = slide.querySelector('.slide-body');
@@ -807,7 +805,7 @@ def render_deck_html(
             const overflowing = () =>
                 body.scrollHeight - body.clientHeight > 2 ||
                 content.scrollHeight - content.clientHeight > 2;
-            while (overflowing() && scale > 0.8) {{
+            while (overflowing() && scale > 0.6) {{
                 scale = Math.round((scale - 0.04) * 100) / 100;
                 content.style.setProperty('--fit-scale', scale);
             }}
@@ -997,7 +995,7 @@ def _split_columns(elements: list[ContentElement]) -> tuple[list[ContentElement]
     if len(elements) == 1:
         # A lone block (or similar) would leave the second column empty; break it
         # into its constituent pieces so both columns carry content.
-        expanded = expand_units(elements[0])
+        expanded = _expand_column_units(elements[0])
         if len(expanded) >= 2:
             elements = expanded
     weights = [_element_weight(element) for element in elements]
@@ -1033,6 +1031,86 @@ def _split_list(element: ContentElement) -> tuple[list[ContentElement], list[Con
 def _split_columns_fallback(elements: list[ContentElement]) -> tuple[list[ContentElement], list[ContentElement]]:
     mid = (len(elements) + 1) // 2
     return elements[:mid], elements[mid:]
+
+
+_COLUMN_TARGET_WEIGHT = 9
+
+
+def _expand_column_units(element: ContentElement) -> list[ContentElement]:
+    """Break a lone dense element into units that can balance across two columns."""
+    if _element_weight(element) <= _COLUMN_TARGET_WEIGHT:
+        return [element]
+    if element.kind == "list":
+        return _split_oversized_column_list(element)
+    if element.kind == "block":
+        child_units = [
+            unit
+            for child in element.children
+            for unit in _expand_column_units(child)
+        ]
+        groups = _pack_column_units(child_units, _COLUMN_TARGET_WEIGHT - 1)
+        if len(groups) <= 1:
+            return [element]
+        return [replace(element, children=group) for group in groups]
+    return [element]
+
+
+def _pack_column_units(
+    units: list[ContentElement], cap: int
+) -> list[list[ContentElement]]:
+    groups: list[list[ContentElement]] = []
+    current: list[ContentElement] = []
+    current_weight = 0
+    for unit in units:
+        weight = _element_weight(unit)
+        if current and current_weight + weight > cap:
+            groups.append(current)
+            current, current_weight = [], 0
+        current.append(unit)
+        current_weight += weight
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _split_oversized_column_list(element: ContentElement) -> list[ContentElement]:
+    if len(element.items) == 1 and element.items[0].children:
+        return _promote_column_list_item(element)
+    chunks: list[ContentElement] = []
+    items: list[ListItem] = []
+    weight = 0
+    start = element.start
+    for item in element.items:
+        weight_of_item = item_weight(item)
+        if items and weight + weight_of_item > _COLUMN_TARGET_WEIGHT:
+            chunks.append(replace(element, items=items, start=start))
+            start = start + len(items) if element.ordered else 1
+            items, weight = [], 0
+        items.append(item)
+        weight += weight_of_item
+    if items:
+        chunks.append(replace(element, items=items, start=start))
+    expanded: list[ContentElement] = []
+    for chunk in chunks:
+        if (
+            len(chunk.items) == 1
+            and chunk.items[0].children
+            and _element_weight(chunk) > _COLUMN_TARGET_WEIGHT
+        ):
+            expanded.extend(_promote_column_list_item(chunk))
+        else:
+            expanded.append(chunk)
+    return expanded
+
+
+def _promote_column_list_item(element: ContentElement) -> list[ContentElement]:
+    item = element.items[0]
+    units: list[ContentElement] = []
+    if item.text:
+        units.append(replace(element, items=[replace(item, children=[])]))
+    for child in item.children:
+        units.extend(_expand_column_units(child))
+    return units
 
 
 _ALIGNMENT_SAFE_ENV_RE = re.compile(r"\\begin\{(aligned|alignedat|gathered|cases|array|[A-Za-z]*matrix)\*?\}")

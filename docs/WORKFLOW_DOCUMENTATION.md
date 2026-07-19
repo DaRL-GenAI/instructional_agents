@@ -218,7 +218,7 @@ For each slide, execute the following sub-steps:
   - Slide draft content
   - Current LaTeX frames (for reference)
   - User feedback
-- **Output**: One or more LaTeX frames (can be split into multiple frames if content is too long, maximum 3 frames), updates `latex_dict`
+- **Output**: Exactly one LaTeX frame for the outline slide, updates `latex_dict`
 
 ##### Step 5.3: Generate Slide Script
 - **Agent**: Teaching Assistant
@@ -228,7 +228,7 @@ For each slide, execute the following sub-steps:
   - All LaTeX frames for current slide
   - Adjacent slides' scripts (for smooth transitions)
   - User feedback
-- **Output**: Detailed speaking script including introduction, key point explanations, frame transitions (if multiple frames), examples and connections, updates `slides_script`
+- **Output**: Detailed speaking script including introduction, key point explanations, examples and connections, updates `slides_script`
 
 ##### Step 5.4: Generate Slide Assessment
 - **Agent**: Teaching Assistant
@@ -261,8 +261,8 @@ asset is materialized into validated design tokens and compact Teaching
 Assistant guidance, then persisted in `course_slide_style.json`.
 
 After each SlidesDeliberation, the system immediately runs the shared chapter
-finalizer. It compiles `slides.tex` into `slides.pdf`, parses and splits the
-Beamer frames, renders the offline `slides.html`, and exports
+finalizer. It compiles `slides.tex` into `slides.pdf`, parses the Beamer
+frames one-to-one, renders the offline `slides.html`, and exports
 `slides-html.pdf` plus the static image-based `slides-html.pptx`. Input/style
 hashes allow missing exports to resume without new model calls.
 

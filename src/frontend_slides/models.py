@@ -149,7 +149,6 @@ class ChapterFrontendResult:
     html_pdf_path: Path
     html_pptx_path: Path
     manifest_path: Path
-    split_report_path: Path
     slide_count: int
     skipped: bool = False
 

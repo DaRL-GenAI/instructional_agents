@@ -15,7 +15,6 @@ from .export import export_html_deck
 from .models import ChapterFrontendResult
 from .render import render_course_presentation_html
 from .runtime import offline_runtime_complete, prepare_offline_runtime
-from .split import split_overloaded_slides, write_split_report
 from .style import STYLE_FILENAME, sha256_file
 from .style_workflow import load_course_slide_style
 from .validation import (
@@ -26,6 +25,8 @@ from .validation import (
 
 
 MANIFEST_FILENAME = "frontend-slides-manifest.json"
+MANIFEST_SCHEMA_VERSION = 2
+LEGACY_SPLIT_REPORT_FILENAME = "slide-splits.json"
 
 
 def finalize_chapter(
@@ -41,7 +42,7 @@ def finalize_chapter(
     html_pdf_path = chapter_path / "slides-html.pdf"
     html_pptx_path = chapter_path / "slides-html.pptx"
     manifest_path = chapter_path / MANIFEST_FILENAME
-    split_report_path = chapter_path / "slide-splits.json"
+    legacy_split_report_path = chapter_path / LEGACY_SPLIT_REPORT_FILENAME
 
     if not tex_path.is_file() or tex_path.stat().st_size == 0:
         raise FrontendSlidesError(f"Chapter LaTeX source is missing or empty: {tex_path}")
@@ -57,9 +58,11 @@ def finalize_chapter(
     source_hash = sha256_file(tex_path)
     style_hash = sha256_file(style_path)
     previous = _read_manifest(manifest_path)
+    manifest_matches = previous.get("schema_version") == MANIFEST_SCHEMA_VERSION
     source_matches = previous.get("source_sha256") == source_hash
     style_matches = previous.get("style_sha256") == style_hash
-    inputs_match = source_matches and style_matches
+    inputs_match = manifest_matches and source_matches and style_matches
+    legacy_split_report_path.unlink(missing_ok=True)
 
     if not source_matches or not _nonempty(latex_pdf_path):
         try:
@@ -77,7 +80,6 @@ def finalize_chapter(
             html_pdf_path,
             html_pptx_path,
             manifest_path,
-            split_report_path,
         )
     )
     if inputs_match and runtime_ok and complete:
@@ -87,15 +89,12 @@ def finalize_chapter(
             html_pdf_path=html_pdf_path,
             html_pptx_path=html_pptx_path,
             manifest_path=manifest_path,
-            split_report_path=split_report_path,
             slide_count=int(previous.get("slide_count", 0)),
             skipped=True,
         )
 
     assets = load_assets()
     deck = parse_beamer(tex_path)
-    original_frame_count = deck.slide_count
-    deck, split_records = split_overloaded_slides(deck)
 
     html_stale = not inputs_match or not _nonempty(html_path) or not runtime_ok
     if html_stale:
@@ -122,13 +121,6 @@ def finalize_chapter(
         finally:
             if html_temporary.exists():
                 html_temporary.unlink()
-        write_split_report(
-            split_records, deck, original_frame_count, chapter_path
-        )
-    elif not _nonempty(split_report_path):
-        write_split_report(
-            split_records, deck, original_frame_count, chapter_path
-        )
 
     need_pdf = html_stale or not _nonempty(html_pdf_path)
     need_pptx = html_stale or not _nonempty(html_pptx_path)
@@ -176,16 +168,14 @@ def finalize_chapter(
             + ", ".join(deck.unsupported_environments)
         )
     manifest = {
-        "schema_version": 1,
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "source": tex_path.name,
         "source_sha256": source_hash,
         "style_sha256": style_hash,
         "selected_style": asdict(style.selected_style),
-        "original_frame_count": original_frame_count,
         "slide_count": deck.slide_count,
         "offline": True,
         "runtime": "frontend-assets",
-        "split_report": split_report_path.name,
         "warnings": warnings,
         "artifacts": {
             "latex_pdf": latex_pdf_path.name,
@@ -209,7 +199,6 @@ def finalize_chapter(
         html_pdf_path=html_pdf_path,
         html_pptx_path=html_pptx_path,
         manifest_path=manifest_path,
-        split_report_path=split_report_path,
         slide_count=deck.slide_count,
     )
 

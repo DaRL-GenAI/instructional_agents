@@ -7,14 +7,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 from PyPDF2 import PdfReader, PdfWriter
 from pptx import Presentation
 
 from src.frontend_slides.assets import load_assets
 from src.frontend_slides.beamer import parse_beamer
 from src.frontend_slides.errors import FrontendSlidesError
-from src.frontend_slides.export import export_html_deck
-from src.frontend_slides.finalize import finalize_chapter
+from src.frontend_slides.export import capture_slide_screenshots, export_html_deck
+from src.frontend_slides.finalize import MANIFEST_SCHEMA_VERSION, finalize_chapter
 from src.frontend_slides.models import (
     CourseSlideStyle,
     PresentationMethod,
@@ -23,7 +24,6 @@ from src.frontend_slides.models import (
 )
 from src.frontend_slides.render import render_course_presentation_html
 from src.frontend_slides.runtime import prepare_offline_runtime
-from src.frontend_slides.split import split_overloaded_slides
 from src.frontend_slides.style import (
     ASSET_VERSION,
     COLOR_KEYS,
@@ -188,10 +188,10 @@ def test_materialization_canonicalizes_rgba_and_known_font_aliases() -> None:
     assert len(notes) == 3
 
 
-def test_offline_renderer_parses_splits_and_has_no_remote_urls(tmp_path: Path) -> None:
+def test_offline_renderer_preserves_frames_and_has_no_remote_urls(tmp_path: Path) -> None:
     tex = tmp_path / "slides.tex"
     write_beamer(tex)
-    deck, _ = split_overloaded_slides(parse_beamer(tex))
+    deck = parse_beamer(tex)
     style = make_style()
     _, font_css = prepare_offline_runtime(tmp_path, style)
 
@@ -406,6 +406,7 @@ def test_finalizer_regenerates_only_missing_export(
     (chapter / "slide-splits.json").write_text("{}", encoding="utf-8")
     prepare_offline_runtime(chapter, make_style())
     manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "source_sha256": sha256_file(chapter / "slides.tex"),
         "style_sha256": sha256_file(course / STYLE_FILENAME),
         "slide_count": 3,
@@ -432,6 +433,7 @@ def test_finalizer_regenerates_only_missing_export(
     assert len(calls) == 1
     assert calls[0][0] is None
     assert result.html_pptx_path.read_bytes() == b"pptx"
+    assert not (chapter / "slide-splits.json").exists()
 
 
 def test_export_failure_preserves_successful_and_previous_artifacts(
@@ -584,7 +586,7 @@ def test_failed_html_validation_preserves_previous_html(
 def test_static_export_smoke(tmp_path: Path) -> None:
     tex = tmp_path / "slides.tex"
     write_beamer(tex)
-    deck, _ = split_overloaded_slides(parse_beamer(tex))
+    deck = parse_beamer(tex)
     style = make_style()
     _, font_css = prepare_offline_runtime(tmp_path, style)
     html_path = tmp_path / "slides.html"
@@ -603,3 +605,55 @@ def test_static_export_smoke(tmp_path: Path) -> None:
     assert zipfile.is_zipfile(pptx_path)
     assert len(PdfReader(str(pdf_path)).pages) == deck.slide_count
     assert len(Presentation(str(pptx_path)).slides) == deck.slide_count
+
+
+@pytest.mark.playwright
+def test_static_capture_freezes_slide_and_reveal_transitions(tmp_path: Path) -> None:
+    html_path = tmp_path / "animated.html"
+    html_path.write_text(
+        """<!doctype html>
+<html><head><style>
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+.deck-stage { position: relative; width: 1920px; height: 1080px; }
+.slide {
+  position: absolute; inset: 0; visibility: hidden; opacity: 0;
+  transition: opacity 620ms ease; background: white;
+}
+.slide.visible { visibility: visible; opacity: 1; }
+.reveal {
+  position: absolute; inset: 0; opacity: 0;
+  transition: opacity 620ms ease 500ms; background: #12ab34;
+}
+.slide.visible .reveal { opacity: 1; }
+.slide-progress {
+  position: fixed; left: 900px; bottom: 0; z-index: 1000;
+  width: 120px; height: 80px; background: #ff0000;
+}
+</style></head><body>
+<main class="deck-stage">
+  <section class="slide active visible"><div class="reveal"></div></section>
+  <section class="slide"><div class="reveal"></div></section>
+</main>
+<div class="slide-progress">transient overlay</div>
+<script>
+window.__slidesFitted = true;
+window.presentation = {
+  showSlide(index) {
+    document.querySelectorAll('.slide').forEach((slide, current) => {
+      slide.classList.toggle('active', current === index);
+      slide.classList.toggle('visible', current === index);
+    });
+  }
+};
+</script></body></html>""",
+        encoding="utf-8",
+    )
+    screenshot_dir = tmp_path / "screenshots"
+    screenshot_dir.mkdir()
+    screenshots = capture_slide_screenshots(html_path, screenshot_dir)
+
+    with Image.open(screenshots[1]) as image:
+        assert image.size == (1920, 1080)
+        rgb = image.convert("RGB")
+        assert rgb.getpixel((960, 540)) == (18, 171, 52)
+        assert rgb.getpixel((960, 1050)) == (18, 171, 52)

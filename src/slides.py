@@ -135,9 +135,8 @@ frame=single
         title: str,
         content: str,
         description: Optional[str] = None,
-        current_frames: Optional[str] = None,
+        current_frame: Optional[str] = None,
         user_feedback: Optional[Dict] = None,
-        max_frames: int = 3,
         style_guidance: str = "",
     ) -> str:
         """Generate prompt for LaTeX frame creation"""
@@ -149,12 +148,12 @@ User Feedback:
 [For overall]{json.dumps(user_feedback.get('overall', {}), indent=2)}
 """
         
-        current_frames_text = ""
-        if current_frames:
-            current_frames_text = f"""
-Current LaTeX Frames (for reference):
+        current_frame_text = ""
+        if current_frame:
+            current_frame_text = f"""
+Current LaTeX frame (for reference):
 ```latex
-{current_frames}
+{current_frame}
 ```
 """
         
@@ -167,27 +166,23 @@ Current LaTeX Frames (for reference):
         
         return f"""
 Based on the following slide content, generate LaTeX code for a presentation slide.
-You can create multiple frames if the content is too extensive for a single frame.
 
 Slide Title: {title}{description_text}
 
 Detailed Content:
 {content[:2000]}
 
-{current_frames_text}{feedback_text}{style_text}
+{current_frame_text}{feedback_text}{style_text}
 
 Please generate the LaTeX code for this slide using the beamer class format.
 You should first summarize the content and extract key points to A BRIEF SUMMARY.
 
-IMPORTANT: You can create multiple frames for this slide if needed (maximum {max_frames} frames). Consider creating separate frames for:
-- Different concepts or topics
-- Lengthy explanations that won't fit on one slide
-- Examples that need their own space
-- Code snippets or formulas that need more room
+IMPORTANT: Return exactly one Beamer frame for this outline slide. Summarize and
+prioritize the source content so it fits within that single frame.
 
-Each frame should be structured as follows:
+The frame should be structured as follows:
 \\begin{{frame}}[fragile]
-    \\frametitle{{Slide Title - Part X}}
+    \\frametitle{{Slide Title}}
     % Content goes here
 \\end{{frame}}
 
@@ -195,9 +190,8 @@ Guidelines:
 1. Don't use non-English characters directly, e.g. use $\\gamma$ instead of γ, $\\epsilon$ instead of ε
 2. If any symbol has a special meaning, add a backslash. e.g. use \\& instead of &
 3. Use bullet points or numbered lists for clarity
-4. Keep each frame focused and not overcrowded
-5. If you create multiple frames [***NO MORE THAN {max_frames} FRAMES***], ensure logical flow between them
-6. Never nest itemize/enumerate environments more than 3 levels deep; prefer 2 levels for readability
+4. Keep the frame focused and not overcrowded
+5. Never nest itemize/enumerate environments more than 3 levels deep; prefer 2 levels for readability
 
 Use LaTeX features like:
 - \\begin{{itemize}} for bullet points
@@ -206,28 +200,26 @@ Use LaTeX features like:
 - \\begin{{lstlisting}} for code snippets
 - \\begin{{equation}} for mathematical formulas
 
-Your response should contain all the frames for this slide, each from \\begin{{frame}}[fragile] to \\end{{frame}}.
-Separate multiple frames with blank lines.
+Your response should contain exactly one frame, from \\begin{{frame}}[fragile]
+to \\end{{frame}}.
 """
     
     @staticmethod
-    def generate_latex_frames_from_content(
+    def generate_latex_frame_from_content(
         agent: Agent,
         title: str,
         content: str,
         description: Optional[str] = None,
-        current_frames: Optional[str] = None,
+        current_frame: Optional[str] = None,
         user_feedback: Optional[Dict] = None,
-        max_frames: int = 3
-    ) -> List[str]:
-        """Generate LaTeX frames from content using an Agent"""
+    ) -> Optional[str]:
+        """Generate exactly one LaTeX frame from content using an Agent."""
         prompt = SlideUtils.generate_latex_frame_prompt(
             title=title,
             content=content,
             description=description,
-            current_frames=current_frames,
+            current_frame=current_frame,
             user_feedback=user_feedback,
-            max_frames=max_frames
         )
         
         agent.reset_history()
@@ -238,7 +230,7 @@ Separate multiple frames with blank lines.
         )
         
         frames = SlideUtils.extract_latex_frames(response)
-        return frames
+        return frames[0] if len(frames) == 1 else None
 
 
 class SlidesDeliberation:
@@ -285,7 +277,7 @@ class SlidesDeliberation:
 
         # Initialize containers for results
         self.slides_outline = []
-        self.latex_dict = {}  # Now stores list of frames per slide
+        self.latex_dict = {}
         self.slides_script = {}
         self.assessment_template = {}  # New: assessment template
         self.assessment_content = {}   # New: assessment content
@@ -294,6 +286,7 @@ class SlidesDeliberation:
     # Checkpoint helpers (resume support)                                #
     # ------------------------------------------------------------------ #
     CHECKPOINT_FILENAME = "_checkpoint.json"
+    CHECKPOINT_VERSION = 2
 
     def _checkpoint_path(self) -> str:
         return os.path.join(self.output_dir, self.CHECKPOINT_FILENAME)
@@ -305,7 +298,7 @@ class SlidesDeliberation:
         process dies mid-write.
         """
         payload = {
-            "version": 1,
+            "version": self.CHECKPOINT_VERSION,
             "done_steps": list(done_steps),
             "last_slide_idx": last_slide_idx,
             "slides_outline": self.slides_outline,
@@ -346,6 +339,12 @@ class SlidesDeliberation:
                 ckpt = json.load(f)
         except Exception as e:
             print(f"[resume] Failed to load checkpoint at {path}: {e}")
+            return None
+        if ckpt.get("version") != self.CHECKPOINT_VERSION:
+            print(
+                f"[resume] Ignoring incompatible checkpoint version "
+                f"{ckpt.get('version')!r}; expected {self.CHECKPOINT_VERSION}."
+            )
             return None
 
         self.slides_outline = ckpt.get("slides_outline", [])
@@ -464,7 +463,7 @@ class SlidesDeliberation:
             # Step 5.1: Generate slide draft content
             slide_draft = self._generate_slide_draft(slide, context_slides, chapter)
 
-            # Step 5.2: Generate slide LaTeX code (potentially multiple frames)
+            # Step 5.2: Generate one LaTeX frame for the outline slide
             self._generate_slide_latex(slide_idx, slide, slide_draft)
 
             # Step 5.3: Generate slide script
@@ -633,16 +632,11 @@ class SlidesDeliberation:
         {self.slide_style_guidance or "Use the default clear academic presentation treatment."}
         
         Please generate the initial LaTeX code with frame placeholders for each slide in the outline.
-        Each slide can have one or more frames based on content complexity.
+        Create exactly one frame placeholder for each slide in the outline.
         
-        Example of frame structures:
+        Example frame structure:
         \\begin{{frame}}[fragile]
-            \\frametitle{{Slide Title - Part 1}}
-            % Content will be added here
-        \\end{{frame}}
-        
-        \\begin{{frame}}[fragile]
-            \\frametitle{{Slide Title - Part 2}}
+            \\frametitle{{Slide Title}}
             % Content will be added here
         \\end{{frame}}
 
@@ -674,70 +668,33 @@ class SlidesDeliberation:
         print(f"Successfully generated initial LaTeX template")
     
     def _parse_latex_frames(self, latex_source: str):
-        """Parse LaTeX frames into a dictionary, grouping by slide"""
-        # Find all frames with their content
-        frame_pattern = re.compile(r'\\begin{frame}(.*?)\\end{frame}', re.DOTALL)
+        """Parse one generated placeholder frame for each outline slide."""
         frametitle_pattern = re.compile(r'\\frametitle{(.*?)}', re.DOTALL)
-        
-        matches = frame_pattern.finditer(latex_source)
-        
+        frames = SlideUtils.extract_latex_frames(latex_source)
+        title_frames = [frame for frame in frames if "\\titlepage" in frame]
+        content_frames = [frame for frame in frames if "\\titlepage" not in frame]
+        prefix, suffix = SlideUtils.parse_latex_template(latex_source)
+        self.latex_prefix = prefix
+        if title_frames:
+            self.latex_prefix += "\n\n" + title_frames[0]
+        self.latex_suffix = suffix
         self.latex_dict = {}
-        current_slide_idx = 0
-        
-        for i, match in enumerate(matches):
-            frame_content = match.group(1)
-            title_match = frametitle_pattern.search(frame_content)
-            
-            title = title_match.group(1).strip() if title_match else f"Frame {i+1}"
-            
-            # Initialize slide entry if it doesn't exist
-            if current_slide_idx not in self.latex_dict:
-                self.latex_dict[current_slide_idx] = {
-                    "frames": [],
-                    "slide_title": title.split(" - ")[0] if " - " in title else title
-                }
-            
-            # Add frame to current slide
-            self.latex_dict[current_slide_idx]["frames"].append({
-                "full_frame": match.group(0),
-                "content": frame_content.strip(),
-                "title": title,
-                "frame_index": len(self.latex_dict[current_slide_idx]["frames"])
-            })
-            
-            # Simple heuristic: if we have processed enough frames for expected slides
-            if len(self.latex_dict[current_slide_idx]["frames"]) >= 1 and current_slide_idx < len(self.slides_outline) - 1:
-                # Check if next frame title suggests a new slide
-                next_match = None
-                for next_match in frame_pattern.finditer(latex_source):
-                    if next_match.start() > match.end():
-                        break
-                
-                if next_match:
-                    next_content = next_match.group(1)
-                    next_title_match = frametitle_pattern.search(next_content)
-                    next_title = next_title_match.group(1).strip() if next_title_match else ""
-                    
-                    # If title doesn't contain current slide title, it's likely a new slide
-                    current_base_title = self.latex_dict[current_slide_idx]["slide_title"]
-                    if current_base_title not in next_title and not next_title.startswith(current_base_title):
-                        current_slide_idx += 1
-        
-        # Store the parts before and after the frames
-        all_frames = ''.join([
-            frame["full_frame"] 
-            for slide_data in self.latex_dict.values() 
-            for frame in slide_data["frames"]
-        ])
-        parts = latex_source.split(all_frames)
-        
-        if len(parts) >= 2:
-            self.latex_prefix = parts[0]
-            self.latex_suffix = parts[1]
-        else:
-            # Fallback if splitting didn't work as expected
-            self.latex_prefix = latex_source.split('\\begin{document}')[0] + '\\begin{document}\n\n\\frame{\\titlepage}\n\n'
-            self.latex_suffix = '\n\\end{document}'
+        for slide_idx, frame in enumerate(content_frames[: len(self.slides_outline)]):
+            title_match = frametitle_pattern.search(frame)
+            title = (
+                title_match.group(1).strip()
+                if title_match
+                else self.slides_outline[slide_idx]["title"]
+            )
+            self.latex_dict[slide_idx] = {
+                "frames": [{
+                    "full_frame": frame,
+                    "content": frame.strip(),
+                    "title": title,
+                    "frame_index": 0,
+                }],
+                "slide_title": title,
+            }
     
     def _generate_slides_script_template(self):
         """Generate slides script template using Teaching Assistant agent"""
@@ -1002,23 +959,22 @@ class SlidesDeliberation:
         return response
     
     def _generate_slide_latex(self, slide_idx: int, slide: Dict[str, str], slide_draft: str):
-        """Generate LaTeX code for a slide using Teaching Assistant agent - can generate multiple frames"""
+        """Generate exactly one LaTeX frame for an outline slide."""
         teaching_assistant = self.agents.get("teaching_assistant")
         if not teaching_assistant:
             raise ValueError("Teaching Assistant agent not found")
         
-        # Get the current LaTeX frames if they exist
+        # Get the current LaTeX frame if it exists.
         current_frames = self.latex_dict.get(slide_idx, {}).get("frames", [])
-        current_frames_text = "\n\n".join([frame["full_frame"] for frame in current_frames]) if current_frames else None
+        current_frame_text = current_frames[0]["full_frame"] if current_frames else None
         
         # Use utility function to generate prompt
         prompt = SlideUtils.generate_latex_frame_prompt(
             title=slide['title'],
             content=slide_draft,
             description=slide.get('description'),
-            current_frames=current_frames_text,
+            current_frame=current_frame_text,
             user_feedback=self.user_feedback,
-            max_frames=3,
             style_guidance=self.slide_style_guidance,
         )
         
@@ -1038,7 +994,7 @@ class SlidesDeliberation:
         # Use utility function to extract frames
         frame_matches = SlideUtils.extract_latex_frames(response)
         
-        if frame_matches:
+        if len(frame_matches) == 1:
             # Initialize slide entry if it doesn't exist
             if slide_idx not in self.latex_dict:
                 self.latex_dict[slide_idx] = {
@@ -1050,18 +1006,17 @@ class SlidesDeliberation:
                 self.latex_dict[slide_idx]["frames"] = []
                 self.latex_dict[slide_idx]["slide_title"] = slide['title']
             
-            # Add all frames for this slide
-            for i, frame_code in enumerate(frame_matches):
-                self.latex_dict[slide_idx]["frames"].append({
-                    "full_frame": frame_code,
-                    "content": frame_code.replace("\\begin{frame}", "").replace("\\end{frame}", "").strip(),
-                    "title": slide['title'] + (f" - Part {i+1}" if len(frame_matches) > 1 else ""),
-                    "frame_index": i
-                })
-            
-            print(f"Generated {len(frame_matches)} frame(s) for slide: {slide['title']}")
+            frame_code = frame_matches[0]
+            self.latex_dict[slide_idx]["frames"].append({
+                "full_frame": frame_code,
+                "content": frame_code.replace("\\begin{frame}", "").replace("\\end{frame}", "").strip(),
+                "title": slide['title'],
+                "frame_index": 0
+            })
+            print(f"Generated frame for slide: {slide['title']}")
         else:
-            # Fallback if no frames were found
+            # Enforce the one-frame contract even when the model returns zero
+            # or multiple frames.
             fallback_frame = f"""\\begin{{frame}}[fragile]
                 \\frametitle{{{slide['title']}}}
                 {slide.get('description', '')}
@@ -1076,7 +1031,10 @@ class SlidesDeliberation:
                 }],
                 "slide_title": slide['title']
             }
-            print(f"Generated fallback frame for slide: {slide['title']}")
+            print(
+                f"Generated fallback frame for slide: {slide['title']} "
+                f"(expected one frame, found {len(frame_matches)})"
+            )
     
     def _generate_slide_script(self, slide_idx: int, slide: Dict[str, str], slide_draft: str):
         """Generate script for a slide using Teaching Assistant agent"""
@@ -1089,16 +1047,14 @@ class SlidesDeliberation:
         current_script = self.slides_script.get(slide_idx, {}).get("script", "")
         next_script = self.slides_script.get(slide_idx+1, {}).get("script", "") if slide_idx < len(self.slides_outline)-1 else ""
         
-        # Get all frames for this slide
-        frames_info = ""
-        if slide_idx in self.latex_dict:
-            for i, frame in enumerate(self.latex_dict[slide_idx]["frames"]):
-                frames_info += f"Frame {i+1}:\n```latex\n{frame['full_frame']}\n```\n\n"
+        frame_info = ""
+        if slide_idx in self.latex_dict and self.latex_dict[slide_idx]["frames"]:
+            frame = self.latex_dict[slide_idx]["frames"][0]
+            frame_info = f"```latex\n{frame['full_frame']}\n```"
         
         # Create the prompt for the agent
         prompt = f"""
         Based on the following slide content, generate a detailed speaking script for presenting this slide.
-        Note: This slide may have multiple frames, so your script should cover all frames smoothly.
         
         Slide Title: {slide['title']}
         Slide Description: {slide['description']}
@@ -1106,8 +1062,8 @@ class SlidesDeliberation:
         Detailed Content:
         {slide_draft}
         
-        LaTeX Frames for this slide:
-        {frames_info}
+        LaTeX frame for this slide:
+        {frame_info}
         
         Context (adjacent slides' scripts for smooth transitions):
         Previous slide script: {prev_script[:200] + "..." if len(prev_script) > 200 else prev_script}
@@ -1121,13 +1077,11 @@ class SlidesDeliberation:
         Please generate a comprehensive speaking script for this slide that:
         1. Introduces the slide topic
         2. Explains all key points clearly and thoroughly
-        3. If multiple frames exist, provides smooth transitions between frames
-        4. Provides relevant examples or analogies
-        5. Connects to previous or upcoming content
-        6. Includes rhetorical questions or engagement points for students
+        3. Provides relevant examples or analogies
+        4. Connects to previous or upcoming content
+        5. Includes rhetorical questions or engagement points for students
         
         The script should be detailed enough for someone else to present effectively from it.
-        If there are multiple frames, clearly indicate when to advance to the next frame.
         """
         
         # Reset agent history to ensure clean context
@@ -1148,7 +1102,6 @@ class SlidesDeliberation:
             "slide_id": slide_idx + 1,
             "title": slide['title'],
             "script": response,
-            "frame_count": len(self.latex_dict.get(slide_idx, {}).get("frames", []))
         }
     
     def _generate_slide_assessment(self, slide_idx: int, slide: Dict[str, str], slide_draft: str):
@@ -1275,12 +1228,8 @@ class SlidesDeliberation:
         for i in range(len(self.slides_outline)):
             if i in self.slides_script:
                 script = self.slides_script[i]
-                frame_count = script.get("frame_count", 1)
                 script_md += f"## Section {script['slide_id']}: {script['title']}\n"
-                if frame_count > 1:
-                    script_md += f"*({frame_count} frames)*\n\n"
-                else:
-                    script_md += "\n"
+                script_md += "\n"
                 script_md += f"{script['script']}\n\n"
                 script_md += "---\n\n"
         

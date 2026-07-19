@@ -296,7 +296,6 @@ exp/{experiment_name}/
 │   ├── slides-html.pptx                   # Static image-based HTML export
 │   ├── frontend-assets/                   # Offline MathJax and selected fonts
 │   ├── frontend-slides-manifest.json       # Hashes, counts, warnings, artifacts
-│   ├── slide-splits.json                   # Dense Beamer frame split report
 │   ├── slides.pptx                        # PowerPoint slides (⭐ editable)
 │   ├── script.md                          # Presentation script
 │   ├── assessment.md                      # Assessment materials

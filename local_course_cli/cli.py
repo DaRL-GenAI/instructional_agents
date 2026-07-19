@@ -38,7 +38,6 @@ FRONTEND_CHAPTER_FILES = (
     "slides-html.pdf",
     "slides-html.pptx",
     "frontend-slides-manifest.json",
-    "slide-splits.json",
 )
 REQUIRED_CATALOG_SECTIONS = (
     "student_profile",

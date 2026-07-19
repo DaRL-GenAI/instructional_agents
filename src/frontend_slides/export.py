@@ -49,14 +49,19 @@ def capture_slide_screenshots(html_path: Path, screenshot_dir: Path) -> list[Pat
                 page.wait_for_function("window.__slidesFitted === true", timeout=30000)
             except Exception:
                 pass
+            page.add_style_tag(content=_EXPORT_MODE_CSS)
+            page.evaluate("document.documentElement.classList.add('static-export')")
             slide_count = page.locator(".slide").count()
             if slide_count < 1:
                 raise FrontendSlidesError("No .slide elements were found in slides.html.")
+            stage = page.locator(".deck-stage")
+            if stage.count() != 1:
+                raise FrontendSlidesError("Expected exactly one .deck-stage in slides.html.")
             for index in range(slide_count):
                 page.evaluate(_SHOW_SLIDE_JS, index)
-                page.wait_for_timeout(120)
+                page.evaluate(_WAIT_FOR_PAINT_JS)
                 output = screenshot_dir / f"slide-{index + 1:03d}.png"
-                page.screenshot(path=str(output), full_page=False)
+                stage.screenshot(path=str(output))
                 screenshots.append(output)
             browser.close()
     except FrontendSlidesError:
@@ -165,4 +170,33 @@ _SHOW_SLIDE_JS = """
         });
     }
 }
+"""
+
+
+_EXPORT_MODE_CSS = """
+html.static-export *,
+html.static-export *::before,
+html.static-export *::after {
+    animation: none !important;
+    transition: none !important;
+    transition-delay: 0s !important;
+}
+html.static-export .reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    visibility: visible !important;
+}
+html.static-export .slide-progress,
+html.static-export .deck-controls,
+html.static-export .edit-hotzone,
+html.static-export .edit-toggle {
+    display: none !important;
+}
+"""
+
+
+_WAIT_FOR_PAINT_JS = """
+() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+})
 """

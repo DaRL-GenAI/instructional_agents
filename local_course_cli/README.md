@@ -98,7 +98,6 @@ chapter_<number>/
 ├── slides-html.pptx
 ├── frontend-assets/
 ├── frontend-slides-manifest.json
-├── slide-splits.json
 ├── script.md
 ├── assessment.md
 └── statistics_slides_chapter_<number>.json
