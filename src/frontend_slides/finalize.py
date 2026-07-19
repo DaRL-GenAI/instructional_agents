@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from src.beamer_preflight import normalize_beamer_file
 from src.compile import LaTeXCompiler
 
 from .assets import load_assets
@@ -44,6 +45,13 @@ def finalize_chapter(
 
     if not tex_path.is_file() or tex_path.stat().st_size == 0:
         raise FrontendSlidesError(f"Chapter LaTeX source is missing or empty: {tex_path}")
+    preflight = normalize_beamer_file(tex_path)
+    if preflight.changed:
+        print(
+            "[preflight] Repaired slides.tex by flattening "
+            f"{preflight.removed_list_wrapper_pairs} list wrapper(s) beyond "
+            "Beamer's 3-level nesting limit."
+        )
     style = load_course_slide_style(course_path)
     style_path = course_path / STYLE_FILENAME
     source_hash = sha256_file(tex_path)
@@ -156,6 +164,12 @@ def finalize_chapter(
         ) from exc
 
     warnings = []
+    if preflight.changed:
+        warnings.append(
+            "LaTeX preflight flattened "
+            f"{preflight.removed_list_wrapper_pairs} list wrapper(s) beyond "
+            "Beamer's 3-level nesting limit."
+        )
     if deck.unsupported_environments:
         warnings.append(
             "Unsupported LaTeX environments were preserved as source cards: "

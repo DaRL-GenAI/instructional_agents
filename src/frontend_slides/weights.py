@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import math
+import re
 
 from .models import BeamerSlide, ContentElement, ListItem
 
 # Rough characters per rendered line at body font size; weights approximate line counts.
 _CHARS_PER_LINE = 90
+_DISPLAY_MATH_RE = re.compile(
+    r"\\\[.*?\\\]"
+    r"|\\begin\{(?:equation|align|gather|multline)\*?\}.*?"
+    r"\\end\{(?:equation|align|gather|multline)\*?\}"
+    r"|\$\$.*?\$\$",
+    re.DOTALL,
+)
 
 
 def element_weight(element: ContentElement) -> int:
@@ -26,13 +34,24 @@ def element_weight(element: ContentElement) -> int:
         return max(3, min(element.text.count("\n") + 2, 6))
     if element.kind in {"equation", "raw"}:
         return 2
-    return max(1, math.ceil(len(element.text) / _CHARS_PER_LINE))
+    return max(1, math.ceil(len(element.text) / _CHARS_PER_LINE)) + _display_math_count(
+        element.text
+    )
 
 
 def item_weight(item: ListItem) -> int:
     lines = 1 + len(item.text) // _CHARS_PER_LINE
-    return lines + sum(element_weight(child) for child in item.children)
+    return (
+        lines
+        + _display_math_count(item.text)
+        + sum(element_weight(child) for child in item.children)
+    )
 
 
 def slide_weight(slide: BeamerSlide) -> int:
     return sum(element_weight(element) for element in slide.elements)
+
+
+def _display_math_count(text: str) -> int:
+    """Account for the vertical box MathJax adds for every display equation."""
+    return len(_DISPLAY_MATH_RE.findall(text))

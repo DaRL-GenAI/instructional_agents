@@ -110,6 +110,7 @@ class TestSlideUtils:
         assert "Intro to ML" in prompt
         assert "Machine learning" in prompt
         assert "2" in prompt  # max frames
+        assert "Never nest itemize/enumerate environments more than 3 levels" in prompt
 
     def test_generate_latex_frame_prompt_with_feedback(self):
         prompt = SlideUtils.generate_latex_frame_prompt(

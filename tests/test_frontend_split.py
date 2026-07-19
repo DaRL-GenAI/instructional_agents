@@ -105,6 +105,27 @@ def test_heavy_block_splits_by_children_keeping_title() -> None:
         assert slide.elements[0].title == "Definition"
 
 
+def test_display_equations_inside_list_items_trigger_readable_splits() -> None:
+    introduction = _text(
+        r"Consider the differential equation: \[\frac{dy}{dt}+3y=5\] Steps:"
+    )
+    steps = ContentElement(
+        kind="list",
+        ordered=True,
+        items=[
+            ListItem(text=rf"Step {index}: \[Y_{index}(s)=\frac{{{index}}}{{s+1}}\]")
+            for index in range(1, 7)
+        ],
+    )
+    deck = _deck([_slide(1, [introduction, steps], title="Worked Example")])
+
+    result, records = split_overloaded_slides(deck)
+
+    assert len(records) == 1
+    assert result.slide_count >= 2
+    assert all(slide_weight(slide) <= SPLIT_THRESHOLD for slide in result.slides)
+
+
 def test_split_report_schema(tmp_path: Path) -> None:
     deck = _deck([_slide(1, [_list(SPLIT_THRESHOLD + 3)], title="Steps")])
     original_count = deck.slide_count

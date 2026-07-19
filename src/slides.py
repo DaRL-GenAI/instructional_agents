@@ -8,6 +8,7 @@ from src.agents import (
     LLM,
     Agent,
 )
+from src.beamer_preflight import normalize_beamer_source
 
 
 class SlideUtils:
@@ -196,6 +197,7 @@ Guidelines:
 3. Use bullet points or numbered lists for clarity
 4. Keep each frame focused and not overcrowded
 5. If you create multiple frames [***NO MORE THAN {max_frames} FRAMES***], ensure logical flow between them
+6. Never nest itemize/enumerate environments more than 3 levels deep; prefer 2 levels for readability
 
 Use LaTeX features like:
 - \\begin{{itemize}} for bullet points
@@ -476,6 +478,14 @@ class SlidesDeliberation:
         
         # Step 6: Compile final LaTeX source
         latex_source = self._compile_latex_source()
+        preflight = normalize_beamer_source(latex_source)
+        latex_source = preflight.source
+        if preflight.changed:
+            print(
+                "[preflight] Flattened "
+                f"{preflight.removed_list_wrapper_pairs} unsupported deep-list "
+                "wrapper(s) before saving slides.tex"
+            )
         
         # Step 7: Compile final slides script
         slides_script_md = self._compile_slides_script()
