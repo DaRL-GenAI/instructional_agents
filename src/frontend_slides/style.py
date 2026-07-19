@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,15 @@ FONT_FAMILIES = {
 DISPLAY_FONTS = {"archivo", "source-serif-4", "space-grotesk"}
 BODY_FONTS = {"archivo", "dm-sans", "source-serif-4", "space-grotesk"}
 MONO_FONTS = {"ibm-plex-mono"}
+FONT_ALIASES = {
+    "inter": "dm-sans",
+    "arial": "dm-sans",
+    "helvetica": "dm-sans",
+    "manrope": "space-grotesk",
+    "jetbrains-mono": "ibm-plex-mono",
+    "space-mono": "ibm-plex-mono",
+    "source-serif": "source-serif-4",
+}
 
 COLOR_KEYS = {
     "stage_bg",
@@ -48,12 +58,31 @@ COLOR_KEYS = {
     "panel_fill",
 }
 COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+SHORT_COLOR_RE = re.compile(r"^#([0-9a-fA-F]{3})$")
+RGB_COLOR_RE = re.compile(
+    r"^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})"
+    r"(?:\s*,\s*(0(?:\.\d+)?|1(?:\.0+)?))?\s*\)$",
+    flags=re.IGNORECASE,
+)
 KEY_RE = re.compile(r"[^a-z0-9]+")
 PANEL_STYLES = {"open", "filled", "outlined"}
 BORDER_STYLES = {"none", "thin", "thick", "dashed"}
 SHADOW_STYLES = {"none", "soft", "hard"}
 DENSITIES = {"low", "medium", "high"}
 LAYOUTS = {"hero", "split", "top", "columns", "math"}
+LAYOUT_ALIASES = {
+    "overview": "hero",
+    "title": "hero",
+    "introduction": "hero",
+    "content": "top",
+    "lecture": "top",
+    "application": "split",
+    "example": "split",
+    "comparison": "columns",
+    "summary": "columns",
+    "equation": "math",
+    "derivation": "math",
+}
 
 
 @dataclass(frozen=True)
@@ -153,7 +182,21 @@ def validate_selection(
     lookup = {(entry.source, entry.key): entry for entry in inventory}
     entry = lookup.get((source, key))
     if entry is None:
-        raise FrontendSlidesError(f"Unknown selected style: {source}:{key}")
+        normalized_key = style_slug(key)
+        suggestions = [
+            f"{candidate.source}:{candidate.key}"
+            for candidate in inventory
+            if candidate.key == normalized_key
+            or style_slug(candidate.name) == normalized_key
+        ]
+        hint = (
+            f". Similar exact inventory pair(s): {', '.join(suggestions)}"
+            if suggestions
+            else ""
+        )
+        raise FrontendSlidesError(
+            f"Unknown selected style: {source}:{key}{hint}"
+        )
 
     density = _required_string(method, "density")
     if density not in DENSITIES:
@@ -178,6 +221,122 @@ def validate_selection(
     )
     reason = _bounded_string(payload, "reason", 1600)
     return SelectedStyle(source=entry.source, key=entry.key, name=entry.name), presentation, reason
+
+
+def canonicalize_selection_payload(
+    payload: dict[str, Any],
+    inventory: list[StyleInventoryEntry],
+) -> tuple[dict[str, Any], list[str]]:
+    """Normalize only unambiguous style identifiers and known layout synonyms."""
+    normalized = deepcopy(payload)
+    notes: list[str] = []
+    selected = normalized.get("selected_style")
+    if isinstance(selected, dict):
+        source = selected.get("source")
+        key = selected.get("key")
+        if isinstance(source, str) and isinstance(key, str):
+            exact = any(
+                entry.source == source and entry.key == key
+                for entry in inventory
+            )
+            if not exact:
+                normalized_key = style_slug(key)
+                candidates = [
+                    entry
+                    for entry in inventory
+                    if entry.key == normalized_key
+                    or style_slug(entry.name) == normalized_key
+                ]
+                if len(candidates) == 1:
+                    candidate = candidates[0]
+                    selected["source"] = candidate.source
+                    selected["key"] = candidate.key
+                    notes.append(
+                        "Canonicalized selected style "
+                        f"{source}:{key} to the unique inventory pair "
+                        f"{candidate.source}:{candidate.key}."
+                    )
+
+    method = normalized.get("presentation_method")
+    if isinstance(method, dict):
+        rotation = method.get("layout_rotation")
+        if isinstance(rotation, list) and all(
+            isinstance(item, str) for item in rotation
+        ):
+            canonical_rotation: list[str] = []
+            replacements: list[str] = []
+            for item in rotation:
+                key = style_slug(item)
+                canonical = LAYOUT_ALIASES.get(key, key)
+                if canonical != item:
+                    replacements.append(f"{item}->{canonical}")
+                if canonical not in canonical_rotation:
+                    canonical_rotation.append(canonical)
+            if replacements:
+                method["layout_rotation"] = canonical_rotation
+                notes.append(
+                    "Canonicalized recognized layout labels: "
+                    + ", ".join(replacements)
+                    + "."
+                )
+    return normalized, notes
+
+
+def canonicalize_materialization_payload(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Convert recognized design tokens to the strict, packaged render interface."""
+    normalized = deepcopy(payload)
+    notes: list[str] = []
+    theme = normalized.get("render_theme")
+    if not isinstance(theme, dict):
+        return normalized, notes
+
+    colors = theme.get("colors")
+    if isinstance(colors, dict):
+        background = _opaque_color(colors.get("background"), (255, 255, 255))
+        backdrop = _hex_to_rgb(background) if background else (255, 255, 255)
+        for key, value in list(colors.items()):
+            canonical = _opaque_color(value, backdrop)
+            if canonical is not None and canonical != value:
+                colors[key] = canonical
+                notes.append(
+                    f"Canonicalized render_theme.colors.{key} from "
+                    f"{value!r} to {canonical!r}."
+                )
+
+    font_fields = {
+        "display_font": DISPLAY_FONTS,
+        "body_font": BODY_FONTS,
+        "mono_font": MONO_FONTS,
+    }
+    guidance_replacements: list[tuple[str, str]] = []
+    for field, allowed in font_fields.items():
+        value = theme.get(field)
+        if not isinstance(value, str) or value in allowed:
+            continue
+        normalized_id = style_slug(value)
+        canonical = FONT_ALIASES.get(normalized_id)
+        if canonical in allowed:
+            theme[field] = canonical
+            notes.append(
+                f"Mapped known font alias {field}={value!r} to packaged "
+                f"font {canonical!r}."
+            )
+            guidance_replacements.append((value, canonical))
+
+    guidance = normalized.get("ta_guidance")
+    if isinstance(guidance, str):
+        for original, canonical in guidance_replacements:
+            packaged_name = FONT_FAMILIES[canonical][0].removeprefix("Course ")
+            guidance = re.sub(
+                rf"\b{re.escape(original)}\b",
+                packaged_name,
+                guidance,
+                flags=re.IGNORECASE,
+            )
+        normalized["ta_guidance"] = guidance
+    return normalized, notes
 
 
 def validate_materialization(
@@ -396,3 +555,39 @@ def _choice(data: dict[str, Any], key: str, choices: set[str]) -> str:
 
 def _compact(value: str, maximum: int) -> str:
     return " ".join(value.split())[:maximum]
+
+
+def _opaque_color(
+    value: Any,
+    backdrop: tuple[int, int, int],
+) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if COLOR_RE.fullmatch(stripped):
+        return stripped.lower()
+    short = SHORT_COLOR_RE.fullmatch(stripped)
+    if short:
+        return "#" + "".join(
+            character * 2 for character in short.group(1)
+        ).lower()
+    rgb = RGB_COLOR_RE.fullmatch(stripped)
+    if not rgb:
+        return None
+    channels = tuple(int(rgb.group(index)) for index in range(1, 4))
+    if any(channel > 255 for channel in channels):
+        return None
+    alpha_text = rgb.group(4)
+    alpha = float(alpha_text) if alpha_text is not None else 1.0
+    composited = tuple(
+        round(alpha * foreground + (1 - alpha) * background)
+        for foreground, background in zip(channels, backdrop)
+    )
+    return "#" + "".join(f"{channel:02x}" for channel in composited)
+
+
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    return tuple(
+        int(value[index : index + 2], 16)
+        for index in (1, 3, 5)
+    )

@@ -30,6 +30,7 @@ from src.frontend_slides.style import (
     STYLE_FILENAME,
     STYLE_SOURCE_FILENAME,
     build_style_inventory,
+    canonicalize_materialization_payload,
     selected_asset_text,
     sha256_file,
     sha256_text,
@@ -155,6 +156,38 @@ def test_materialization_rejects_arbitrary_css_and_unknown_fonts() -> None:
         )
 
 
+def test_materialization_canonicalizes_rgba_and_known_font_aliases() -> None:
+    style = make_style()
+    payload = {
+        "ta_guidance": "Use Space Grotesk headings and Inter body text.",
+        "render_theme": {
+            **asdict(style.render_theme),
+            "colors": {
+                **style.render_theme.colors,
+                "background": "#fdfae7",
+                "border": "rgba(30, 43, 250, 0.2)",
+                "panel_fill": "rgba(30, 43, 250, 0.04)",
+            },
+            "body_font": "inter",
+        },
+    }
+
+    normalized, notes = canonicalize_materialization_payload(payload)
+    result = validate_materialization(
+        normalized,
+        selected_style=style.selected_style,
+        presentation_method=style.presentation_method,
+        inventory_sha256="inventory",
+        selected_asset_sha256=style.selected_asset_sha256,
+    )
+
+    assert result.render_theme.colors["border"] == "#d0d1eb"
+    assert result.render_theme.colors["panel_fill"] == "#f4f2e8"
+    assert result.render_theme.body_font == "dm-sans"
+    assert "DM Sans body text" in result.ta_guidance
+    assert len(notes) == 3
+
+
 def test_offline_renderer_parses_splits_and_has_no_remote_urls(tmp_path: Path) -> None:
     tex = tmp_path / "slides.tex"
     write_beamer(tex)
@@ -259,6 +292,73 @@ def test_style_resume_makes_no_agent_calls(
     )
 
     assert style.selected_style.key == "cobalt-grid"
+
+
+def test_style_selection_canonicalizes_literal_union_slug_and_layout_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad_selection = {
+        "selected_style": {
+            "source": "preset|bold_template",
+            "key": "blue_professional",
+        },
+        "presentation_method": {
+            "narrative": "concept progression",
+            "pacing": "measured",
+            "density": "medium",
+            "emphasis": "worked examples",
+            "layout_rotation": ["overview", "content"],
+            "engagement": "guided questions",
+        },
+        "reason": "Fits the course.",
+    }
+    materialization = json.dumps(
+        {
+            "ta_guidance": "Use a clear professional hierarchy.",
+            "render_theme": asdict(make_style().render_theme),
+        }
+    )
+    seen: dict[str, object] = {"repair_calls": 0}
+
+    def fake_deliberation_run(self):
+        seen["constraint"] = self.summary_agent.output_constraint
+        self.discussion_history = [
+            {"agent": "Teaching Faculty", "content": "Choose Blue Professional."}
+        ]
+        return json.dumps(bad_selection), 1.0, 10
+
+    def fake_generate(self, prompt, stream=True, save_to_history=False):
+        if self.name == "Summarizer":
+            raise AssertionError("Unambiguous aliases should not require an LLM repair")
+        if self.name == "Teaching Assistant":
+            return materialization, 1.0, 10
+        raise AssertionError(f"Unexpected agent call for {self.name}")
+
+    monkeypatch.setattr(
+        "src.frontend_slides.style_workflow.Deliberation.run",
+        fake_deliberation_run,
+    )
+    monkeypatch.setattr(
+        "src.frontend_slides.style_workflow.Agent.generate_response",
+        fake_generate,
+    )
+
+    style = ensure_course_slide_style(
+        SimpleNamespace(course_name="Differential Equations", llm=object()),
+        tmp_path,
+        ["Differential Equations", "Foundation"],
+        [{"title": "First-order ODEs", "description": "Introduction"}],
+    )
+
+    assert seen["repair_calls"] == 0
+    assert '"source": "preset|bold_template"' not in str(seen["constraint"])
+    assert style.selected_style.source == "bold_template"
+    assert style.selected_style.key == "blue-professional"
+    assert style.presentation_method.layout_rotation == ["hero", "top"]
+    stats = json.loads(
+        (tmp_path / "statistics_slide_style.json").read_text(encoding="utf-8")
+    )
+    assert len(stats["selection_normalizations"]) == 2
 
 
 def test_invalid_style_selection_retries_twice_then_fails(

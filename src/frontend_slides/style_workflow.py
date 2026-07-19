@@ -17,6 +17,8 @@ from .style import (
     STYLE_SOURCE_FILENAME,
     STYLE_STATS_FILENAME,
     build_style_inventory,
+    canonicalize_materialization_payload,
+    canonicalize_selection_payload,
     course_style_from_dict,
     selected_asset_text,
     sha256_file,
@@ -50,6 +52,7 @@ def ensure_course_slide_style(
     assets = load_assets()
     inventory, inventory_hash = build_style_inventory(assets)
     inventory_payload = [asdict(entry) for entry in inventory]
+    selection_constraint = _selection_constraint(inventory)
     course_context = {
         "course_name": getattr(addie, "course_name", ""),
         "foundation_documents": [
@@ -100,9 +103,11 @@ def ensure_course_slide_style(
         llm=addie.llm,
         system_prompt=(
             "Synthesize the discussion into one course-wide style choice and presentation method. "
-            "Return strict JSON and select only a source/key pair present in the supplied inventory."
+            'Return strict JSON. selected_style.source must be exactly "preset" or '
+            '"bold_template"; a vertical bar is never part of the value. Copy the selected '
+            "source/key pair verbatim from the supplied inventory, preserving hyphens."
         ),
-        output_constraint=_SELECTION_CONSTRAINT,
+        output_constraint=selection_constraint,
     )
 
     deliberation = Deliberation(
@@ -131,9 +136,17 @@ def ensure_course_slide_style(
     presentation_method: PresentationMethod | None = None
     reason = ""
     selection_error = ""
+    selection_normalizations: list[str] = []
     for attempt in range(3):
         try:
             payload = _parse_json_object(summary)
+            payload, normalization_notes = canonicalize_selection_payload(
+                payload, inventory
+            )
+            for note in normalization_notes:
+                if note not in selection_normalizations:
+                    selection_normalizations.append(note)
+                    print(f"[style normalization] {note}")
             selected_style, presentation_method, reason = validate_selection(
                 payload, inventory
             )
@@ -146,10 +159,11 @@ def ensure_course_slide_style(
                 ) from exc
             summary, elapsed, tokens = _call_agent(
                 summarizer,
-                (
-                    f"{deliberation.format_discussion_history()}\n\n"
-                    f"Your previous JSON was rejected: {exc}\n"
-                    "Return a corrected JSON object only."
+                _selection_repair_prompt(
+                    deliberation=deliberation,
+                    rejected_response=summary,
+                    error=exc,
+                    inventory=inventory,
                 ),
             )
             total_time += elapsed
@@ -181,10 +195,20 @@ def ensure_course_slide_style(
     total_tokens += tokens
     style: CourseSlideStyle | None = None
     materialization_error = ""
+    materialization_normalizations: list[str] = []
     for attempt in range(3):
         try:
+            materialization_payload = _parse_json_object(materialized)
+            (
+                materialization_payload,
+                normalization_notes,
+            ) = canonicalize_materialization_payload(materialization_payload)
+            for note in normalization_notes:
+                if note not in materialization_normalizations:
+                    materialization_normalizations.append(note)
+                    print(f"[style normalization] {note}")
             style = validate_materialization(
-                _parse_json_object(materialized),
+                materialization_payload,
                 selected_style=selected_style,
                 presentation_method=presentation_method,
                 inventory_sha256=inventory_hash,
@@ -199,10 +223,10 @@ def ensure_course_slide_style(
                 ) from exc
             materialized, retry_time, retry_tokens = _call_agent(
                 materializer,
-                (
-                    f"{materialization_prompt}\n\n"
-                    f"Your previous JSON was rejected: {exc}\n"
-                    "Return corrected JSON only, following the exact schema and allowed values."
+                _materialization_repair_prompt(
+                    materialization_prompt=materialization_prompt,
+                    rejected_response=materialized,
+                    error=exc,
                 ),
             )
             total_time += retry_time
@@ -227,6 +251,8 @@ def ensure_course_slide_style(
                 ],
                 "selected_style": asdict(style.selected_style),
                 "reason": reason,
+                "selection_normalizations": selection_normalizations,
+                "materialization_normalizations": materialization_normalizations,
                 "last_selection_error": selection_error or None,
                 "last_materialization_error": materialization_error or None,
             },
@@ -328,22 +354,83 @@ def _atomic_write(path: Path, content: str) -> None:
     temporary.replace(path)
 
 
-_SELECTION_CONSTRAINT = """
-Return only this JSON shape:
-{
-  "selected_style": {"source": "preset|bold_template", "key": "exact inventory key"},
-  "presentation_method": {
+def _selection_constraint(inventory: list[Any]) -> str:
+    allowed_pairs = [
+        {"source": entry.source, "key": entry.key}
+        for entry in inventory
+    ]
+    return f"""
+Return one JSON object only, with this shape:
+{{
+  "selected_style": {{"source": "bold_template", "key": "cobalt-grid"}},
+  "presentation_method": {{
     "narrative": "course-wide narrative approach",
     "pacing": "pacing guidance",
-    "density": "low|medium|high",
+    "density": "medium",
     "emphasis": "what visual hierarchy should emphasize",
-    "layout_rotation": ["hero", "split", "top", "columns", "math"],
+    "layout_rotation": ["hero", "columns"],
     "engagement": "student engagement approach"
-  },
+  }},
   "reason": "why this exact style and method fit the whole course"
-}
-Use at least two supported layout names. Do not invent a style key.
+}}
+The selected_style shown above is a format example, not a recommendation.
+Rules:
+- source must be exactly "preset" or "bold_template". Never return
+  "preset|bold_template".
+- source and key must be copied as one exact pair from ALLOWED_STYLE_PAIRS below.
+  Preserve every hyphen; do not replace hyphens with underscores or spaces.
+- density must be exactly "low", "medium", or "high".
+- layout_rotation must contain at least two distinct values selected from:
+  "hero", "split", "top", "columns", "math".
+
+ALLOWED_STYLE_PAIRS:
+{json.dumps(allowed_pairs, ensure_ascii=False)}
 """
+
+
+def _selection_repair_prompt(
+    *,
+    deliberation: Deliberation,
+    rejected_response: str,
+    error: FrontendSlidesError,
+    inventory: list[Any],
+) -> str:
+    exact_pairs = [
+        f"{entry.source}:{entry.key}"
+        for entry in inventory
+    ]
+    return (
+        f"{deliberation.format_discussion_history()}\n\n"
+        "The previous response failed strict validation.\n"
+        f"Validation error: {error}\n\n"
+        "Previous rejected response:\n"
+        f"{rejected_response[:12000]}\n\n"
+        "Correct only the invalid fields while preserving the intended style and "
+        "presentation method. The source must be exactly `preset` or "
+        "`bold_template`—never the literal text `preset|bold_template`. Copy the key "
+        "verbatim, including hyphens, from one of these exact pairs:\n"
+        f"{json.dumps(exact_pairs, ensure_ascii=False)}\n\n"
+        "Return the corrected JSON object only."
+    )
+
+
+def _materialization_repair_prompt(
+    *,
+    materialization_prompt: str,
+    rejected_response: str,
+    error: FrontendSlidesError,
+) -> str:
+    return (
+        f"{materialization_prompt}\n\n"
+        "The previous response failed strict validation.\n"
+        f"Validation error: {error}\n\n"
+        "Previous rejected response:\n"
+        f"{rejected_response[:12000]}\n\n"
+        "Return corrected JSON only. Every color must be an opaque six-digit hex "
+        "value such as #1e2bfa; do not return rgb(), rgba(), CSS variables, or other "
+        "CSS. Use only one exact packaged font identifier and one exact enum value "
+        "from the output contract for each field."
+    )
 
 
 _MATERIALIZATION_CONSTRAINT = f"""
@@ -364,17 +451,24 @@ Return only this JSON shape:
       "border": "#RRGGBB",
       "panel_fill": "#RRGGBB"
     }},
-    "display_font": "archivo|source-serif-4|space-grotesk",
-    "body_font": "archivo|dm-sans|source-serif-4|space-grotesk",
+    "display_font": "source-serif-4",
+    "body_font": "dm-sans",
     "mono_font": "ibm-plex-mono",
-    "title_size": 72,
-    "heading_size": 44,
-    "panel_style": "open|filled|outlined",
-    "border_style": "none|thin|thick|dashed",
-    "shadow_style": "none|soft|hard",
-    "grid_opacity": 0.0
+    "title_size": 104,
+    "heading_size": 60,
+    "panel_style": "filled",
+    "border_style": "thin",
+    "shadow_style": "soft",
+    "grid_opacity": 0.2
   }}
 }}
 title_size must be 72-128, heading_size 44-78, grid_opacity 0-0.8.
-Allowed packaged fonts: {", ".join(sorted(FONT_FAMILIES))}.
+Choose exactly one value for each enum; never return pipe-separated alternatives.
+Allowed display_font values: archivo, source-serif-4, space-grotesk.
+Allowed body_font values: archivo, dm-sans, source-serif-4, space-grotesk.
+Allowed mono_font value: ibm-plex-mono.
+Allowed panel_style values: open, filled, outlined.
+Allowed border_style values: none, thin, thick, dashed.
+Allowed shadow_style values: none, soft, hard.
+All packaged font identifiers: {", ".join(sorted(FONT_FAMILIES))}.
 """
