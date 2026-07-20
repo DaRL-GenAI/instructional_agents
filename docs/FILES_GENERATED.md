@@ -40,12 +40,18 @@ These files are generated at the start of the workflow, located in `exp/{experim
    - Contains detailed final project description and requirements
    - Generated: After 6th deliberation completes
 
-7. **`processed_chapters.json`**
+7. **`result_presentation_design.md`**
+   - 📝 Validated course-wide presentation design summary
+   - Contains the selected style, rationale, presentation method, palette,
+     typography, and renderer guidance shared by every chapter
+   - Generated: After 7th deliberation completes
+
+8. **`processed_chapters.json`**
    - 📋 Processed chapter information
    - Contains all chapters extracted from syllabus (titles and descriptions)
    - Generated: After syllabus processing completes
 
-8. **`statistics.json`**
+9. **`statistics.json`**
    - 📊 Statistics information
    - Contains execution time and token usage for each deliberation
    - Continuously updated, updated after each deliberation completes
@@ -100,6 +106,7 @@ exp/{experiment_name}/
 ├── result_syllabus_design.md
 ├── result_assessment_planning.md
 ├── result_final_exam_project.md
+├── result_presentation_design.md
 ├── processed_chapters.json
 ├── statistics.json
 │
@@ -130,7 +137,7 @@ exp/{experiment_name}/
 |------|-------|----------------|
 | 0-5 min | Foundation 1-2 | `result_instructional_goals.md`, `result_resource_assessment.md` |
 | 5-10 min | Foundation 3-4 | `result_target_audience.md`, `result_syllabus_design.md`, `processed_chapters.json` |
-| 10-15 min | Foundation 5-6 | `result_assessment_planning.md`, `result_final_exam_project.md` |
+| 10-15 min | Foundation 5-7 | `result_assessment_planning.md`, `result_final_exam_project.md`, `result_presentation_design.md` |
 | 15-25 min | Chapter 1 generation | `chapter_1/slides.tex`, `chapter_1/script.md`, `chapter_1/assessment.md` |
 | 25-30 min | Chapter 1 compilation | `chapter_1/slides.pdf` |
 | 30-40 min | Chapter 2 generation | `chapter_2/slides.tex`, `chapter_2/script.md`, `chapter_2/assessment.md` |
@@ -205,4 +212,3 @@ In the frontend interface, different file types display different icons:
 - 📄 Other text files
 - 🐍 Python files (.py)
 - 🌐 HTML files (.html)
-

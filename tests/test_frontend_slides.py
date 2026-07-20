@@ -22,11 +22,13 @@ from src.frontend_slides.models import (
     RenderTheme,
     SelectedStyle,
 )
+from src.frontend_slides.notes import render_speaker_notes_markdown
 from src.frontend_slides.render import render_course_presentation_html
 from src.frontend_slides.runtime import prepare_offline_runtime
 from src.frontend_slides.style import (
     ASSET_VERSION,
     COLOR_KEYS,
+    PRESENTATION_DESIGN_FILENAME,
     STYLE_FILENAME,
     STYLE_SOURCE_FILENAME,
     build_style_inventory,
@@ -125,6 +127,15 @@ d &= e
 """,
         encoding="utf-8",
     )
+    deck = parse_beamer(path)
+    (path.parent / "script.md").write_text(
+        render_speaker_notes_markdown(
+            deck,
+            ["Notes for nested concepts.", "Notes for the equation."],
+            document_title="Slides Script: Offline Course",
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_inventory_contains_all_46_styles() -> None:
@@ -201,7 +212,7 @@ def test_offline_renderer_preserves_frames_and_has_no_remote_urls(tmp_path: Path
 
     assert validate_html_contract(html, deck.slide_count, load_assets().viewport_css) == []
     assert validate_offline_contract(html) == []
-    assert "frontend-assets/mathjax/tex-svg.js" in html
+    assert "assets/mathjax/tex-svg.js" in html
     assert "https://" not in html
 
 
@@ -273,6 +284,22 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
     assert "Complete style inventory" not in prompt
     assert style.selected_style.key == "cobalt-grid"
     assert load_course_slide_style(tmp_path) == style
+    presentation_result = (
+        tmp_path / PRESENTATION_DESIGN_FILENAME
+    ).read_text(encoding="utf-8")
+    assert presentation_result.startswith("Presentation Design\n===================")
+    assert "- Key: `cobalt-grid`" in presentation_result
+    assert "## Selection Rationale" in presentation_result
+    assert "## Presentation Method" in presentation_result
+    assert "## Palette" in presentation_result
+    assert "## Typography" in presentation_result
+    assert "transparent backgrounds" in presentation_result
+    assert "decorative cards" in style.ta_guidance
+    resumed = ensure_course_slide_style(addie, tmp_path, [], [])
+    assert resumed == style
+    assert (
+        tmp_path / PRESENTATION_DESIGN_FILENAME
+    ).read_text(encoding="utf-8") == presentation_result
 
 
 def test_style_resume_makes_no_agent_calls(
@@ -292,6 +319,123 @@ def test_style_resume_makes_no_agent_calls(
     )
 
     assert style.selected_style.key == "cobalt-grid"
+    assert (tmp_path / PRESENTATION_DESIGN_FILENAME).is_file()
+    assert "decorative cards" in style.ta_guidance
+
+
+def test_style_resume_uses_frozen_authority_when_inventory_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_style(tmp_path)
+    monkeypatch.setattr(
+        "src.frontend_slides.style_workflow.build_style_inventory",
+        lambda *_args, **_kwargs: pytest.fail(
+            "ordinary resume must not consult inventory or reselect"
+        ),
+    )
+    monkeypatch.setattr(
+        "src.frontend_slides.style_workflow.selected_asset_text",
+        lambda *_args, **_kwargs: pytest.fail(
+            "ordinary resume must use the frozen source snapshot"
+        ),
+    )
+    monkeypatch.setattr(
+        "src.frontend_slides.style_workflow.Deliberation.run",
+        lambda _self: pytest.fail("style deliberation should be skipped"),
+    )
+
+    style = ensure_course_slide_style(
+        SimpleNamespace(course_name="Test", llm=object()),
+        tmp_path,
+        [],
+        [],
+    )
+
+    assert style.selected_style.key == "cobalt-grid"
+    assert (tmp_path / PRESENTATION_DESIGN_FILENAME).is_file()
+
+
+def test_invalid_frozen_style_requires_explicit_reselection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_style(tmp_path)
+    (tmp_path / STYLE_SOURCE_FILENAME).write_text("tampered", encoding="utf-8")
+    monkeypatch.setattr(
+        "src.frontend_slides.style_workflow.Deliberation.run",
+        lambda _self: pytest.fail("invalid authority must not be silently reselected"),
+    )
+
+    with pytest.raises(
+        FrontendSlidesError, match="--reselect-presentation-design"
+    ):
+        ensure_course_slide_style(
+            SimpleNamespace(course_name="Test", llm=object()),
+            tmp_path,
+            [],
+            [],
+        )
+
+
+def test_explicit_reselection_replaces_existing_style(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_style(tmp_path)
+    selection = json.dumps(
+        {
+            "selected_style": {
+                "source": "bold_template",
+                "key": "blue-professional",
+            },
+            "presentation_method": {
+                "narrative": "concept progression",
+                "pacing": "measured",
+                "density": "medium",
+                "emphasis": "worked examples",
+                "layout_rotation": ["hero", "top"],
+                "engagement": "guided questions",
+            },
+            "reason": "An intentional course-wide replacement.",
+        }
+    )
+    materialization = json.dumps(
+        {
+            "ta_guidance": "Use a restrained professional hierarchy.",
+            "render_theme": asdict(make_style().render_theme),
+        }
+    )
+    calls = 0
+
+    def fake_deliberation_run(_self):
+        nonlocal calls
+        calls += 1
+        return selection, 1.0, 10
+
+    def fake_generate(self, _prompt, stream=True, save_to_history=False):
+        assert self.name == "Teaching Assistant"
+        return materialization, 1.0, 10
+
+    monkeypatch.setattr(
+        "src.frontend_slides.style_workflow.Deliberation.run",
+        fake_deliberation_run,
+    )
+    monkeypatch.setattr(
+        "src.frontend_slides.style_workflow.Agent.generate_response",
+        fake_generate,
+    )
+
+    style = ensure_course_slide_style(
+        SimpleNamespace(course_name="Test", llm=object()),
+        tmp_path,
+        ["Test", "Foundation"],
+        [{"title": "One", "description": "Chapter"}],
+        reselect=True,
+    )
+
+    assert calls == 1
+    assert style.selected_style.key == "blue-professional"
+    assert "- Key: `blue-professional`" in (
+        tmp_path / PRESENTATION_DESIGN_FILENAME
+    ).read_text(encoding="utf-8")
 
 
 def test_style_selection_canonicalizes_literal_union_slug_and_layout_aliases(
@@ -401,13 +545,16 @@ def test_finalizer_regenerates_only_missing_export(
     write_style(course)
     write_beamer(chapter / "slides.tex")
     (chapter / "slides.pdf").write_bytes(b"%PDF-existing")
-    (chapter / "slides.html").write_text("<html>existing</html>", encoding="utf-8")
+    html_path = chapter / "html" / "slides.html"
+    html_path.parent.mkdir()
+    html_path.write_text("<html>existing</html>", encoding="utf-8")
     (chapter / "slides-html.pdf").write_bytes(b"%PDF-html")
     (chapter / "slide-splits.json").write_text("{}", encoding="utf-8")
     prepare_offline_runtime(chapter, make_style())
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "source_sha256": sha256_file(chapter / "slides.tex"),
+        "script_sha256": sha256_file(chapter / "script.md"),
         "style_sha256": sha256_file(course / STYLE_FILENAME),
         "slide_count": 3,
     }
@@ -433,7 +580,73 @@ def test_finalizer_regenerates_only_missing_export(
     assert len(calls) == 1
     assert calls[0][0] is None
     assert result.html_pptx_path.read_bytes() == b"pptx"
+    written_manifest = json.loads(
+        (chapter / "frontend-slides-manifest.json").read_text(encoding="utf-8")
+    )
+    assert written_manifest["runtime"] == "html/assets"
+    assert written_manifest["artifacts"]["html"] == "html/slides.html"
     assert not (chapter / "slide-splits.json").exists()
+
+
+def test_schema_two_layout_migrates_without_recompiling_latex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course = tmp_path / "course"
+    chapter = course / "chapter_1"
+    chapter.mkdir(parents=True)
+    write_style(course)
+    write_beamer(chapter / "slides.tex")
+    (chapter / "slides.pdf").write_bytes(b"%PDF-latex")
+    (chapter / "slides.html").write_text("<html>legacy</html>", encoding="utf-8")
+    legacy_runtime = chapter / "frontend-assets" / "mathjax"
+    legacy_runtime.mkdir(parents=True)
+    (legacy_runtime / "tex-svg.js").write_text("legacy", encoding="utf-8")
+    (chapter / "slides-html.pdf").write_bytes(b"%PDF-legacy")
+    (chapter / "slides-html.pptx").write_bytes(b"pptx-legacy")
+    (chapter / "frontend-slides-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "source_sha256": sha256_file(chapter / "slides.tex"),
+                "style_sha256": sha256_file(course / STYLE_FILENAME),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "src.frontend_slides.finalize.LaTeXCompiler.compile_one",
+        lambda *_args: pytest.fail("A layout migration must not recompile LaTeX"),
+    )
+    monkeypatch.setattr(
+        "src.frontend_slides.finalize.validate_with_playwright",
+        lambda *_args: [],
+    )
+
+    def fake_export(_html, *, pdf_path, pptx_path):
+        pdf_path.write_bytes(b"%PDF-html")
+        pptx_path.write_bytes(b"pptx")
+
+    monkeypatch.setattr(
+        "src.frontend_slides.finalize.export_html_deck", fake_export
+    )
+
+    result = finalize_chapter(course, chapter)
+
+    assert result.html_path == chapter / "html" / "slides.html"
+    assert "assets/mathjax/tex-svg.js" in result.html_path.read_text(encoding="utf-8")
+    assert (chapter / "html" / "assets" / "mathjax" / "tex-svg.js").is_file()
+    assert not (chapter / "slides.html").exists()
+    assert not (chapter / "frontend-assets").exists()
+    assert (chapter / "slides.pdf").read_bytes() == b"%PDF-latex"
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == MANIFEST_SCHEMA_VERSION
+    assert manifest["script"] == "script.md"
+    assert manifest["script_sha256"] == sha256_file(chapter / "script.md")
+    assert [entry["id"] for entry in manifest["speaker_notes"]] == [
+        "slide-001",
+        "slide-002",
+        "slide-003",
+    ]
 
 
 def test_export_failure_preserves_successful_and_previous_artifacts(
@@ -463,7 +676,7 @@ def test_export_failure_preserves_successful_and_previous_artifacts(
         finalize_chapter(course, chapter)
 
     assert (chapter / "slides.pdf").read_bytes() == b"%PDF-latex"
-    assert (chapter / "slides.html").is_file()
+    assert (chapter / "html" / "slides.html").is_file()
     assert (chapter / "slides-html.pdf").read_bytes() == b"%PDF-previous"
     assert not (chapter / "frontend-slides-manifest.json").exists()
 
@@ -546,6 +759,63 @@ def test_style_change_does_not_recompile_latex(
     assert (chapter / "slides.pdf").read_bytes() == b"%PDF-latex"
 
 
+def test_script_change_regenerates_html_without_recompiling_latex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course = tmp_path / "course"
+    chapter = course / "chapter_1"
+    chapter.mkdir(parents=True)
+    write_style(course)
+    write_beamer(chapter / "slides.tex")
+    (chapter / "slides.pdf").write_bytes(b"%PDF-latex")
+    (chapter / "frontend-slides-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": MANIFEST_SCHEMA_VERSION,
+                "source_sha256": sha256_file(chapter / "slides.tex"),
+                "script_sha256": sha256_file(chapter / "script.md"),
+                "style_sha256": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "src.frontend_slides.finalize.LaTeXCompiler.compile_one",
+        lambda *_args: pytest.fail("A notes-only change must not recompile LaTeX"),
+    )
+    monkeypatch.setattr(
+        "src.frontend_slides.finalize.validate_with_playwright",
+        lambda *_args: [],
+    )
+    exports = 0
+
+    def fake_export(_html, *, pdf_path, pptx_path):
+        nonlocal exports
+        exports += 1
+        pdf_path.write_bytes(b"%PDF-html")
+        pptx_path.write_bytes(b"pptx")
+
+    monkeypatch.setattr(
+        "src.frontend_slides.finalize.export_html_deck", fake_export
+    )
+
+    finalize_chapter(course, chapter)
+    script_path = chapter / "script.md"
+    script_path.write_text(
+        script_path.read_text(encoding="utf-8").replace(
+            "Notes for the equation.", "Updated equation notes."
+        ),
+        encoding="utf-8",
+    )
+    result = finalize_chapter(course, chapter)
+
+    assert exports == 2
+    assert "Updated equation notes." in result.html_path.read_text(encoding="utf-8")
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["script_sha256"] == sha256_file(script_path)
+    assert (chapter / "slides.pdf").read_bytes() == b"%PDF-latex"
+
+
 def test_failed_html_validation_preserves_previous_html(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -556,7 +826,9 @@ def test_failed_html_validation_preserves_previous_html(
     write_beamer(chapter / "slides.tex")
     (chapter / "slides.pdf").write_bytes(b"%PDF-latex")
     previous_html = "<html>previous validated deck</html>"
-    (chapter / "slides.html").write_text(previous_html, encoding="utf-8")
+    html_path = chapter / "html" / "slides.html"
+    html_path.parent.mkdir()
+    html_path.write_text(previous_html, encoding="utf-8")
     (chapter / "frontend-slides-manifest.json").write_text(
         json.dumps(
             {
@@ -578,8 +850,8 @@ def test_failed_html_validation_preserves_previous_html(
     with pytest.raises(FrontendSlidesError, match="synthetic overflow"):
         finalize_chapter(course, chapter)
 
-    assert (chapter / "slides.html").read_text(encoding="utf-8") == previous_html
-    assert not (chapter / "slides.tmp.html").exists()
+    assert html_path.read_text(encoding="utf-8") == previous_html
+    assert not (chapter / "html" / "slides.tmp.html").exists()
 
 
 @pytest.mark.playwright
@@ -589,7 +861,7 @@ def test_static_export_smoke(tmp_path: Path) -> None:
     deck = parse_beamer(tex)
     style = make_style()
     _, font_css = prepare_offline_runtime(tmp_path, style)
-    html_path = tmp_path / "slides.html"
+    html_path = tmp_path / "html" / "slides.html"
     html_path.write_text(
         render_course_presentation_html(
             deck, style, load_assets(), font_css=font_css

@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from .models import (
     StyleCandidate,
     StylePlan,
 )
+from .notes import SpeakerNote, correlate_speaker_notes, stable_slide_id
 from .style import renderer_theme
 from .weights import element_weight as _element_weight
 from .weights import item_weight
@@ -201,8 +203,16 @@ def render_presentation_html(
     style_plan: StylePlan,
     assets: FrontendSlidesAssets,
     selected_design_md: str | None = None,
+    *,
+    speaker_notes: Sequence[SpeakerNote] | None = None,
 ) -> str:
-    return render_deck_html(deck, style_plan.selected, assets, selected_design_md)
+    return render_deck_html(
+        deck,
+        style_plan.selected,
+        assets,
+        selected_design_md,
+        speaker_notes=speaker_notes,
+    )
 
 
 def render_course_presentation_html(
@@ -211,7 +221,8 @@ def render_course_presentation_html(
     assets: FrontendSlidesAssets,
     *,
     font_css: str,
-    mathjax_src: str = "frontend-assets/mathjax/tex-svg.js",
+    mathjax_src: str = "assets/mathjax/tex-svg.js",
+    speaker_notes: Sequence[SpeakerNote] | None = None,
 ) -> str:
     """Render a complete offline deck from a validated course-wide style."""
     candidate = StyleCandidate(
@@ -238,6 +249,7 @@ def render_course_presentation_html(
         font_css=font_css,
         mathjax_src=mathjax_src,
         layout_rotation=style.presentation_method.layout_rotation,
+        speaker_notes=speaker_notes,
     )
 
 
@@ -251,8 +263,14 @@ def render_deck_html(
     font_css: str | None = None,
     mathjax_src: str = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js",
     layout_rotation: list[str] | None = None,
+    speaker_notes: Sequence[SpeakerNote] | None = None,
 ) -> str:
     theme = theme_override or theme_for_candidate(candidate)
+    correlated_notes = (
+        correlate_speaker_notes(deck, speaker_notes)
+        if speaker_notes is not None
+        else []
+    )
     slides = "\n".join(
         render_slide(deck, slide, theme, layout_rotation) for slide in deck.slides
     )
@@ -261,7 +279,11 @@ def render_deck_html(
         "slideCount": deck.slide_count,
         "style": candidate.name,
         "source": str(deck.source_path),
+        "speakerNoteCount": len(correlated_notes),
     }
+    notes_payload = _json_for_script(
+        [note.to_payload() for note in correlated_notes]
+    )
     design_note = _design_note(selected_design_md, candidate)
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -487,8 +509,7 @@ def render_deck_html(
             line-height: 1.12;
         }}
 
-        /* Cards: only equations, code, tables and raw LaTeX earn a surface */
-        .formula,
+        /* Code, tables and raw LaTeX earn a surface; equations stay unboxed. */
         .code-card,
         .table-card,
         .raw-card {{
@@ -499,7 +520,11 @@ def render_deck_html(
             overflow: hidden;
         }}
         .formula {{
-            border-left: 4px solid var(--accent);
+            background: transparent;
+            border: 0;
+            box-shadow: none;
+            padding: calc(8px * var(--fit-scale)) calc(4px * var(--fit-scale));
+            overflow: visible;
             color: var(--text-primary);
             font-size: calc(27px * var(--density) * var(--fit-scale));
         }}
@@ -615,6 +640,47 @@ def render_deck_html(
             outline-offset: 5px;
             cursor: text;
         }}
+        .presenter-notes {{
+            position: fixed;
+            right: 22px;
+            bottom: 22px;
+            z-index: 12000;
+            width: min(520px, calc(100vw - 44px));
+            max-height: min(520px, calc(100vh - 44px));
+            overflow: auto;
+            padding: 22px 24px;
+            border: 1px solid rgba(255, 255, 255, 0.24);
+            border-radius: 14px;
+            background: rgba(9, 12, 18, 0.94);
+            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38);
+            color: #f7f8fa;
+            font: 17px/1.55 var(--font-body);
+        }}
+        .presenter-notes__label {{
+            margin-bottom: 7px;
+            color: #aeb8c8;
+            font: 12px/1.2 var(--font-mono);
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+        }}
+        .presenter-notes h2 {{
+            margin-bottom: 12px;
+            color: #fff;
+            font: 700 23px/1.2 var(--font-display);
+        }}
+        .presenter-notes__text {{ white-space: pre-wrap; }}
+        @media print {{
+            .presenter-notes,
+            .slide-progress,
+            .edit-hotzone,
+            .edit-toggle {{
+                visibility: hidden !important;
+                opacity: 0 !important;
+            }}
+        }}
+        html.static-export .presenter-notes {{
+            display: none !important;
+        }}
 
         /* === ENTRANCE ANIMATIONS === */
         .reveal {{
@@ -645,7 +711,13 @@ def render_deck_html(
     <div class="slide-progress" id="slideProgress" aria-live="polite"></div>
     <div class="edit-hotzone" aria-hidden="true"></div>
     <button class="edit-toggle" id="editToggle" type="button" title="Edit mode (E)" aria-label="Toggle edit mode">E</button>
-    <script type="application/json" id="deck-manifest">{html.escape(json.dumps(manifest_for_page))}</script>
+    <aside class="presenter-notes" id="presenterNotes" aria-live="polite" hidden>
+        <p class="presenter-notes__label">Speaker notes · N to close</p>
+        <h2 id="presenterNotesTitle"></h2>
+        <p class="presenter-notes__text" id="presenterNotesText"></p>
+    </aside>
+    <script type="application/json" id="deck-manifest">{_json_for_script(manifest_for_page)}</script>
+    <script type="application/json" id="speaker-notes-data">{notes_payload}</script>
     <script>
         /* === SLIDE PRESENTATION CONTROLLER === */
         class SlidePresentation {{
@@ -719,12 +791,52 @@ def render_deck_html(
                 clearTimeout(this.hideTimer);
                 this.hideTimer = setTimeout(() => this.progress.classList.remove('visible'), 1400);
                 const slide = this.slides[this.currentSlide];
+                if (window.presenterNotes) {{
+                    window.presenterNotes.showSlide(slide.dataset.slideId);
+                }}
                 if (window.MathJax && window.MathJax.typesetPromise) {{
                     window.MathJax.typesetPromise([slide]).then(() => fitSlide(slide)).catch(() => {{}});
                 }}
             }}
             next() {{ this.showSlide(this.currentSlide + 1); }}
             prev() {{ this.showSlide(this.currentSlide - 1); }}
+        }}
+
+        /* === OFFLINE PRESENTER NOTES === */
+        class PresenterNotes {{
+            constructor() {{
+                this.panel = document.getElementById('presenterNotes');
+                this.title = document.getElementById('presenterNotesTitle');
+                this.text = document.getElementById('presenterNotesText');
+                this.notes = new Map();
+                try {{
+                    const payload = JSON.parse(
+                        document.getElementById('speaker-notes-data').textContent || '[]'
+                    );
+                    payload.forEach((note) => this.notes.set(note.id, note));
+                }} catch (error) {{}}
+                this.currentSlideId = null;
+                document.addEventListener('keydown', (event) => {{
+                    if (
+                        (event.key === 'n' || event.key === 'N') &&
+                        !(event.target && event.target.isContentEditable) &&
+                        !document.documentElement.classList.contains('static-export')
+                    ) {{
+                        event.preventDefault();
+                        this.toggle();
+                    }}
+                }});
+            }}
+            showSlide(slideId) {{
+                this.currentSlideId = slideId;
+                const note = this.notes.get(slideId);
+                this.title.textContent = note ? note.title : 'No speaker notes';
+                this.text.textContent = note ? note.text : 'No correlated note is available for this slide.';
+            }}
+            toggle() {{
+                if (!this.notes.size) return;
+                this.panel.hidden = !this.panel.hidden;
+            }}
         }}
 
         /* === INLINE EDITING CONTROLLER === */
@@ -822,6 +934,7 @@ def render_deck_html(
         }}
         window.__fitAllSlides = fitAllSlides;
 
+        window.presenterNotes = new PresenterNotes();
         window.presentation = new SlidePresentation();
         window.inlineEditor = new InlineEditor();
 
@@ -854,9 +967,10 @@ def render_slide(
     theme: dict[str, str],
     layout_rotation: list[str] | None = None,
 ) -> str:
+    slide_id = stable_slide_id(slide.index)
     if slide.is_titlepage:
         subtitle = _preview_subtitle(deck)
-        return f"""            <section class="slide title-slide active visible" data-slide-index="{slide.index}">
+        return f"""            <section class="slide title-slide active visible" id="{slide_id}" data-slide-id="{slide_id}" data-slide-index="{slide.index}">
                 <div class="slide-frame">
                     <div class="slide-topline reveal"><span>{html.escape(_deck_chrome(deck))}</span><span>{deck.slide_count:02d} slides</span></div>
                     <div class="slide-content layout-hero">
@@ -873,7 +987,7 @@ def render_slide(
     compact = _is_compact_slide(slide)
     content_class = f"slide-content layout-{layout}" + (" compact" if compact else "")
     body = _render_body(slide, layout)
-    return f"""            <section class="slide content-slide" data-slide-index="{slide.index}">
+    return f"""            <section class="slide content-slide" id="{slide_id}" data-slide-id="{slide_id}" data-slide-index="{slide.index}">
                 <div class="slide-frame">
                     <div class="slide-topline reveal"><span>{html.escape(_deck_chrome(deck))}</span><span>{slide.index:02d} / {deck.slide_count:02d}</span></div>
                     <div class="{content_class}">
@@ -1420,6 +1534,18 @@ def _design_note(selected_design_md: str | None, candidate: StyleCandidate) -> s
         first_line = next((line.strip("#- ") for line in selected_design_md.splitlines() if line.strip()), "")
         return f"{candidate.name}; selected bold template design doc loaded; {first_line[:120]}"
     return f"{candidate.name}; generated/custom style recipe"
+
+
+def _json_for_script(value: object) -> str:
+    """Serialize JSON without allowing data to terminate its script element."""
+    return (
+        json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
 
 def _indent(text: str, spaces: int) -> str:

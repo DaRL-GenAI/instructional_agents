@@ -31,10 +31,11 @@ FOUNDATION_FILES = (
     "result_syllabus_design.md",
     "result_assessment_planning.md",
     "result_final_exam_project.md",
+    "result_presentation_design.md",
 )
 CHAPTER_SOURCE_FILES = ("slides.tex", "script.md", "assessment.md")
 FRONTEND_CHAPTER_FILES = (
-    "slides.html",
+    "html/slides.html",
     "slides-html.pdf",
     "slides-html.pptx",
     "frontend-slides-manifest.json",
@@ -235,6 +236,27 @@ def require_api_key() -> None:
 
 
 def validate_foundation(output_dir: Path) -> list[dict[str, str]]:
+    presentation_result = output_dir / "result_presentation_design.md"
+    if not _is_nonempty_file(presentation_result):
+        from src.frontend_slides.errors import FrontendSlidesError
+        from src.frontend_slides.style import STYLE_FILENAME, STYLE_SOURCE_FILENAME
+        from src.frontend_slides.style_workflow import (
+            load_course_slide_style,
+            write_presentation_design_result,
+        )
+
+        if all(
+            _is_nonempty_file(output_dir / name)
+            for name in (STYLE_FILENAME, STYLE_SOURCE_FILENAME)
+        ):
+            try:
+                style = load_course_slide_style(output_dir)
+                write_presentation_design_result(output_dir, style)
+            except FrontendSlidesError:
+                # The standard missing-artifact error below remains the clearest
+                # validation result for an unrecoverable legacy foundation.
+                pass
+
     missing = [
         name for name in FOUNDATION_FILES if not _is_nonempty_file(output_dir / name)
     ]
@@ -270,7 +292,12 @@ def validate_foundation(output_dir: Path) -> list[dict[str, str]]:
     return chapters
 
 
-def build_runner(config: CourseConfig, output_dir: Path, resume: bool = True) -> Any:
+def build_runner(
+    config: CourseConfig,
+    output_dir: Path,
+    resume: bool = True,
+    reselect_presentation_design: bool = False,
+) -> Any:
     """Construct the existing workflow runner. Kept as a seam for tests."""
     from src.ADDIE import ADDIE, ADDIERunner
 
@@ -284,7 +311,12 @@ def build_runner(config: CourseConfig, output_dir: Path, resume: bool = True) ->
         temperature=config.temperature,
         resume=resume,
     )
-    return ADDIERunner(addie, output_dir=str(output_dir), resume=resume)
+    return ADDIERunner(
+        addie,
+        output_dir=str(output_dir),
+        resume=resume,
+        reselect_presentation_design=reselect_presentation_design,
+    )
 
 
 def _new_or_existing_config(args: argparse.Namespace, output_dir: Path) -> CourseConfig:
@@ -339,11 +371,22 @@ def run_foundation(args: argparse.Namespace) -> int:
     config = _new_or_existing_config(args, output_dir)
     load_catalog(config.catalog)
     write_manifest(output_dir, config)
+    reselect = getattr(args, "reselect_presentation_design", False)
+    if reselect:
+        preflight_existing_chapters_for_style_change(output_dir)
 
-    runner = build_runner(config, output_dir, resume=True)
+    runner = build_runner(
+        config,
+        output_dir,
+        resume=True,
+        reselect_presentation_design=reselect,
+    )
     runner.setup()
     runner.run_foundation_deliberations()
     chapters = validate_foundation(output_dir)
+    if reselect:
+        refinalize_existing_chapters(output_dir, runner)
+    assert_course_style_consistency(output_dir)
 
     print(f"\nFoundation complete for {config.course_name!r}.")
     print(f"Course directory: {output_dir}")
@@ -389,10 +432,138 @@ def validate_chapter_outputs(chapter_dir: Path, chapter_number: int) -> None:
             f"Chapter {chapter_number} did not finish successfully. Missing or empty: "
             f"{', '.join(missing)}. Generated sources and checkpoints were preserved."
         )
-    runtime = chapter_dir / "frontend-assets" / "mathjax" / "tex-svg.js"
+    runtime = chapter_dir / "html" / "assets" / "mathjax" / "tex-svg.js"
     if not _is_nonempty_file(runtime):
         raise CliError(
             f"Chapter {chapter_number} is missing its offline frontend runtime: {runtime}"
+        )
+
+
+def repair_chapter_speaker_notes(chapter_dir: Path) -> Path:
+    """Replace only script.md using the exact parsed Beamer slide order."""
+    from src.frontend_slides.beamer import parse_beamer
+    from src.frontend_slides.notes import repair_speaker_notes_markdown
+
+    tex_path = chapter_dir / "slides.tex"
+    if not _is_nonempty_file(tex_path):
+        raise CliError(f"Cannot repair speaker notes without {tex_path}.")
+    deck = parse_beamer(tex_path)
+    script_path = chapter_dir / "script.md"
+    repaired = repair_speaker_notes_markdown(
+        deck,
+        document_title=f"Slides Script: {deck.title}",
+    )
+    temporary = script_path.with_suffix(".md.tmp")
+    temporary.write_text(repaired, encoding="utf-8")
+    os.replace(temporary, script_path)
+    return script_path
+
+
+def completed_chapter_source_dirs(output_dir: Path) -> list[Path]:
+    return sorted(
+        (
+            path
+            for path in output_dir.glob("chapter_*")
+            if path.is_dir()
+            and all(_is_nonempty_file(path / name) for name in CHAPTER_SOURCE_FILES)
+        ),
+        key=lambda path: (
+            int(path.name.removeprefix("chapter_"))
+            if path.name.removeprefix("chapter_").isdigit()
+            else sys.maxsize,
+            path.name,
+        ),
+    )
+
+
+def preflight_existing_chapters_for_style_change(output_dir: Path) -> None:
+    """Reject a style switch before selection if legacy notes are ambiguous."""
+    from src.frontend_slides.beamer import parse_beamer
+    from src.frontend_slides.errors import FrontendSlidesError
+    from src.frontend_slides.notes import upgrade_legacy_script
+
+    for chapter_dir in completed_chapter_source_dirs(output_dir):
+        try:
+            deck = parse_beamer(chapter_dir / "slides.tex")
+            upgrade_legacy_script(
+                deck, (chapter_dir / "script.md").read_text(encoding="utf-8")
+            )
+        except (OSError, FrontendSlidesError) as exc:
+            raise CliError(
+                f"Cannot reselect presentation design while {chapter_dir.name} has "
+                "uncorrelated speaker notes. Run the chapter command with "
+                f"--number {chapter_dir.name.removeprefix('chapter_')} --repair-notes "
+                f"first. Details: {exc}"
+            ) from exc
+
+
+def refinalize_existing_chapters(
+    output_dir: Path,
+    runner: Any | None = None,
+) -> None:
+    """Bring every completed chapter onto the canonical course presentation."""
+    from src.frontend_slides.errors import FrontendSlidesError
+    from src.frontend_slides.finalize import MANIFEST_SCHEMA_VERSION, finalize_chapter
+    from src.frontend_slides.style import STYLE_FILENAME, sha256_file
+
+    for chapter_dir in completed_chapter_source_dirs(output_dir):
+        manifest_path = chapter_dir / "frontend-slides-manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+        expected = {
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "source_sha256": sha256_file(chapter_dir / "slides.tex"),
+            "script_sha256": sha256_file(chapter_dir / "script.md"),
+            "style_sha256": sha256_file(output_dir / STYLE_FILENAME),
+        }
+        artifacts_complete = all(
+            _is_nonempty_file(chapter_dir / name)
+            for name in FRONTEND_CHAPTER_FILES
+        ) and _is_nonempty_file(
+            chapter_dir / "html" / "assets" / "mathjax" / "tex-svg.js"
+        )
+        if (
+            isinstance(manifest, dict)
+            and artifacts_complete
+            and all(manifest.get(key) == value for key, value in expected.items())
+        ):
+            continue
+        try:
+            if runner is not None:
+                runner.finalize_chapter(str(chapter_dir))
+            else:
+                finalize_chapter(output_dir, chapter_dir)
+        except FrontendSlidesError as exc:
+            raise CliError(
+                f"Course-wide frontend reconciliation failed for {chapter_dir.name}: {exc}"
+            ) from exc
+
+
+def assert_course_style_consistency(output_dir: Path) -> None:
+    """Require all completed frontend manifests to use the root style hash."""
+    from src.frontend_slides.style import STYLE_FILENAME, sha256_file
+
+    style_path = output_dir / STYLE_FILENAME
+    expected_hash = sha256_file(style_path)
+    mismatched: list[str] = []
+    for chapter_dir in completed_chapter_source_dirs(output_dir):
+        manifest = chapter_dir / "frontend-slides-manifest.json"
+        if not _is_nonempty_file(manifest):
+            mismatched.append(chapter_dir.name)
+            continue
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            mismatched.append(chapter_dir.name)
+            continue
+        if not isinstance(payload, dict) or payload.get("style_sha256") != expected_hash:
+            mismatched.append(chapter_dir.name)
+    if mismatched:
+        raise CliError(
+            "Completed chapters do not share the canonical presentation design: "
+            + ", ".join(mismatched)
         )
 
 
@@ -449,15 +620,24 @@ def run_chapter(args: argparse.Namespace) -> int:
             chapter, chapter_index, str(chapter_dir_path)
         )
 
+    if getattr(args, "repair_notes", False):
+        repaired = repair_chapter_speaker_notes(chapter_dir_path)
+        print(f"Repaired speaker-note correlation: {repaired}")
+
     try:
         runner.finalize_chapter(str(chapter_dir_path))
     except Exception as exc:
         raise CliError(f"Chapter frontend finalization failed: {exc}") from exc
 
     validate_chapter_outputs(chapter_dir_path, args.number)
+    refinalize_existing_chapters(output_dir, runner)
+    assert_course_style_consistency(output_dir)
     print(f"\nChapter {args.number} complete: {chapter['title']}")
     print(f"Chapter directory: {chapter_dir_path}")
-    print("Artifacts: slides.tex, slides.pdf, slides.html, slides-html.pdf, slides-html.pptx")
+    print(
+        "Artifacts: slides.tex, slides.pdf, html/slides.html, "
+        "slides-html.pdf, slides-html.pptx"
+    )
     return 0
 
 
@@ -601,6 +781,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     foundation.add_argument("--seed", type=int, default=None)
     foundation.add_argument("--temperature", type=float, default=None)
+    foundation.add_argument(
+        "--reselect-presentation-design",
+        action="store_true",
+        help=(
+            "Explicitly choose a new course-wide presentation design and rebuild "
+            "eligible chapter frontend artifacts."
+        ),
+    )
     foundation.set_defaults(handler=run_foundation)
 
     chapters = subparsers.add_parser(
@@ -614,6 +802,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     chapter.add_argument("--course-id", required=True)
     chapter.add_argument("--number", required=True, type=int)
+    chapter.add_argument(
+        "--repair-notes",
+        action="store_true",
+        help=(
+            "Replace only script.md with notes derived from the exact saved "
+            "slides.tex order before frontend finalization."
+        ),
+    )
     chapter.set_defaults(handler=run_chapter)
 
     doctor = subparsers.add_parser(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,11 @@ from .beamer import parse_beamer
 from .errors import FrontendSlidesError
 from .export import export_html_deck
 from .models import ChapterFrontendResult
+from .notes import (
+    correlate_speaker_notes,
+    notes_manifest,
+    upgrade_legacy_script,
+)
 from .render import render_course_presentation_html
 from .runtime import offline_runtime_complete, prepare_offline_runtime
 from .style import STYLE_FILENAME, sha256_file
@@ -25,7 +31,7 @@ from .validation import (
 
 
 MANIFEST_FILENAME = "frontend-slides-manifest.json"
-MANIFEST_SCHEMA_VERSION = 2
+MANIFEST_SCHEMA_VERSION = 3
 LEGACY_SPLIT_REPORT_FILENAME = "slide-splits.json"
 
 
@@ -37,8 +43,9 @@ def finalize_chapter(
     course_path = Path(course_dir)
     chapter_path = Path(chapter_dir)
     tex_path = chapter_path / "slides.tex"
+    script_path = chapter_path / "script.md"
     latex_pdf_path = chapter_path / "slides.pdf"
-    html_path = chapter_path / "slides.html"
+    html_path = chapter_path / "html" / "slides.html"
     html_pdf_path = chapter_path / "slides-html.pdf"
     html_pptx_path = chapter_path / "slides-html.pptx"
     manifest_path = chapter_path / MANIFEST_FILENAME
@@ -46,6 +53,8 @@ def finalize_chapter(
 
     if not tex_path.is_file() or tex_path.stat().st_size == 0:
         raise FrontendSlidesError(f"Chapter LaTeX source is missing or empty: {tex_path}")
+    if not script_path.is_file() or script_path.stat().st_size == 0:
+        raise FrontendSlidesError(f"Chapter speaker notes are missing or empty: {script_path}")
     preflight = normalize_beamer_file(tex_path)
     if preflight.changed:
         print(
@@ -56,12 +65,16 @@ def finalize_chapter(
     style = load_course_slide_style(course_path)
     style_path = course_path / STYLE_FILENAME
     source_hash = sha256_file(tex_path)
+    initial_script_hash = sha256_file(script_path)
     style_hash = sha256_file(style_path)
     previous = _read_manifest(manifest_path)
     manifest_matches = previous.get("schema_version") == MANIFEST_SCHEMA_VERSION
     source_matches = previous.get("source_sha256") == source_hash
+    script_matches = previous.get("script_sha256") == initial_script_hash
     style_matches = previous.get("style_sha256") == style_hash
-    inputs_match = manifest_matches and source_matches and style_matches
+    inputs_match = (
+        manifest_matches and source_matches and script_matches and style_matches
+    )
     legacy_split_report_path.unlink(missing_ok=True)
 
     if not source_matches or not _nonempty(latex_pdf_path):
@@ -83,6 +96,7 @@ def finalize_chapter(
         )
     )
     if inputs_match and runtime_ok and complete:
+        _remove_legacy_frontend_layout(chapter_path)
         return ChapterFrontendResult(
             html_path=html_path,
             latex_pdf_path=latex_pdf_path,
@@ -95,6 +109,20 @@ def finalize_chapter(
 
     assets = load_assets()
     deck = parse_beamer(tex_path)
+    script_markdown = script_path.read_text(encoding="utf-8")
+    try:
+        canonical_script = upgrade_legacy_script(deck, script_markdown)
+    except FrontendSlidesError as exc:
+        raise FrontendSlidesError(
+            f"{exc} Run the chapter note-only repair path before finalizing this deck."
+        ) from exc
+    if canonical_script != script_markdown:
+        _atomic_write(script_path, canonical_script)
+        inputs_match = False
+    script_hash = sha256_file(script_path)
+    speaker_notes = correlate_speaker_notes(
+        deck, script_path.read_text(encoding="utf-8")
+    )
 
     html_stale = not inputs_match or not _nonempty(html_path) or not runtime_ok
     if html_stale:
@@ -104,12 +132,13 @@ def finalize_chapter(
             style,
             assets,
             font_css=font_css,
+            speaker_notes=speaker_notes,
         )
         errors = validate_html_contract(html, deck.slide_count, assets.viewport_css)
         errors.extend(validate_offline_contract(html))
         if errors:
             raise FrontendSlidesError("; ".join(errors))
-        html_temporary = chapter_path / "slides.tmp.html"
+        html_temporary = html_path.with_name("slides.tmp.html")
         try:
             html_temporary.write_text(html, encoding="utf-8")
             visual_errors = validate_with_playwright(
@@ -171,15 +200,18 @@ def finalize_chapter(
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "source": tex_path.name,
         "source_sha256": source_hash,
+        "script": script_path.name,
+        "script_sha256": script_hash,
         "style_sha256": style_hash,
         "selected_style": asdict(style.selected_style),
         "slide_count": deck.slide_count,
         "offline": True,
-        "runtime": "frontend-assets",
+        "runtime": "html/assets",
         "warnings": warnings,
+        "speaker_notes": notes_manifest(speaker_notes),
         "artifacts": {
             "latex_pdf": latex_pdf_path.name,
-            "html": html_path.name,
+            "html": html_path.relative_to(chapter_path).as_posix(),
             "html_pdf": html_pdf_path.name,
             "html_pptx": html_pptx_path.name,
         },
@@ -193,6 +225,7 @@ def finalize_chapter(
     _atomic_write(
         manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
+    _remove_legacy_frontend_layout(chapter_path)
     return ChapterFrontendResult(
         html_path=html_path,
         latex_pdf_path=latex_pdf_path,
@@ -244,3 +277,13 @@ def _atomic_write(path: Path, content: str) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(content, encoding="utf-8")
     temporary.replace(path)
+
+
+def _remove_legacy_frontend_layout(chapter_path: Path) -> None:
+    """Remove schema-v2 HTML/runtime locations after the nested bundle is valid."""
+    (chapter_path / "slides.html").unlink(missing_ok=True)
+    legacy_runtime = chapter_path / "frontend-assets"
+    if legacy_runtime.is_symlink():
+        legacy_runtime.unlink()
+    elif legacy_runtime.exists():
+        shutil.rmtree(legacy_runtime)

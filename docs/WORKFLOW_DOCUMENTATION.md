@@ -255,16 +255,23 @@ For each slide, execute the following sub-steps:
 
 ### Final Compilation
 
-After the foundation documents and chapter list are complete, the five core
-agents run one course-wide style deliberation. The selected Frontend Slides
-asset is materialized into validated design tokens and compact Teaching
-Assistant guidance, then persisted in `course_slide_style.json`.
+After the six curriculum documents and chapter list are complete, the five core
+agents run `presentation_design` as the seventh foundation deliberation. Its
+readable summary is saved in `result_presentation_design.md`; the selected
+Frontend Slides asset is also materialized into validated design tokens and
+compact Teaching Assistant guidance in `course_slide_style.json`. Ordinary
+resumes reuse this frozen course-wide decision. Only an explicit
+`--reselect-presentation-design` request may replace it.
 
 After each SlidesDeliberation, the system immediately runs the shared chapter
 finalizer. It compiles `slides.tex` into `slides.pdf`, parses the Beamer
-frames one-to-one, renders the offline `slides.html`, and exports
+frames one-to-one, renders the offline `html/slides.html` with its runtime in
+`html/assets/`, and exports
 `slides-html.pdf` plus the static image-based `slides-html.pptx`. Input/style
 hashes allow missing exports to resume without new model calls.
+`script.md` uses stable slide IDs and is validated against the parsed frames;
+the same notes are embedded in the HTML deck and can be toggled with `N`.
+Presenter controls are hidden during PDF and PPTX export.
 
 **Input:**
 - All `slides.tex` files in chapter directories
@@ -385,6 +392,13 @@ exp/{experiment_name}/
 ├── statistics.json
 ├── chapter_1/
 │   ├── slides.tex
+│   ├── slides.pdf
+│   ├── html/
+│   │   ├── slides.html
+│   │   └── assets/
+│   ├── slides-html.pdf
+│   ├── slides-html.pptx
+│   ├── frontend-slides-manifest.json
 │   ├── script.md
 │   ├── assessment.md
 │   └── statistics_slides_chapter_1.json

@@ -27,8 +27,8 @@ def validate_offline_contract(html: str) -> list[str]:
     if re.search(r"(?:src|href)\s*=\s*[\"']https?://", html, flags=re.IGNORECASE):
         errors.append("Offline slides must not load scripts, styles, fonts, or images over HTTP.")
     required = (
-        "frontend-assets/mathjax/tex-svg.js",
-        "frontend-assets/fonts/",
+        "assets/mathjax/tex-svg.js",
+        "assets/fonts/",
     )
     for reference in required:
         if reference not in html:

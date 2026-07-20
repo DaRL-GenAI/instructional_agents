@@ -11,6 +11,8 @@ from src.agents import (
 
 from src.slides import SlidesDeliberation
 from src.frontend_slides import ensure_course_slide_style, finalize_chapter
+from src.frontend_slides.style import PRESENTATION_DESIGN_FILENAME
+from src.frontend_slides.style_workflow import PRESENTATION_DESIGN_NAME
 
 class SyllabusProcessor(Agent):
     """
@@ -99,7 +101,13 @@ class ADDIERunner:
     Runner class for the ADDIE workflow
     Handles command-line interaction and execution logic
     """
-    def __init__(self, addie_instance, output_dir="output", resume: bool = False):
+    def __init__(
+        self,
+        addie_instance,
+        output_dir="output",
+        resume: bool = False,
+        reselect_presentation_design: bool = False,
+    ):
         """
         Initialize the runner with an ADDIE instance
 
@@ -108,11 +116,14 @@ class ADDIERunner:
             output_dir: Directory to read/write deliberation outputs.
             resume: If True, skip deliberations whose outputs are already
                 present on disk and pick up chapter work mid-stream.
+            reselect_presentation_design: Explicitly replace the frozen
+                course-wide presentation decision.
         """
         self.addie = addie_instance
         self.course_name = None
         self.output_dir = output_dir
         self.resume = resume
+        self.reselect_presentation_design = reselect_presentation_design
         self.results = []
         self.chapters = []
 
@@ -131,18 +142,19 @@ class ADDIERunner:
         self.results = [self.course_name]
     
     def run_foundation_deliberations(self):
-        """Run the first 6 foundational deliberations"""
+        """Run all seven foundational deliberations."""
         print(f"\n{'#'*60}\nStarting ADDIE Workflow: Foundation Phase\n{'#'*60}\n")
         
-        # Get the first 6 deliberations
+        # The six ADDIE documents are followed by presentation design.
         foundation_deliberations = self.addie.deliberations
+        deliberation_count = len(foundation_deliberations) + 1
         
         # Run each deliberation in sequence
         i = 0
         statistics = []
         while i < len(foundation_deliberations):
             deliberation = foundation_deliberations[i]
-            print(f"\n{'#'*50}\nDeliberation {i+1}/{len(foundation_deliberations)}: {deliberation.name}\n{'#'*50}\n")
+            print(f"\n{'#'*50}\nDeliberation {i+1}/{deliberation_count}: {deliberation.name}\n{'#'*50}\n")
 
             # Resume: if a result file for this deliberation already exists,
             # load it into self.results and skip the LLM call.
@@ -211,12 +223,71 @@ class ADDIERunner:
 
         # After running the syllabus design deliberation, process the syllabus
         self._process_syllabus()
+        print(
+            f"\n{'#'*50}\nDeliberation {deliberation_count}/{deliberation_count}: "
+            f"{PRESENTATION_DESIGN_NAME}\n{'#'*50}\n"
+        )
         self.course_slide_style = ensure_course_slide_style(
             self.addie,
             self.output_dir,
             self.results,
             self.chapters,
+            reselect=self.reselect_presentation_design,
         )
+        result_path = os.path.join(self.output_dir, PRESENTATION_DESIGN_FILENAME)
+        with open(result_path, "r", encoding="utf-8") as result_file:
+            presentation_result = result_file.read()
+        header = (
+            f"{PRESENTATION_DESIGN_NAME}\n"
+            f"{'=' * len(PRESENTATION_DESIGN_NAME)}\n\n"
+        )
+        if presentation_result.startswith(header):
+            presentation_result = presentation_result[len(header):]
+        result_index = len(foundation_deliberations) + 1
+        if len(self.results) <= result_index:
+            self.results.append(presentation_result)
+        else:
+            self.results[result_index] = presentation_result
+        style_stats_path = os.path.join(
+            self.output_dir, "statistics_slide_style.json"
+        )
+        foundation_stats_path = os.path.join(self.output_dir, "statistics.json")
+        if os.path.exists(style_stats_path):
+            try:
+                with open(style_stats_path, "r", encoding="utf-8") as stats_file:
+                    style_stats = json.load(stats_file)
+                existing_stats = []
+                if os.path.exists(foundation_stats_path):
+                    with open(
+                        foundation_stats_path, "r", encoding="utf-8"
+                    ) as stats_file:
+                        loaded_stats = json.load(stats_file)
+                    if isinstance(loaded_stats, list):
+                        existing_stats = loaded_stats
+                existing_stats = [
+                    entry
+                    for entry in existing_stats
+                    if not (
+                        isinstance(entry, dict)
+                        and entry.get("deliberation") == "presentation_design"
+                    )
+                ]
+                existing_stats.append(
+                    {
+                        "deliberation": "presentation_design",
+                        "elapsed_time": style_stats.get("elapsed_time", 0),
+                        "token_usage": style_stats.get("token_usage", 0),
+                    }
+                )
+                with open(
+                    foundation_stats_path, "w", encoding="utf-8"
+                ) as stats_file:
+                    json.dump(existing_stats, stats_file, indent=2)
+            except (OSError, json.JSONDecodeError, AttributeError):
+                print(
+                    "Warning: could not append presentation-design statistics "
+                    "to statistics.json"
+                )
     
     def _process_syllabus(self):
         """Process the syllabus to extract chapters"""

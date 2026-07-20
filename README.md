@@ -282,6 +282,7 @@ exp/{experiment_name}/
 ├── result_syllabus_design.md              # Course syllabus (⭐ important)
 ├── result_assessment_planning.md          # Assessment planning
 ├── result_final_exam_project.md           # Final project design
+├── result_presentation_design.md          # Seventh foundation: course-wide presentation design
 ├── processed_chapters.json                # Chapter metadata
 ├── course_slide_style.json                # Validated course-wide frontend style
 ├── course_slide_style_source.md           # Exact selected style source snapshot
@@ -291,11 +292,12 @@ exp/{experiment_name}/
 ├── chapter_1/                             # Chapter 1 materials
 │   ├── slides.tex                         # LaTeX source
 │   ├── slides.pdf                         # Compiled PDF slides (⭐ ready to use)
-│   ├── slides.html                        # Offline interactive HTML slides
+│   ├── html/                              # Portable offline HTML bundle
+│   │   ├── slides.html                    # Offline interactive HTML slides
+│   │   └── assets/                        # Offline MathJax and selected fonts
 │   ├── slides-html.pdf                    # PDF exported from the HTML deck
 │   ├── slides-html.pptx                   # Static image-based HTML export
-│   ├── frontend-assets/                   # Offline MathJax and selected fonts
-│   ├── frontend-slides-manifest.json       # Hashes, counts, warnings, artifacts
+│   ├── frontend-slides-manifest.json      # Hashes, counts, warnings, artifacts
 │   ├── slides.pptx                        # PowerPoint slides (⭐ editable)
 │   ├── script.md                          # Presentation script
 │   ├── assessment.md                      # Assessment materials
@@ -307,6 +309,10 @@ exp/{experiment_name}/
 ```
 
 > **Tip**: Files are generated incrementally. You can download or view them as soon as they appear, without waiting for the entire generation to complete.
+
+Each generated `script.md` is validated one-to-one against the rendered HTML
+slides. Press `N` in `html/slides.html` to toggle the offline presenter-notes
+panel; the panel is excluded from static PDF and PPTX exports.
 
 For detailed file descriptions, see [Generated Files Guide](docs/FILES_GENERATED.md).
 

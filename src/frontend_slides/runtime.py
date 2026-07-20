@@ -17,7 +17,7 @@ def prepare_offline_runtime(
 ) -> tuple[Path, str]:
     """Copy only the selected runtime assets and return their @font-face CSS."""
     source_root = runtime_asset_root()
-    output_root = chapter_dir / "frontend-assets"
+    output_root = chapter_dir / "html" / "assets"
     if output_root.exists():
         shutil.rmtree(output_root)
     math_output = output_root / "mathjax"
@@ -55,7 +55,7 @@ def prepare_offline_runtime(
             css_blocks.append(
                 "@font-face {"
                 f"font-family:'{family}';"
-                f"src:url('frontend-assets/fonts/{filename}') format('woff2');"
+                f"src:url('assets/fonts/{filename}') format('woff2');"
                 f"font-style:normal;font-weight:{weight};font-display:swap;"
                 "}"
             )
@@ -76,7 +76,7 @@ def prepare_offline_runtime(
 
 def offline_runtime_complete(chapter_dir: Path, style: CourseSlideStyle) -> bool:
     """Return whether every runtime file referenced by this course style exists."""
-    output_root = chapter_dir / "frontend-assets"
+    output_root = chapter_dir / "html" / "assets"
     required = [output_root / "mathjax" / "tex-svg.js"]
     selected_fonts = {
         style.render_theme.display_font,

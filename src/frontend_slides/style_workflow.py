@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,7 @@ from .errors import FrontendSlidesError
 from .models import CourseSlideStyle, PresentationMethod, SelectedStyle
 from .style import (
     FONT_FAMILIES,
+    PRESENTATION_DESIGN_FILENAME,
     STYLE_FILENAME,
     STYLE_SOURCE_FILENAME,
     STYLE_STATS_FILENAME,
@@ -28,26 +29,40 @@ from .style import (
     write_course_style,
 )
 
+PRESENTATION_DESIGN_NAME = "Presentation Design"
+EQUATION_GUIDANCE = (
+    "Render equations directly on the slide canvas with transparent backgrounds, "
+    "no borders, no shadows, and compact spacing; do not place equations in decorative cards."
+)
+
 
 def ensure_course_slide_style(
     addie: Any,
     output_dir: Path | str,
     foundation_results: list[Any],
     chapters: list[dict[str, str]],
+    *,
+    reselect: bool = False,
 ) -> CourseSlideStyle:
     output_path = Path(output_dir)
     style_path = output_path / STYLE_FILENAME
-    if style_path.is_file():
+    if style_path.is_file() and not reselect:
         try:
             style = load_course_slide_style(output_path)
         except FrontendSlidesError as exc:
-            print(
-                "[resume] Existing course slide style is stale or invalid; "
-                f"rerunning only the style phase: {exc}"
-            )
-        else:
-            print(f"[resume] Loaded course slide style: {style.selected_style.name}")
-            return style
+            raise FrontendSlidesError(
+                "The persisted presentation-design authority is invalid and will not "
+                "be silently replaced. Repair the frozen style files or explicitly run "
+                "the foundation command with --reselect-presentation-design. "
+                f"Details: {exc}"
+            ) from exc
+        upgraded_style = _with_required_guidance(style)
+        if upgraded_style != style:
+            write_course_style(style_path, upgraded_style)
+        style = upgraded_style
+        write_presentation_design_result(output_path, style)
+        print(f"[resume] Loaded course slide style: {style.selected_style.name}")
+        return style
 
     assets = load_assets()
     inventory, inventory_hash = build_style_inventory(assets)
@@ -111,8 +126,8 @@ def ensure_course_slide_style(
     )
 
     deliberation = Deliberation(
-        id="course_slide_style",
-        name="Course Slide Style & Presentation Method",
+        id="presentation_design",
+        name=PRESENTATION_DESIGN_NAME,
         agents=[
             teaching_faculty,
             instructional_designer,
@@ -178,7 +193,9 @@ def ensure_course_slide_style(
         llm=addie.llm,
         system_prompt=(
             "Translate one selected slide design into safe rendering tokens and compact guidance "
-            "for future chapter generation. Use only the selected asset provided. Do not emit CSS."
+            "for future chapter generation. Use only the selected asset provided. Do not emit CSS. "
+            "Require equations to render directly on the slide canvas without decorative "
+            "background cards, borders, shadows, or oversized padding."
         ),
         output_constraint=_MATERIALIZATION_CONSTRAINT,
     )
@@ -232,6 +249,7 @@ def ensure_course_slide_style(
             total_time += retry_time
             total_tokens += retry_tokens
     assert style is not None
+    style = _with_required_guidance(style)
 
     output_path.mkdir(parents=True, exist_ok=True)
     write_course_style(style_path, style)
@@ -260,6 +278,7 @@ def ensure_course_slide_style(
         )
         + "\n",
     )
+    write_presentation_design_result(output_path, style, reason=reason)
     print(f"Course slide style selected: {style.selected_style.name}")
     return style
 
@@ -279,42 +298,104 @@ def load_course_slide_style(output_dir: Path | str) -> CourseSlideStyle:
     if not isinstance(data, dict):
         raise FrontendSlidesError(f"{style_path} must contain a JSON object.")
     style = course_style_from_dict(data)
-    inventory, current_inventory_hash = build_style_inventory()
-    if style.inventory_sha256 != current_inventory_hash:
-        raise FrontendSlidesError(
-            "The persisted course slide style uses a different asset inventory. "
-            "Rerun the foundation command to select and materialize a current style."
-        )
-    selected_entry = next(
-        (
-            entry
-            for entry in inventory
-            if entry.source == style.selected_style.source
-            and entry.key == style.selected_style.key
-        ),
-        None,
-    )
-    if (
-        selected_entry is None
-        or selected_entry.name != style.selected_style.name
-    ):
-        raise FrontendSlidesError(
-            "The persisted selected style is not present in the current asset inventory."
-        )
     actual_source_hash = sha256_file(source_path)
     if actual_source_hash != style.selected_asset_sha256:
         raise FrontendSlidesError(
             f"{STYLE_SOURCE_FILENAME} does not match the persisted selected asset hash."
         )
-    packaged_source_hash = sha256_text(
-        selected_asset_text(style.selected_style)
-    )
-    if packaged_source_hash != style.selected_asset_sha256:
-        raise FrontendSlidesError(
-            "The selected style asset has changed since foundation generation. "
-            "Rerun the foundation command before generating chapters."
-        )
     return style
+
+
+def write_presentation_design_result(
+    output_dir: Path | str,
+    style: CourseSlideStyle,
+    *,
+    reason: str | None = None,
+) -> Path:
+    """Persist the human-readable seventh foundation result from validated state."""
+    output_path = Path(output_dir)
+    resolved_reason = reason or _saved_selection_reason(output_path)
+    result_path = output_path / PRESENTATION_DESIGN_FILENAME
+    _atomic_write(
+        result_path,
+        presentation_design_markdown(style, reason=resolved_reason),
+    )
+    return result_path
+
+
+def presentation_design_markdown(
+    style: CourseSlideStyle,
+    *,
+    reason: str | None = None,
+) -> str:
+    """Build a deterministic summary that cannot diverge from renderer state."""
+    selected = style.selected_style
+    method = style.presentation_method
+    theme = style.render_theme
+    rationale = (reason or "").strip() or (
+        "This is the validated course-wide presentation decision persisted for "
+        "all chapters."
+    )
+    palette = "\n".join(
+        f"- `{key}`: `{value}`" for key, value in sorted(theme.colors.items())
+    )
+    fonts = (
+        f"- Display: {FONT_FAMILIES[theme.display_font][0]}\n"
+        f"- Body: {FONT_FAMILIES[theme.body_font][0]}\n"
+        f"- Monospace: {FONT_FAMILIES[theme.mono_font][0]}"
+    )
+    layouts = ", ".join(method.layout_rotation)
+    return (
+        f"{PRESENTATION_DESIGN_NAME}\n"
+        f"{'=' * len(PRESENTATION_DESIGN_NAME)}\n\n"
+        "## Final Style\n\n"
+        f"- Name: {selected.name}\n"
+        f"- Source: `{selected.source}`\n"
+        f"- Key: `{selected.key}`\n\n"
+        "## Selection Rationale\n\n"
+        f"{rationale}\n\n"
+        "## Presentation Method\n\n"
+        f"- Narrative: {method.narrative}\n"
+        f"- Pacing: {method.pacing}\n"
+        f"- Density: {method.density}\n"
+        f"- Emphasis: {method.emphasis}\n"
+        f"- Layout rotation: {layouts}\n"
+        f"- Engagement: {method.engagement}\n\n"
+        "## Palette\n\n"
+        f"{palette}\n\n"
+        "## Typography\n\n"
+        f"{fonts}\n\n"
+        "## Implementation Guidance\n\n"
+        f"{style.ta_guidance.strip()}\n\n"
+        "## Course-Wide Requirements\n\n"
+        "- Use this one selected style for every chapter; chapter generation must "
+        "not select or substitute another theme.\n"
+        f"- {EQUATION_GUIDANCE}\n"
+    )
+
+
+def _with_required_guidance(style: CourseSlideStyle) -> CourseSlideStyle:
+    if EQUATION_GUIDANCE in style.ta_guidance:
+        return style
+    separator = "\n\n" if style.ta_guidance.strip() else ""
+    available = 4000 - len(separator) - len(EQUATION_GUIDANCE)
+    existing = style.ta_guidance.strip()[:available].rstrip()
+    return replace(
+        style,
+        ta_guidance=f"{existing}{separator}{EQUATION_GUIDANCE}",
+    )
+
+
+def _saved_selection_reason(output_dir: Path) -> str | None:
+    stats_path = output_dir / STYLE_STATS_FILENAME
+    if not stats_path.is_file():
+        return None
+    try:
+        payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    reason = payload.get("reason") if isinstance(payload, dict) else None
+    return reason.strip() if isinstance(reason, str) and reason.strip() else None
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:

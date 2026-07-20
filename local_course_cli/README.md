@@ -58,16 +58,19 @@ exp/my-course/
 ├── result_syllabus_design.md
 ├── result_assessment_planning.md
 ├── result_final_exam_project.md
+├── result_presentation_design.md
 ├── processed_chapters.json
 ├── course_slide_style.json
 ├── course_slide_style_source.md
 └── statistics_slide_style.json
 ```
 
-It never starts chapter generation. After the six foundation documents, the
-five core agents choose one course-wide slide style and presentation method.
-Repeating the same command reloads completed foundation/style files and resumes
-only missing work. Omitted model,
+It never starts chapter generation. Presentation design is the seventh
+foundation deliberation: five core agents choose one course-wide slide style
+and presentation method, then save its readable summary in
+`result_presentation_design.md`. Repeating the same command reloads the frozen
+decision and resumes only missing work. Use `--reselect-presentation-design`
+only when intentionally replacing the course-wide style. Omitted model,
 catalog, seed, and temperature values inherit the existing manifest on reruns.
 Conflicting settings are rejected instead of mixing outputs.
 
@@ -85,6 +88,13 @@ Generate exactly one chapter:
 ./local_course_cli/course chapter --course-id my-course --number 13
 ```
 
+If a legacy `script.md` cannot be matched safely to its saved Beamer frames,
+repair only the notes before finalization:
+
+```bash
+./local_course_cli/course chapter --course-id my-course --number 13 --repair-notes
+```
+
 The chapter command validates the complete foundation, loads it without new
 foundation model calls, and creates only `exp/my-course/chapter_13/`. It
 produces:
@@ -93,17 +103,20 @@ produces:
 chapter_<number>/
 ├── slides.tex
 ├── slides.pdf
-├── slides.html
+├── html/
+│   ├── slides.html
+│   └── assets/
 ├── slides-html.pdf
 ├── slides-html.pptx
-├── frontend-assets/
 ├── frontend-slides-manifest.json
 ├── script.md
 ├── assessment.md
 └── statistics_slides_chapter_<number>.json
 ```
 
-The HTML deck is offline-capable when kept beside `frontend-assets/`.
+The `html/` directory is a portable offline bundle: keep `slides.html` beside
+its `assets/` directory. Press `N` while presenting to toggle the correlated
+speaker-notes panel; presenter UI is excluded from PDF and PPTX exports.
 `slides-html.pptx` preserves the HTML appearance as one full-slide image per
 PowerPoint slide; it is not element-editable.
 

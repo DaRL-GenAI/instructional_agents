@@ -65,6 +65,20 @@ _MATH_TOKEN_RE = re.compile(r"MATHSPAN(\d+)ENDSPAN")
 def parse_beamer(path: Path | str) -> BeamerDeck:
     source_path = Path(path)
     source = source_path.read_text(encoding="utf-8")
+    return parse_beamer_source(source, source_path=source_path)
+
+
+def parse_beamer_source(
+    source: str,
+    *,
+    source_path: Path | str = Path("slides.tex"),
+) -> BeamerDeck:
+    """Parse Beamer source already held in memory.
+
+    Chapter generation uses this entry point to compile speaker-note markers
+    against the exact finalized source before ``slides.tex`` is written.
+    """
+    source_path = Path(source_path)
     metadata = _parse_metadata(source)
     document = _document_body(source)
     slides: list[BeamerSlide] = []

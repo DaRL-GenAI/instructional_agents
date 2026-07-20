@@ -21,6 +21,7 @@ from src.frontend_slides.style import (
     STYLE_SOURCE_FILENAME,
     build_style_inventory,
     selected_asset_text,
+    sha256_file,
     sha256_text,
     write_course_style,
 )
@@ -175,8 +176,25 @@ class FakeRunner:
         self.finalize_calls.append(target)
         (target / "slides.pdf").write_bytes(b"%PDF-test")
         for name in cli.FRONTEND_CHAPTER_FILES:
-            (target / name).write_bytes(b"test artifact")
-        runtime = target / "frontend-assets" / "mathjax"
+            artifact = target / name
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            if name == "frontend-slides-manifest.json":
+                artifact.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 3,
+                            "source_sha256": sha256_file(target / "slides.tex"),
+                            "script_sha256": sha256_file(target / "script.md"),
+                            "style_sha256": sha256_file(
+                                self.output_dir / STYLE_FILENAME
+                            ),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            else:
+                artifact.write_bytes(b"test artifact")
+        runtime = target / "html" / "assets" / "mathjax"
         runtime.mkdir(parents=True, exist_ok=True)
         (runtime / "tex-svg.js").write_text("mathjax", encoding="utf-8")
 
@@ -189,6 +207,7 @@ def foundation_args(**overrides: object) -> Namespace:
         "model": None,
         "seed": None,
         "temperature": None,
+        "reselect_presentation_design": False,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -270,6 +289,26 @@ def test_foundation_rerun_inherits_existing_optional_settings(
     assert cli.load_manifest(output_dir).seed == 42
 
 
+def test_foundation_plumbs_explicit_presentation_reselection(
+    isolated_paths: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_dir = isolated_paths / "test-course"
+    runner = FakeRunner(output_dir)
+    runner.write_foundation_on_run = True
+    seen: dict[str, object] = {}
+
+    def fake_build_runner(*_args, **kwargs):
+        seen.update(kwargs)
+        return runner
+
+    monkeypatch.setattr(cli, "build_runner", fake_build_runner)
+
+    assert cli.run_foundation(
+        foundation_args(reselect_presentation_design=True)
+    ) == 0
+    assert seen["reselect_presentation_design"] is True
+
+
 def test_foundation_manifest_mismatch_is_rejected(isolated_paths: Path) -> None:
     output_dir = isolated_paths / "test-course"
     cli.write_manifest(output_dir, make_config())
@@ -285,6 +324,20 @@ def test_missing_foundation_artifact_is_rejected(isolated_paths: Path) -> None:
 
     with pytest.raises(cli.CliError, match=cli.FOUNDATION_FILES[2]):
         cli.validate_foundation(output_dir)
+
+
+def test_legacy_foundation_backfills_presentation_design_without_model_calls(
+    isolated_paths: Path,
+) -> None:
+    output_dir = isolated_paths / "test-course"
+    write_foundation(output_dir)
+    result_path = output_dir / "result_presentation_design.md"
+    result_path.unlink()
+
+    assert len(cli.validate_foundation(output_dir)) == 3
+    result = result_path.read_text(encoding="utf-8")
+    assert result.startswith("Presentation Design\n===================")
+    assert "- Key: `cobalt-grid`" in result
 
 
 def test_malformed_processed_chapters_is_rejected(isolated_paths: Path) -> None:

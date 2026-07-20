@@ -9,6 +9,8 @@ from src.agents import (
     Agent,
 )
 from src.beamer_preflight import normalize_beamer_source
+from src.frontend_slides.beamer import parse_beamer_source
+from src.frontend_slides.notes import render_speaker_notes_markdown
 
 
 class SlideUtils:
@@ -487,7 +489,7 @@ class SlidesDeliberation:
             )
         
         # Step 7: Compile final slides script
-        slides_script_md = self._compile_slides_script()
+        slides_script_md = self._compile_slides_script(latex_source)
         
         # Step 8: Compile final assessment
         assessment_md = self._compile_assessment()
@@ -1221,19 +1223,20 @@ class SlidesDeliberation:
         # Use utility function to compile
         return SlideUtils.compile_latex_document(prefix, frames, suffix)
     
-    def _compile_slides_script(self) -> str:
-        """Compile all slide scripts into a markdown document"""
-        script_md = f"# Slides Script: {self.name}\n\n"
-        
-        for i in range(len(self.slides_outline)):
-            if i in self.slides_script:
-                script = self.slides_script[i]
-                script_md += f"## Section {script['slide_id']}: {script['title']}\n"
-                script_md += "\n"
-                script_md += f"{script['script']}\n\n"
-                script_md += "---\n\n"
-        
-        return script_md
+    def _compile_slides_script(self, latex_source: str | None = None) -> str:
+        """Compile notes against the exact order and titles in finalized LaTeX."""
+        source = latex_source if latex_source is not None else self._compile_latex_source()
+        deck = parse_beamer_source(source)
+        content_notes = [
+            str(self.slides_script[i].get("script", "")).strip()
+            for i in range(len(self.slides_outline))
+            if i in self.slides_script
+        ]
+        return render_speaker_notes_markdown(
+            deck,
+            content_notes,
+            document_title=f"Slides Script: {self.name}",
+        )
     
     def _compile_assessment(self) -> str:
         """Compile all assessments into a markdown document"""

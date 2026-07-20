@@ -2,7 +2,12 @@
 
 from .finalize import FrontendSlidesError, finalize_chapter
 from .models import ChapterFrontendResult, CourseSlideStyle
-from .style_workflow import ensure_course_slide_style, load_course_slide_style
+from .style_workflow import (
+    ensure_course_slide_style,
+    load_course_slide_style,
+    presentation_design_markdown,
+    write_presentation_design_result,
+)
 
 __all__ = [
     "ChapterFrontendResult",
@@ -11,4 +16,6 @@ __all__ = [
     "ensure_course_slide_style",
     "finalize_chapter",
     "load_course_slide_style",
+    "presentation_design_markdown",
+    "write_presentation_design_result",
 ]

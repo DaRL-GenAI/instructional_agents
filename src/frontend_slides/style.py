@@ -23,6 +23,7 @@ ASSET_VERSION = "frontend-slides-2026-07"
 STYLE_FILENAME = "course_slide_style.json"
 STYLE_SOURCE_FILENAME = "course_slide_style_source.md"
 STYLE_STATS_FILENAME = "statistics_slide_style.json"
+PRESENTATION_DESIGN_FILENAME = "result_presentation_design.md"
 
 FONT_FAMILIES = {
     "archivo": ("Course Archivo", "archivo"),
