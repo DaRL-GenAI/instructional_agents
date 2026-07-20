@@ -83,4 +83,5 @@ include = ["src*"]
 testpaths = ["tests"]
 markers = [
     "playwright: browser-based frontend slide rendering and export smoke tests",
+    "latex: end-to-end pdflatex compilation tests (require a local TeX install)",
 ]

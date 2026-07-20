@@ -56,11 +56,16 @@ def finalize_chapter(
     if not script_path.is_file() or script_path.stat().st_size == 0:
         raise FrontendSlidesError(f"Chapter speaker notes are missing or empty: {script_path}")
     preflight = normalize_beamer_file(tex_path)
-    if preflight.changed:
+    if preflight.removed_list_wrapper_pairs:
         print(
             "[preflight] Repaired slides.tex by flattening "
             f"{preflight.removed_list_wrapper_pairs} list wrapper(s) beyond "
             "Beamer's 3-level nesting limit."
+        )
+    if preflight.injected_color_definitions:
+        print(
+            "[preflight] Repaired slides.tex by auto-defining missing color(s): "
+            f"{', '.join(preflight.injected_color_definitions)}"
         )
     style = load_course_slide_style(course_path)
     style_path = course_path / STYLE_FILENAME
@@ -185,11 +190,16 @@ def finalize_chapter(
         ) from exc
 
     warnings = []
-    if preflight.changed:
+    if preflight.removed_list_wrapper_pairs:
         warnings.append(
             "LaTeX preflight flattened "
             f"{preflight.removed_list_wrapper_pairs} list wrapper(s) beyond "
             "Beamer's 3-level nesting limit."
+        )
+    if preflight.injected_color_definitions:
+        warnings.append(
+            "LaTeX preflight auto-defined missing color(s): "
+            + ", ".join(preflight.injected_color_definitions)
         )
     if deck.unsupported_environments:
         warnings.append(

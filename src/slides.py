@@ -162,6 +162,9 @@ Current LaTeX frame (for reference):
         description_text = f"\nSlide Description: {description}" if description else ""
         style_text = (
             f"\nSelected Course Slide Style Guidance:\n{style_guidance}\n"
+            "Realize any color described in the style guidance as an inline hex "
+            "value (e.g. \\textcolor[HTML]{0047AB}{...}), never as a new named "
+            "color.\n"
             if style_guidance
             else ""
         )
@@ -194,6 +197,7 @@ Guidelines:
 3. Use bullet points or numbered lists for clarity
 4. Keep the frame focused and not overcrowded
 5. Never nest itemize/enumerate environments more than 3 levels deep; prefer 2 levels for readability
+6. Colors: the preamble is fixed, so you cannot add \\definecolor. Only use standard color names (red, blue, teal, gray, ...), color names already defined in the template or current frame, or inline hex via \\textcolor[HTML]{{RRGGBB}}{{...}}. Never invent named colors such as electricblue
 
 Use LaTeX features like:
 - \\begin{{itemize}} for bullet points
@@ -482,11 +486,17 @@ class SlidesDeliberation:
         preflight = normalize_beamer_source(latex_source)
         latex_source = preflight.source
         if preflight.changed:
-            print(
-                "[preflight] Flattened "
-                f"{preflight.removed_list_wrapper_pairs} unsupported deep-list "
-                "wrapper(s) before saving slides.tex"
-            )
+            if preflight.removed_list_wrapper_pairs:
+                print(
+                    "[preflight] Flattened "
+                    f"{preflight.removed_list_wrapper_pairs} unsupported deep-list "
+                    "wrapper(s) before saving slides.tex"
+                )
+            if preflight.injected_color_definitions:
+                print(
+                    "[preflight] Auto-defined missing color(s) before saving "
+                    f"slides.tex: {', '.join(preflight.injected_color_definitions)}"
+                )
         
         # Step 7: Compile final slides script
         slides_script_md = self._compile_slides_script(latex_source)
@@ -644,6 +654,7 @@ class SlidesDeliberation:
 
         1. Don't use non-English characters directly, e.g. use $\\gamma$ instead of γ, $\\epsilon$ instead of ε
         2. If any of symbols has a special meaning, add a slash. e.g. use \\& instead of &
+        3. Colors: only use standard color names (red, blue, teal, gray, ...), colors defined in the provided template, or inline hex via \\textcolor[HTML]{{RRGGBB}}{{...}}. Never invent named colors such as electricblue, and do not add \\usepackage lines or color definitions beyond the provided template
 
         Your response should be LaTeX code that can be compiled directly.
         """

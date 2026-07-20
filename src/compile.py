@@ -4,6 +4,11 @@ import shutil
 from pathlib import Path
 import logging
 
+try:
+    from src.beamer_preflight import normalize_beamer_source
+except ImportError:  # pragma: no cover - standalone execution from src/
+    from beamer_preflight import normalize_beamer_source
+
 class LaTeXCompiler:
     def __init__(self, output_dir):
         self.output_dir = Path(output_dir)
@@ -78,7 +83,8 @@ class LaTeXCompiler:
         
         compilation_logs = []
         pdf_file = cache_dir / f"{tex_file.stem}.pdf"
-        
+        preflight_repair_attempted = False
+
         # Run pdflatex multiple times to resolve cross-references and bibliography
         for attempt in range(3):
             try:
@@ -112,7 +118,13 @@ class LaTeXCompiler:
                     self.logger.warning(f"pdflatex completed but PDF is missing or empty for {tex_file.name}")
                 else:
                     self.logger.warning(f"pdflatex failed with return code {result.returncode} for {tex_file.name}")
-                
+                    # Repair the cache copy once (undefined colors, deep lists)
+                    # so the remaining attempts retry a fixed source instead of
+                    # re-running the identical failing input.
+                    if not preflight_repair_attempted and attempt < 2:
+                        preflight_repair_attempted = True
+                        self._repair_cached_source(cached_tex_file, compilation_logs)
+
                 # If this is the last attempt and still no valid PDF, log more details
                 if attempt == 2:
                     if not pdf_file.exists():
@@ -144,6 +156,37 @@ class LaTeXCompiler:
         else:
             return None
     
+    def _repair_cached_source(self, cached_tex_file, compilation_logs):
+        """Run deterministic preflight repairs on the cache copy of a failed compile."""
+        try:
+            result = normalize_beamer_source(
+                cached_tex_file.read_text(encoding="utf-8")
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Preflight repair skipped for {cached_tex_file.name}: {e}"
+            )
+            return False
+        if not result.changed:
+            return False
+        cached_tex_file.write_text(result.source, encoding="utf-8")
+        details = []
+        if result.injected_color_definitions:
+            details.append(
+                "auto-defined missing colors: "
+                + ", ".join(result.injected_color_definitions)
+            )
+        if result.removed_list_wrapper_pairs:
+            details.append(
+                f"flattened {result.removed_list_wrapper_pairs} deep list wrapper(s)"
+            )
+        summary = "; ".join(details) or "source normalized"
+        self.logger.warning(
+            f"Repaired {cached_tex_file.name} before retry ({summary})"
+        )
+        compilation_logs.append(f"PREFLIGHT REPAIR BEFORE RETRY: {summary}\n\n")
+        return True
+
     def move_pdf_to_source_location(self, pdf_file, tex_file):
         """Move the compiled PDF to the same directory as the source .tex file."""
         if pdf_file and pdf_file.exists():
