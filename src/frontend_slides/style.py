@@ -83,6 +83,19 @@ LAYOUT_ALIASES = {
     "summary": "columns",
     "equation": "math",
     "derivation": "math",
+    "full-page": "hero",
+    "full-page-visual": "hero",
+    "side-by-side": "split",
+    "two-column": "columns",
+    "two-columns": "columns",
+}
+
+PLACEHOLDER_SELECTION_TEXT = {
+    "course-wide narrative approach",
+    "pacing guidance",
+    "what visual hierarchy should emphasize",
+    "student engagement approach",
+    "why this exact style and method fit the whole course",
 }
 
 
@@ -171,7 +184,7 @@ def selected_asset_text(
 
 def validate_selection(
     payload: dict[str, Any], inventory: list[StyleInventoryEntry]
-) -> tuple[SelectedStyle, PresentationMethod, str]:
+) -> tuple[SelectedStyle, PresentationMethod, str, dict[str, Any]]:
     selected = payload.get("selected_style")
     method = payload.get("presentation_method")
     if not isinstance(selected, dict) or not isinstance(method, dict):
@@ -213,15 +226,106 @@ def validate_selection(
             "presentation_method.layout_rotation must contain at least two supported layouts."
         )
     presentation = PresentationMethod(
-        narrative=_bounded_string(method, "narrative", 1200),
-        pacing=_bounded_string(method, "pacing", 800),
+        narrative=_specific_string(method, "narrative", 30, 1200),
+        pacing=_specific_string(method, "pacing", 20, 800),
         density=density,
-        emphasis=_bounded_string(method, "emphasis", 800),
+        emphasis=_specific_string(method, "emphasis", 20, 800),
         layout_rotation=list(dict.fromkeys(layout_rotation)),
-        engagement=_bounded_string(method, "engagement", 800),
+        engagement=_specific_string(method, "engagement", 20, 800),
     )
-    reason = _bounded_string(payload, "reason", 1600)
-    return SelectedStyle(source=entry.source, key=entry.key, name=entry.name), presentation, reason
+    reason = _specific_string(payload, "reason", 100, 1600)
+    evidence = _validate_selection_evidence(
+        payload,
+        inventory=inventory,
+        selected_pair=(entry.source, entry.key),
+    )
+    return (
+        SelectedStyle(source=entry.source, key=entry.key, name=entry.name),
+        presentation,
+        reason,
+        evidence,
+    )
+
+
+def _validate_selection_evidence(
+    payload: dict[str, Any],
+    *,
+    inventory: list[StyleInventoryEntry],
+    selected_pair: tuple[str, str],
+) -> dict[str, Any]:
+    raw_evidence = payload.get("selection_evidence")
+    if not isinstance(raw_evidence, dict):
+        raise FrontendSlidesError("selection_evidence must be an object.")
+
+    raw_requirements = raw_evidence.get("course_requirements")
+    if not isinstance(raw_requirements, list) or not 3 <= len(raw_requirements) <= 6:
+        raise FrontendSlidesError(
+            "selection_evidence.course_requirements must contain 3 to 6 items."
+        )
+    requirements: list[str] = []
+    for index, value in enumerate(raw_requirements):
+        requirement = _specific_value(
+            value,
+            f"selection_evidence.course_requirements[{index}]",
+            20,
+            300,
+        )
+        if requirement.casefold() in {item.casefold() for item in requirements}:
+            raise FrontendSlidesError(
+                "selection_evidence.course_requirements must be distinct."
+            )
+        requirements.append(requirement)
+
+    raw_alternatives = raw_evidence.get("alternatives")
+    if not isinstance(raw_alternatives, list) or not 2 <= len(raw_alternatives) <= 4:
+        raise FrontendSlidesError(
+            "selection_evidence.alternatives must contain 2 to 4 items."
+        )
+    lookup = {(item.source, item.key): item for item in inventory}
+    seen_pairs: set[tuple[str, str]] = set()
+    alternatives: list[dict[str, str]] = []
+    for index, raw_alternative in enumerate(raw_alternatives):
+        if not isinstance(raw_alternative, dict):
+            raise FrontendSlidesError(
+                f"selection_evidence.alternatives[{index}] must be an object."
+            )
+        source = _required_string(raw_alternative, "source")
+        key = _required_string(raw_alternative, "key")
+        pair = (source, key)
+        if pair == selected_pair:
+            raise FrontendSlidesError(
+                "selection_evidence alternatives cannot include the selected style."
+            )
+        if pair in seen_pairs:
+            raise FrontendSlidesError(
+                "selection_evidence alternatives must be distinct."
+            )
+        inventory_entry = lookup.get(pair)
+        if inventory_entry is None:
+            raise FrontendSlidesError(
+                f"Unknown alternative style: {source}:{key}"
+            )
+        rejection_reason = _specific_string(
+            raw_alternative, "reason_rejected", 40, 800
+        )
+        seen_pairs.add(pair)
+        alternatives.append(
+            {
+                "source": inventory_entry.source,
+                "key": inventory_entry.key,
+                "name": inventory_entry.name,
+                "reason_rejected": rejection_reason,
+            }
+        )
+
+    avoid_for_assessment = _specific_string(
+        raw_evidence, "avoid_for_assessment", 80, 1200
+    )
+    return {
+        "course_requirements": requirements,
+        "alternatives": alternatives,
+        "avoid_for_assessment": avoid_for_assessment,
+    }
 
 
 def canonicalize_selection_payload(
@@ -538,6 +642,31 @@ def _bounded_string(data: dict[str, Any], key: str, maximum: int) -> str:
     if len(value) > maximum:
         raise FrontendSlidesError(f"{key} exceeds {maximum} characters.")
     return value
+
+
+def _specific_string(
+    data: dict[str, Any], key: str, minimum: int, maximum: int
+) -> str:
+    return _specific_value(data.get(key), key, minimum, maximum)
+
+
+def _specific_value(value: Any, label: str, minimum: int, maximum: int) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise FrontendSlidesError(f"{label} must be a nonempty string.")
+    stripped = value.strip()
+    if len(stripped) < minimum:
+        raise FrontendSlidesError(
+            f"{label} must contain at least {minimum} characters of specific evidence."
+        )
+    if len(stripped) > maximum:
+        raise FrontendSlidesError(f"{label} exceeds {maximum} characters.")
+    if (
+        stripped.casefold() in PLACEHOLDER_SELECTION_TEXT
+        or "<course-specific" in stripped.casefold()
+        or "<explain" in stripped.casefold()
+    ):
+        raise FrontendSlidesError(f"{label} still contains placeholder text.")
+    return stripped
 
 
 def _bounded_int(data: dict[str, Any], key: str, minimum: int, maximum: int) -> int:

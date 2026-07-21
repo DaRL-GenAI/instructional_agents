@@ -37,11 +37,13 @@ from src.frontend_slides.style import (
     STYLE_FILENAME,
     STYLE_SOURCE_FILENAME,
     build_style_inventory,
+    canonicalize_selection_payload,
     canonicalize_materialization_payload,
     selected_asset_text,
     sha256_file,
     sha256_text,
     validate_materialization,
+    validate_selection,
     write_course_style,
 )
 from src.frontend_slides.style_workflow import (
@@ -99,6 +101,57 @@ def make_style(source_text: str | None = None) -> CourseSlideStyle:
         inventory_sha256=inventory_hash,
         selected_asset_sha256=sha256_text(source_text),
     )
+
+
+def make_selection_payload(
+    *,
+    source: str = "bold_template",
+    key: str = "cobalt-grid",
+    alternatives: list[tuple[str, str]] | None = None,
+) -> dict[str, object]:
+    if alternatives is None:
+        alternatives = [
+            ("bold_template", "blue-professional"),
+            ("preset", "paper-ink"),
+        ]
+    return {
+        "selected_style": {"source": source, "key": key},
+        "presentation_method": {
+            "narrative": "Build a visual progression from foundational ideas to applied examples.",
+            "pacing": "Alternate concise explanations with guided practice moments.",
+            "density": "medium",
+            "emphasis": "Prioritize worked examples and visible conceptual relationships.",
+            "layout_rotation": ["hero", "split", "top"],
+            "engagement": "Use guided questions and short prediction prompts throughout.",
+        },
+        "selection_evidence": {
+            "course_requirements": [
+                "Maintain readable hierarchy for explanations and worked examples.",
+                "Support multiple layouts for concepts, comparisons, and practice.",
+                "Keep the visual treatment coherent across every course chapter.",
+            ],
+            "alternatives": [
+                {
+                    "source": alternative_source,
+                    "key": alternative_key,
+                    "reason_rejected": (
+                        "This alternative does not balance the course's explanatory "
+                        "density and layout needs as effectively as the selected style."
+                    ),
+                }
+                for alternative_source, alternative_key in alternatives
+            ],
+            "avoid_for_assessment": (
+                "The selected style's avoid-for guidance does not conflict with the "
+                "course audience, its instructional activities, or the required tone."
+            ),
+        },
+        "reason": (
+            "The selected style directly supports the course's worked examples, varied "
+            "chapter structures, and need for a readable hierarchy while remaining "
+            "coherent across the complete learning sequence."
+        ),
+    }
 
 
 def write_style(course_dir: Path, source_text: str | None = None) -> None:
@@ -203,6 +256,75 @@ def test_materialization_canonicalizes_rgba_and_known_font_aliases() -> None:
     assert result.render_theme.body_font == "dm-sans"
     assert "DM Sans body text" in result.ta_guidance
     assert len(notes) == 3
+
+
+def test_style_selection_rejects_placeholder_presentation_text() -> None:
+    inventory, _ = build_style_inventory(load_assets())
+    payload = make_selection_payload()
+    payload["presentation_method"]["narrative"] = "course-wide narrative approach"
+
+    with pytest.raises(FrontendSlidesError, match="placeholder text"):
+        validate_selection(payload, inventory)
+
+
+@pytest.mark.parametrize("failure", ["selected", "duplicate", "unknown"])
+def test_style_selection_rejects_invalid_alternatives(failure: str) -> None:
+    inventory, _ = build_style_inventory(load_assets())
+    payload = make_selection_payload()
+    alternatives = payload["selection_evidence"]["alternatives"]
+    if failure == "selected":
+        alternatives[0]["source"] = "bold_template"
+        alternatives[0]["key"] = "cobalt-grid"
+    elif failure == "duplicate":
+        alternatives[1] = dict(alternatives[0])
+    else:
+        alternatives[0]["source"] = "preset"
+        alternatives[0]["key"] = "not-a-style"
+
+    with pytest.raises(FrontendSlidesError, match="alternative"):
+        validate_selection(payload, inventory)
+
+
+def test_style_selection_canonicalizes_full_page_layout() -> None:
+    inventory, _ = build_style_inventory(load_assets())
+    payload = make_selection_payload()
+    payload["presentation_method"]["layout_rotation"] = ["full-page", "split"]
+
+    normalized, notes = canonicalize_selection_payload(payload, inventory)
+    _, method, _, _ = validate_selection(normalized, inventory)
+
+    assert method.layout_rotation == ["hero", "split"]
+    assert any("full-page->hero" in note for note in notes)
+
+
+def test_playful_course_evidence_can_select_daisy_days() -> None:
+    inventory, _ = build_style_inventory(load_assets())
+    payload = make_selection_payload(
+        key="daisy-days",
+        alternatives=[
+            ("bold_template", "playful"),
+            ("preset", "split-pastel"),
+        ],
+    )
+    payload["selection_evidence"]["course_requirements"] = [
+        "Use a cheerful visual register appropriate for children ages five to seven.",
+        "Support picture-book storytelling, puppetry, movement, and collaborative art.",
+        "Keep text concise and approachable for emerging readers and active learners.",
+    ]
+    payload["selection_evidence"]["avoid_for_assessment"] = (
+        "Daisy Days warns against precision-first authoritative contexts, while this "
+        "course is intentionally playful, child-facing, creative, and informal."
+    )
+    payload["reason"] = (
+        "Daisy Days matches the five-to-seven-year-old audience through its cheerful, "
+        "soft visual language and directly supports picture-book storytelling, puppet "
+        "making, movement, and collaborative art without imposing corporate polish."
+    )
+
+    selected, _, _, evidence = validate_selection(payload, inventory)
+
+    assert selected.key == "daisy-days"
+    assert len(evidence["alternatives"]) == 2
 
 
 def test_offline_renderer_preserves_frames_and_has_no_remote_urls(tmp_path: Path) -> None:
@@ -340,23 +462,7 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: dict[str, object] = {}
-    selection = json.dumps(
-        {
-            "selected_style": {
-                "source": "bold_template",
-                "key": "cobalt-grid",
-            },
-            "presentation_method": {
-                "narrative": "concept progression",
-                "pacing": "measured",
-                "density": "medium",
-                "emphasis": "worked examples",
-                "layout_rotation": ["hero", "split", "top"],
-                "engagement": "guided questions",
-            },
-            "reason": "Fits the course.",
-        }
-    )
+    selection = json.dumps(make_selection_payload())
     materialization = json.dumps(
         {
             "ta_guidance": "Use cobalt hierarchy.",
@@ -365,6 +471,10 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
     )
 
     def fake_deliberation_run(self):
+        seen["deliberation_calls"] = int(seen.get("deliberation_calls", 0)) + 1
+        seen["max_rounds"] = self.max_rounds
+        seen["instruction_prompt"] = self.instruction_prompt
+        seen["selection_constraint"] = self.summary_agent.output_constraint
         seen["roles"] = [agent.name for agent in self.agents] + [self.summary_agent.name]
         self.discussion_history = [{"agent": "Teaching Faculty", "content": "Discussion"}]
         return selection, 1.0, 10
@@ -399,6 +509,17 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
         "Teaching Assistant",
         "Summarizer",
     ]
+    assert seen["deliberation_calls"] == 1
+    assert seen["max_rounds"] == 1
+    assert "compare at least three exact inventory candidates" in str(
+        seen["instruction_prompt"]
+    )
+    assert "Best for and Avoid for guidance" in str(seen["instruction_prompt"])
+    contract_shape = str(seen["selection_constraint"]).split(
+        "ALLOWED_STYLE_PAIRS:", 1
+    )[0]
+    assert '"key": "cobalt-grid"' not in contract_shape
+    assert '"key": "paper-ink"' not in contract_shape
     prompt = str(seen["materialization_prompt"])
     assert "Cobalt Grid" in prompt
     assert "Complete style inventory" not in prompt
@@ -410,11 +531,19 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
     assert presentation_result.startswith("Presentation Design\n===================")
     assert "- Key: `cobalt-grid`" in presentation_result
     assert "## Selection Rationale" in presentation_result
+    assert "## Course Visual Requirements" in presentation_result
+    assert "## Alternatives Considered" in presentation_result
+    assert "## Selected-Style Conflict Check" in presentation_result
     assert "## Presentation Method" in presentation_result
     assert "## Palette" in presentation_result
     assert "## Typography" in presentation_result
     assert "transparent backgrounds" in presentation_result
     assert "decorative cards" in style.ta_guidance
+    stats = json.loads(
+        (tmp_path / "statistics_slide_style.json").read_text(encoding="utf-8")
+    )
+    assert len(stats["selection_evidence"]["course_requirements"]) == 3
+    assert len(stats["selection_evidence"]["alternatives"]) == 2
     resumed = ensure_course_slide_style(addie, tmp_path, [], [])
     assert resumed == style
     assert (
@@ -501,21 +630,13 @@ def test_explicit_reselection_replaces_existing_style(
 ) -> None:
     write_style(tmp_path)
     selection = json.dumps(
-        {
-            "selected_style": {
-                "source": "bold_template",
-                "key": "blue-professional",
-            },
-            "presentation_method": {
-                "narrative": "concept progression",
-                "pacing": "measured",
-                "density": "medium",
-                "emphasis": "worked examples",
-                "layout_rotation": ["hero", "top"],
-                "engagement": "guided questions",
-            },
-            "reason": "An intentional course-wide replacement.",
-        }
+        make_selection_payload(
+            key="blue-professional",
+            alternatives=[
+                ("bold_template", "cobalt-grid"),
+                ("bold_template", "signal"),
+            ],
+        )
     )
     materialization = json.dumps(
         {
@@ -561,21 +682,21 @@ def test_explicit_reselection_replaces_existing_style(
 def test_style_selection_canonicalizes_literal_union_slug_and_layout_aliases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bad_selection = {
-        "selected_style": {
-            "source": "preset|bold_template",
-            "key": "blue_professional",
-        },
-        "presentation_method": {
-            "narrative": "concept progression",
-            "pacing": "measured",
-            "density": "medium",
-            "emphasis": "worked examples",
-            "layout_rotation": ["overview", "content"],
-            "engagement": "guided questions",
-        },
-        "reason": "Fits the course.",
+    bad_selection = make_selection_payload(
+        key="blue-professional",
+        alternatives=[
+            ("bold_template", "cobalt-grid"),
+            ("bold_template", "signal"),
+        ],
+    )
+    bad_selection["selected_style"] = {
+        "source": "preset|bold_template",
+        "key": "blue_professional",
     }
+    bad_selection["presentation_method"]["layout_rotation"] = [
+        "overview",
+        "content",
+    ]
     materialization = json.dumps(
         {
             "ta_guidance": "Use a clear professional hierarchy.",

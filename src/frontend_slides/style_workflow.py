@@ -139,7 +139,13 @@ def ensure_course_slide_style(
         instruction_prompt=(
             "Discuss and choose exactly one visual style for all chapter presentations. "
             "Also decide the course-wide narrative, pacing, density, emphasis, layout rotation, "
-            "and engagement method.\n\n"
+            "and engagement method. During the same standard deliberation turn, each reviewer "
+            "must derive concrete visual requirements from the course audience and activities, "
+            "compare at least three exact inventory candidates, and explicitly consider each "
+            "candidate's Best for and Avoid for guidance. Explain tradeoffs using course-specific "
+            "details; generic claims such as merely being professional, clear, or engaging are "
+            "not sufficient. Preserve the normal sequential discussion: respond to earlier "
+            "reviewers while adding your own comparison evidence.\n\n"
             f"Course context:\n{json.dumps(course_context, ensure_ascii=False)}\n\n"
             "Complete style inventory (12 presets and 34 bold templates):\n"
             f"{json.dumps(inventory_payload, ensure_ascii=False)}"
@@ -150,6 +156,7 @@ def ensure_course_slide_style(
     selected_style: SelectedStyle | None = None
     presentation_method: PresentationMethod | None = None
     reason = ""
+    selection_evidence: dict[str, Any] | None = None
     selection_error = ""
     selection_normalizations: list[str] = []
     for attempt in range(3):
@@ -162,9 +169,12 @@ def ensure_course_slide_style(
                 if note not in selection_normalizations:
                     selection_normalizations.append(note)
                     print(f"[style normalization] {note}")
-            selected_style, presentation_method, reason = validate_selection(
-                payload, inventory
-            )
+            (
+                selected_style,
+                presentation_method,
+                reason,
+                selection_evidence,
+            ) = validate_selection(payload, inventory)
             break
         except FrontendSlidesError as exc:
             selection_error = str(exc)
@@ -183,7 +193,11 @@ def ensure_course_slide_style(
             )
             total_time += elapsed
             total_tokens += tokens
-    assert selected_style is not None and presentation_method is not None
+    assert (
+        selected_style is not None
+        and presentation_method is not None
+        and selection_evidence is not None
+    )
 
     selected_source = selected_asset_text(selected_style, assets)
     selected_hash = sha256_text(selected_source)
@@ -269,6 +283,7 @@ def ensure_course_slide_style(
                 ],
                 "selected_style": asdict(style.selected_style),
                 "reason": reason,
+                "selection_evidence": selection_evidence,
                 "selection_normalizations": selection_normalizations,
                 "materialization_normalizations": materialization_normalizations,
                 "last_selection_error": selection_error or None,
@@ -278,7 +293,12 @@ def ensure_course_slide_style(
         )
         + "\n",
     )
-    write_presentation_design_result(output_path, style, reason=reason)
+    write_presentation_design_result(
+        output_path,
+        style,
+        reason=reason,
+        selection_evidence=selection_evidence,
+    )
     print(f"Course slide style selected: {style.selected_style.name}")
     return style
 
@@ -311,14 +331,24 @@ def write_presentation_design_result(
     style: CourseSlideStyle,
     *,
     reason: str | None = None,
+    selection_evidence: dict[str, Any] | None = None,
 ) -> Path:
     """Persist the human-readable seventh foundation result from validated state."""
     output_path = Path(output_dir)
     resolved_reason = reason or _saved_selection_reason(output_path)
+    resolved_evidence = (
+        selection_evidence
+        if selection_evidence is not None
+        else _saved_selection_evidence(output_path)
+    )
     result_path = output_path / PRESENTATION_DESIGN_FILENAME
     _atomic_write(
         result_path,
-        presentation_design_markdown(style, reason=resolved_reason),
+        presentation_design_markdown(
+            style,
+            reason=resolved_reason,
+            selection_evidence=resolved_evidence,
+        ),
     )
     return result_path
 
@@ -327,6 +357,7 @@ def presentation_design_markdown(
     style: CourseSlideStyle,
     *,
     reason: str | None = None,
+    selection_evidence: dict[str, Any] | None = None,
 ) -> str:
     """Build a deterministic summary that cannot diverge from renderer state."""
     selected = style.selected_style
@@ -345,6 +376,7 @@ def presentation_design_markdown(
         f"- Monospace: {FONT_FAMILIES[theme.mono_font][0]}"
     )
     layouts = ", ".join(method.layout_rotation)
+    evidence_markdown = _selection_evidence_markdown(selection_evidence)
     return (
         f"{PRESENTATION_DESIGN_NAME}\n"
         f"{'=' * len(PRESENTATION_DESIGN_NAME)}\n\n"
@@ -354,6 +386,7 @@ def presentation_design_markdown(
         f"- Key: `{selected.key}`\n\n"
         "## Selection Rationale\n\n"
         f"{rationale}\n\n"
+        f"{evidence_markdown}"
         "## Presentation Method\n\n"
         f"- Narrative: {method.narrative}\n"
         f"- Pacing: {method.pacing}\n"
@@ -396,6 +429,49 @@ def _saved_selection_reason(output_dir: Path) -> str | None:
         return None
     reason = payload.get("reason") if isinstance(payload, dict) else None
     return reason.strip() if isinstance(reason, str) and reason.strip() else None
+
+
+def _saved_selection_evidence(output_dir: Path) -> dict[str, Any] | None:
+    stats_path = output_dir / STYLE_STATS_FILENAME
+    if not stats_path.is_file():
+        return None
+    try:
+        payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    evidence = payload.get("selection_evidence") if isinstance(payload, dict) else None
+    return evidence if isinstance(evidence, dict) else None
+
+
+def _selection_evidence_markdown(evidence: dict[str, Any] | None) -> str:
+    if not isinstance(evidence, dict):
+        return ""
+    requirements = evidence.get("course_requirements")
+    alternatives = evidence.get("alternatives")
+    avoid_for_assessment = evidence.get("avoid_for_assessment")
+    if (
+        not isinstance(requirements, list)
+        or not isinstance(alternatives, list)
+        or not isinstance(avoid_for_assessment, str)
+    ):
+        return ""
+    requirement_lines = "\n".join(f"- {item}" for item in requirements)
+    alternative_lines = "\n".join(
+        "- "
+        f"{item.get('name', item.get('key', 'Unknown'))} "
+        f"(`{item.get('source', '')}:{item.get('key', '')}`): "
+        f"{item.get('reason_rejected', '')}"
+        for item in alternatives
+        if isinstance(item, dict)
+    )
+    return (
+        "## Course Visual Requirements\n\n"
+        f"{requirement_lines}\n\n"
+        "## Alternatives Considered\n\n"
+        f"{alternative_lines}\n\n"
+        "## Selected-Style Conflict Check\n\n"
+        f"{avoid_for_assessment.strip()}\n\n"
+    )
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -443,18 +519,41 @@ def _selection_constraint(inventory: list[Any]) -> str:
     return f"""
 Return one JSON object only, with this shape:
 {{
-  "selected_style": {{"source": "bold_template", "key": "cobalt-grid"}},
-  "presentation_method": {{
-    "narrative": "course-wide narrative approach",
-    "pacing": "pacing guidance",
-    "density": "medium",
-    "emphasis": "what visual hierarchy should emphasize",
-    "layout_rotation": ["hero", "columns"],
-    "engagement": "student engagement approach"
+  "selected_style": {{
+    "source": "<exactly preset or bold_template>",
+    "key": "<exact key copied from the inventory>"
   }},
-  "reason": "why this exact style and method fit the whole course"
+  "presentation_method": {{
+    "narrative": "<course-specific narrative of at least 30 characters>",
+    "pacing": "<course-specific pacing guidance of at least 20 characters>",
+    "density": "medium",
+    "emphasis": "<course-specific visual emphasis of at least 20 characters>",
+    "layout_rotation": ["hero", "columns"],
+    "engagement": "<course-specific engagement method of at least 20 characters>"
+  }},
+  "selection_evidence": {{
+    "course_requirements": [
+      "<course-specific visual requirement one, at least 20 characters>",
+      "<course-specific visual requirement two, at least 20 characters>",
+      "<course-specific visual requirement three, at least 20 characters>"
+    ],
+    "alternatives": [
+      {{
+        "source": "<exactly preset or bold_template>",
+        "key": "<exact rejected key copied from the inventory>",
+        "reason_rejected": "<course-specific tradeoff of at least 40 characters>"
+      }},
+      {{
+        "source": "<exactly preset or bold_template>",
+        "key": "<another exact rejected key copied from the inventory>",
+        "reason_rejected": "<course-specific tradeoff of at least 40 characters>"
+      }}
+    ],
+    "avoid_for_assessment": "<at least 80 characters explaining whether the selected style's Avoid for guidance conflicts with this course>"
+  }},
+  "reason": "<at least 100 characters tying the exact selected style to the course audience, activities, and visual requirements>"
 }}
-The selected_style shown above is a format example, not a recommendation.
+Every angle-bracketed value is an instruction placeholder and must be replaced.
 Rules:
 - source must be exactly "preset" or "bold_template". Never return
   "preset|bold_template".
@@ -463,6 +562,13 @@ Rules:
 - density must be exactly "low", "medium", or "high".
 - layout_rotation must contain at least two distinct values selected from:
   "hero", "split", "top", "columns", "math".
+- alternatives must contain 2 to 4 distinct exact inventory pairs, must not contain
+  the selected style, and must come from candidates actually compared in the discussion.
+  Each rejection must identify a course-specific tradeoff.
+- avoid_for_assessment must accurately state the selected inventory entry's Avoid for
+  warning before explaining why it does or does not conflict with this presentation context.
+- do not copy placeholder prose from this contract. Generic claims such as "professional
+  and clear" are not adequate without details from the supplied course context.
 
 ALLOWED_STYLE_PAIRS:
 {json.dumps(allowed_pairs, ensure_ascii=False)}
@@ -491,7 +597,10 @@ def _selection_repair_prompt(
         "`bold_template`—never the literal text `preset|bold_template`. Copy the key "
         "verbatim, including hyphens, from one of these exact pairs:\n"
         f"{json.dumps(exact_pairs, ensure_ascii=False)}\n\n"
-        "Return the corrected JSON object only."
+        "Use only supported layouts: hero, split, top, columns, or math; `full-page` "
+        "means `hero` and is not a valid output value. Replace every angle-bracketed "
+        "placeholder with course-specific evidence and return the complete corrected "
+        "JSON object only."
     )
 
 
