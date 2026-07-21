@@ -1112,6 +1112,18 @@ def _split_columns(elements: list[ContentElement]) -> tuple[list[ContentElement]
         expanded = _expand_column_units(elements[0])
         if len(expanded) >= 2:
             elements = expanded
+    else:
+        # A short preamble followed by one deeply nested list is common in
+        # generated slides. Expand every oversized element before balancing so
+        # the preamble does not occupy one column while the full list overflows
+        # the other.
+        expanded = [
+            unit
+            for element in elements
+            for unit in _expand_column_units(element)
+        ]
+        if len(expanded) > len(elements):
+            elements = expanded
     weights = [_element_weight(element) for element in elements]
     total = sum(weights)
     best_index, best_gap = 1, total
@@ -1147,7 +1159,7 @@ def _split_columns_fallback(elements: list[ContentElement]) -> tuple[list[Conten
     return elements[:mid], elements[mid:]
 
 
-_COLUMN_TARGET_WEIGHT = 9
+_COLUMN_TARGET_WEIGHT = 10
 
 
 def _expand_column_units(element: ContentElement) -> list[ContentElement]:

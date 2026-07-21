@@ -17,13 +17,18 @@ from src.frontend_slides.errors import FrontendSlidesError
 from src.frontend_slides.export import capture_slide_screenshots, export_html_deck
 from src.frontend_slides.finalize import MANIFEST_SCHEMA_VERSION, finalize_chapter
 from src.frontend_slides.models import (
+    ContentElement,
     CourseSlideStyle,
+    ListItem,
     PresentationMethod,
     RenderTheme,
     SelectedStyle,
 )
 from src.frontend_slides.notes import render_speaker_notes_markdown
-from src.frontend_slides.render import render_course_presentation_html
+from src.frontend_slides.render import (
+    _split_columns,
+    render_course_presentation_html,
+)
 from src.frontend_slides.runtime import prepare_offline_runtime
 from src.frontend_slides.style import (
     ASSET_VERSION,
@@ -47,6 +52,7 @@ from src.frontend_slides.validation import (
     validate_html_contract,
     validate_offline_contract,
 )
+from src.frontend_slides.weights import element_weight
 
 
 def make_style(source_text: str | None = None) -> CourseSlideStyle:
@@ -214,6 +220,120 @@ def test_offline_renderer_preserves_frames_and_has_no_remote_urls(tmp_path: Path
     assert validate_offline_contract(html) == []
     assert "assets/mathjax/tex-svg.js" in html
     assert "https://" not in html
+
+
+def test_dense_nested_list_balances_with_a_short_preamble() -> None:
+    def technique(name: str, code: str) -> ListItem:
+        return ListItem(
+            name,
+            children=[
+                ContentElement(
+                    kind="list",
+                    items=[
+                        ListItem("Describe the transformation."),
+                        ListItem(
+                            "Show the formula.",
+                            children=[
+                                ContentElement(
+                                    kind="equation",
+                                    text=r"x' = \frac{x-a}{b-a}",
+                                )
+                            ],
+                        ),
+                        ListItem(
+                            "Run the example.",
+                            children=[
+                                ContentElement(
+                                    kind="code",
+                                    text=code,
+                                    language="Python",
+                                )
+                            ],
+                        ),
+                    ],
+                )
+            ],
+        )
+
+    preamble = ContentElement(
+        kind="text",
+        text=(
+            "Guide to using Scikit-learn for normalization, standardization, "
+            "and encoding categorical variables in a reproducible workflow."
+        ),
+    )
+    dense_list = ContentElement(
+        kind="list",
+        items=[
+            ListItem(
+                "Importance of Data Preprocessing",
+                children=[
+                    ContentElement(
+                        kind="list",
+                        items=[
+                            ListItem("Prepare raw data for models."),
+                            ListItem("Improve model performance."),
+                        ],
+                    )
+                ],
+            ),
+            ListItem(
+                "Key Techniques",
+                children=[
+                    ContentElement(
+                        kind="list",
+                        items=[
+                            technique(
+                                "Normalization",
+                                "scaler = MinMaxScaler()\n"
+                                "normalized = scaler.fit_transform(data)",
+                            ),
+                            technique(
+                                "Standardization",
+                                "scaler = StandardScaler()\n"
+                                "standardized = scaler.fit_transform(data)",
+                            ),
+                            ListItem(
+                                "Encoding Categorical Variables",
+                                children=[
+                                    ContentElement(
+                                        kind="list",
+                                        items=[
+                                            ListItem("Convert categories to numbers."),
+                                            ListItem("Choose label or one-hot encoding."),
+                                            ListItem(
+                                                "Run the encoder.",
+                                                children=[
+                                                    ContentElement(
+                                                        kind="code",
+                                                        text=(
+                                                            "encoder = LabelEncoder()\n"
+                                                            "labels = encoder.fit_transform(data)"
+                                                        ),
+                                                        language="Python",
+                                                    )
+                                                ],
+                                            ),
+                                        ],
+                                    )
+                                ],
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+
+    left, right = _split_columns([preamble, dense_list])
+    left_weight = sum(element_weight(element) for element in left)
+    right_weight = sum(element_weight(element) for element in right)
+
+    assert max(left_weight, right_weight) <= 18
+    assert abs(left_weight - right_weight) <= 2
+    assert left[-1].items[0].text == "Normalization"
+    assert right[0].items[0].text == "Standardization"
+    assert right[1].items[0].text == "Encoding Categorical Variables"
 
 
 def test_style_workflow_uses_five_roles_and_selected_asset_only(

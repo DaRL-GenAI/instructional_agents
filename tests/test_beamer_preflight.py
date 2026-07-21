@@ -76,6 +76,34 @@ def test_malformed_list_structure_is_not_rewritten() -> None:
     assert result.source == source
 
 
+def test_closes_indented_child_list_before_outdented_sibling_item() -> None:
+    source = r"""
+\begin{enumerate}
+    \item Linear Regression
+        \begin{itemize}
+            \item Strengths
+            \begin{itemize}
+                \item Easy to interpret
+            \end{itemize}
+    \item Decision Trees
+        \begin{itemize}
+            \item Handles varied data
+        \end{itemize}
+\end{enumerate}
+"""
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.inserted_list_closures == 1
+    assert result.normalized_max_list_depth == 3
+    assert (
+        "        \\end{itemize}\n"
+        "    \\item Decision Trees"
+    ) in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
 def test_normalize_beamer_file_writes_repaired_source_atomically(
     tmp_path: Path,
 ) -> None:
@@ -248,6 +276,38 @@ def test_compiler_retry_recovers_undefined_color_without_touching_source(
     source = _document(
         "\\begin{frame}\n"
         "\\textcolor{electricblue}{x}\n"
+        "\\end{frame}"
+    )
+    tex_path = tmp_path / "slides.tex"
+    tex_path.write_text(source, encoding="utf-8")
+
+    pdf_path = LaTeXCompiler(str(tmp_path)).compile_one(tex_path)
+
+    assert pdf_path.is_file() and pdf_path.stat().st_size > 0
+    assert tex_path.read_text(encoding="utf-8") == source
+
+
+@pytest.mark.latex
+@pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
+def test_compiler_retry_recovers_missing_list_closure_without_touching_source(
+    tmp_path: Path,
+) -> None:
+    from src.compile import LaTeXCompiler
+
+    source = _document(
+        "\\begin{frame}\n"
+        "\\begin{enumerate}\n"
+        "    \\item Linear Regression\n"
+        "        \\begin{itemize}\n"
+        "            \\item Strengths\n"
+        "            \\begin{itemize}\n"
+        "                \\item Easy to interpret\n"
+        "            \\end{itemize}\n"
+        "    \\item Decision Trees\n"
+        "        \\begin{itemize}\n"
+        "            \\item Handles varied data\n"
+        "        \\end{itemize}\n"
+        "\\end{enumerate}\n"
         "\\end{frame}"
     )
     tex_path = tmp_path / "slides.tex"

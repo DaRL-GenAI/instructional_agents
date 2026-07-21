@@ -19,6 +19,12 @@ _PROTECTED_ENV_TOKEN = re.compile(
     r"(?P<environment>lstlisting|verbatim|Verbatim|minted)"
     r"\}"
 )
+_LINE_ENV_TOKEN = re.compile(
+    r"\\(?P<action>begin|end)\{"
+    r"(?P<environment>itemize|enumerate|lstlisting|verbatim|Verbatim|minted)"
+    r"\}(?P<option>[ \t]*\[[^\]\r\n]*\])?"
+)
+_LINE_ITEM = re.compile(r"\\item(?:\s|\[|$)")
 
 # Color-bearing commands whose mandatory argument is a color *name* unless an
 # optional [model] argument turns it into a raw spec such as [HTML]{FF0000}.
@@ -181,12 +187,14 @@ class BeamerPreflightResult:
     original_max_list_depth: int
     normalized_max_list_depth: int
     injected_color_definitions: tuple[str, ...] = ()
+    inserted_list_closures: int = 0
 
     @property
     def changed(self) -> bool:
         return (
             self.removed_list_wrapper_pairs > 0
             or bool(self.injected_color_definitions)
+            or self.inserted_list_closures > 0
         )
 
 
@@ -205,26 +213,32 @@ def normalize_beamer_source(
 ) -> BeamerPreflightResult:
     """Repair safely recoverable defects in assembled Beamer source.
 
-    Two deterministic passes run in order:
+    Three deterministic passes run in order:
 
-    1. Flatten list wrappers beyond Beamer's supported nesting depth. The
+    1. Close an indented child list when an outdented sibling ``\\item`` shows
+       that the generated source omitted the closing environment. A repair is
+       accepted only when it makes the complete list structure balanced.
+    2. Flatten list wrappers beyond Beamer's supported nesting depth. The
        nested ``\\item`` content is retained at the deepest supported level.
-       Malformed list structures are left unchanged so preflight never makes
-       an already-invalid environment sequence harder to diagnose.
-    2. Inject ``\\providecolor`` definitions before ``\\begin{document}`` for
+       Other malformed list structures are left unchanged so preflight never
+       makes an invalid environment sequence harder to diagnose.
+    3. Inject ``\\providecolor`` definitions before ``\\begin{document}`` for
        every referenced-but-undefined color name, so LLM-coined names such as
        ``electricblue`` can never abort pdflatex with "Undefined color".
        ``\\providecolor`` is a no-op for already-defined names, which makes
        over-injection harmless and the pass idempotent.
 
     Tokens inside verbatim-style environments and LaTeX comments are ignored
-    by both passes.
+    by all passes.
     """
     if max_list_depth < 1:
         raise ValueError("max_list_depth must be at least 1")
 
+    structurally_repaired, inserted_closures = (
+        _repair_unclosed_lists_before_items(source)
+    )
     normalized, removed_pairs, original_depth, normalized_depth = (
-        _normalize_lists(source, max_list_depth)
+        _normalize_lists(structurally_repaired, max_list_depth)
     )
     repaired, injected = _ensure_color_definitions(normalized)
 
@@ -234,6 +248,7 @@ def normalize_beamer_source(
         original_max_list_depth=original_depth,
         normalized_max_list_depth=normalized_depth,
         injected_color_definitions=injected,
+        inserted_list_closures=inserted_closures,
     )
 
 
@@ -296,6 +311,89 @@ def _normalize_lists(
     output.append(source[cursor:])
 
     return "".join(output), removed_pairs, original_max_depth, normalized_max_depth
+
+
+def _repair_unclosed_lists_before_items(source: str) -> tuple[str, int]:
+    """Close indented child lists before an outdented sibling ``\\item``.
+
+    Generated LaTeX sometimes starts a nested ``itemize`` for one top-level
+    item and omits its closing tag before the next sibling item. Indentation
+    identifies the intended parent without guessing when formatting is flat.
+    The candidate rewrite is accepted only when every list environment is
+    balanced afterward.
+    """
+    output: list[str] = []
+    stack: list[tuple[str, int, str]] = []
+    protected_stack: list[str] = []
+    inserted = 0
+
+    for line in source.splitlines(keepends=True):
+        stripped = line.lstrip(" \t")
+        indentation = line[: len(line) - len(stripped)]
+        indent_width = len(indentation.expandtabs(4))
+        token = _LINE_ENV_TOKEN.match(stripped)
+
+        if protected_stack:
+            if token:
+                action = token.group("action")
+                environment = token.group("environment")
+                if action == "begin" and environment in _PROTECTED_ENVIRONMENTS:
+                    protected_stack.append(environment)
+                elif action == "end" and environment == protected_stack[-1]:
+                    protected_stack.pop()
+            output.append(line)
+            continue
+
+        if token and token.group("environment") in _PROTECTED_ENVIRONMENTS:
+            if token.group("action") == "begin":
+                protected_stack.append(token.group("environment"))
+            output.append(line)
+            continue
+
+        if not stripped.startswith("%") and _LINE_ITEM.match(stripped) and stack:
+            parent_index = next(
+                (
+                    index
+                    for index in range(len(stack) - 1, -1, -1)
+                    if stack[index][1] < indent_width
+                ),
+                None,
+            )
+            if parent_index is not None and parent_index < len(stack) - 1:
+                newline = "\r\n" if line.endswith("\r\n") else "\n"
+                for environment, _width, begin_indent in reversed(
+                    stack[parent_index + 1 :]
+                ):
+                    output.append(f"{begin_indent}\\end{{{environment}}}{newline}")
+                    inserted += 1
+                del stack[parent_index + 1 :]
+
+        if token and not stripped.startswith("%"):
+            action = token.group("action")
+            environment = token.group("environment")
+            if environment in _LIST_ENVIRONMENTS:
+                if action == "begin":
+                    stack.append((environment, indent_width, indentation))
+                elif stack and stack[-1][0] == environment:
+                    stack.pop()
+        output.append(line)
+
+    if inserted == 0:
+        return source, 0
+    candidate = "".join(output)
+    if not _list_structure_is_balanced(candidate):
+        return source, 0
+    return candidate, inserted
+
+
+def _list_structure_is_balanced(source: str) -> bool:
+    stack: list[str] = []
+    for token in _list_tokens_outside_protected_regions(source):
+        if token.action == "begin":
+            stack.append(token.environment)
+        elif not stack or stack.pop() != token.environment:
+            return False
+    return not stack
 
 
 def _ensure_color_definitions(source: str) -> tuple[str, tuple[str, ...]]:

@@ -492,6 +492,12 @@ class SlidesDeliberation:
                     f"{preflight.removed_list_wrapper_pairs} unsupported deep-list "
                     "wrapper(s) before saving slides.tex"
                 )
+            if preflight.inserted_list_closures:
+                print(
+                    "[preflight] Closed "
+                    f"{preflight.inserted_list_closures} unclosed generated list "
+                    "environment(s) before saving slides.tex"
+                )
             if preflight.injected_color_definitions:
                 print(
                     "[preflight] Auto-defined missing color(s) before saving "

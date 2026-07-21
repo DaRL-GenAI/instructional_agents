@@ -62,6 +62,12 @@ def finalize_chapter(
             f"{preflight.removed_list_wrapper_pairs} list wrapper(s) beyond "
             "Beamer's 3-level nesting limit."
         )
+    if preflight.inserted_list_closures:
+        print(
+            "[preflight] Repaired slides.tex by closing "
+            f"{preflight.inserted_list_closures} unclosed generated list "
+            "environment(s)."
+        )
     if preflight.injected_color_definitions:
         print(
             "[preflight] Repaired slides.tex by auto-defining missing color(s): "
@@ -195,6 +201,12 @@ def finalize_chapter(
             "LaTeX preflight flattened "
             f"{preflight.removed_list_wrapper_pairs} list wrapper(s) beyond "
             "Beamer's 3-level nesting limit."
+        )
+    if preflight.inserted_list_closures:
+        warnings.append(
+            "LaTeX preflight closed "
+            f"{preflight.inserted_list_closures} unclosed generated list "
+            "environment(s)."
         )
     if preflight.injected_color_definitions:
         warnings.append(

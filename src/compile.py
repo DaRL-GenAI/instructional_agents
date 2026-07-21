@@ -118,7 +118,8 @@ class LaTeXCompiler:
                     self.logger.warning(f"pdflatex completed but PDF is missing or empty for {tex_file.name}")
                 else:
                     self.logger.warning(f"pdflatex failed with return code {result.returncode} for {tex_file.name}")
-                    # Repair the cache copy once (undefined colors, deep lists)
+                    # Repair the cache copy once (undefined colors, malformed or
+                    # deep lists)
                     # so the remaining attempts retry a fixed source instead of
                     # re-running the identical failing input.
                     if not preflight_repair_attempted and attempt < 2:
@@ -179,6 +180,10 @@ class LaTeXCompiler:
         if result.removed_list_wrapper_pairs:
             details.append(
                 f"flattened {result.removed_list_wrapper_pairs} deep list wrapper(s)"
+            )
+        if result.inserted_list_closures:
+            details.append(
+                f"closed {result.inserted_list_closures} unclosed list environment(s)"
             )
         summary = "; ".join(details) or "source normalized"
         self.logger.warning(

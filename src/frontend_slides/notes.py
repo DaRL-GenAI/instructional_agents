@@ -23,7 +23,9 @@ LEGACY_HEADING_RE = re.compile(
     r"^##\s+Section\s+(?P<number>\d+):\s*(?P<title>.+?)\s*$",
     re.MULTILINE,
 )
-SEPARATOR_RE = re.compile(r"\n\s*---\s*(?:\n|$)")
+TRAILING_SEPARATOR_RE = re.compile(
+    r"\n[ \t]*---[ \t]*(?:\n[ \t]*)*\Z"
+)
 
 
 @dataclass(frozen=True)
@@ -127,7 +129,7 @@ def parse_speaker_notes(markdown: str) -> list[SpeakerNote]:
                 f"{marker.group(1)} disagrees with heading number {heading_number:03d}."
             )
         body = block[heading.end():]
-        separator = SEPARATOR_RE.search(body)
+        separator = TRAILING_SEPARATOR_RE.search(body)
         if separator:
             body = body[: separator.start()]
         text = body.strip()
@@ -268,7 +270,7 @@ def upgrade_legacy_script(deck: BeamerDeck, markdown: str) -> str:
             )
         block_end = headings[position + 1].start() if position + 1 < len(headings) else len(markdown)
         body = markdown[heading.end():block_end]
-        separator = SEPARATOR_RE.search(body)
+        separator = TRAILING_SEPARATOR_RE.search(body)
         if separator:
             body = body[: separator.start()]
         note = body.strip()

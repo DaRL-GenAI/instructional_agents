@@ -74,6 +74,28 @@ def test_canonical_notes_include_title_marker_and_validate(tmp_path: Path) -> No
     assert all(len(str(entry["note_sha256"])) == 64 for entry in notes_manifest(notes))
 
 
+def test_canonical_notes_preserve_internal_horizontal_rules(tmp_path: Path) -> None:
+    deck = _deck(tmp_path)
+    note_with_rules = (
+        "---\n\n"
+        "Open with the comparison.\n\n"
+        "---\n\n"
+        "Then explain why the distinction matters."
+    )
+    markdown = render_speaker_notes_markdown(
+        deck,
+        [
+            note_with_rules,
+            "Explain the equation.",
+        ],
+    )
+
+    notes = correlate_speaker_notes(deck, markdown)
+
+    assert notes[1].text == note_with_rules
+    assert notes[2].text == "Explain the equation."
+
+
 @pytest.mark.parametrize(
     ("markdown_edit", "message"),
     [
