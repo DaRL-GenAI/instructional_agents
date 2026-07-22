@@ -995,11 +995,16 @@ def ensure_course_slide_style(
     )
     instructional_designer = Agent(
         name="Instructional Designer",
-        role="Expert evaluating structure, accessibility, density, and layout",
+        role=(
+            "Expert evaluating structure, accessibility, density, layout, and "
+            "rendering feasibility"
+        ),
         llm=addie.llm,
         system_prompt=(
             "Evaluate course-wide slide styles for learning alignment, accessible contrast, "
-            "readable density, layout variety, and consistent information hierarchy."
+            "readable density, layout variety, and consistent information hierarchy. Also "
+            "evaluate whether each style and presentation method can be applied faithfully to "
+            "generated Beamer content and deterministic 1920x1080 HTML rendering."
         ),
     )
     course_coordinator = Agent(
@@ -1009,15 +1014,6 @@ def ensure_course_slide_style(
         system_prompt=(
             "Evaluate whether a style can remain coherent across every chapter and respect the "
             "course audience, institutional context, and delivery constraints."
-        ),
-    )
-    teaching_assistant = Agent(
-        name="Teaching Assistant",
-        role="Beamer and HTML slide production feasibility reviewer",
-        llm=addie.llm,
-        system_prompt=(
-            "Evaluate which style and presentation method can be applied faithfully to generated "
-            "Beamer content and deterministic 1920x1080 HTML rendering."
         ),
     )
     summarizer = Agent(
@@ -1040,7 +1036,6 @@ def ensure_course_slide_style(
             teaching_faculty,
             instructional_designer,
             course_coordinator,
-            teaching_assistant,
         ],
         summary_agent=summarizer,
         max_rounds=1,
@@ -1116,7 +1111,7 @@ def ensure_course_slide_style(
     selected_source = selected_asset_text(selected_style, assets)
     selected_hash = sha256_text(selected_source)
     materializer = Agent(
-        name="Teaching Assistant",
+        name="Instructional Designer",
         role="Selected slide-style implementation specialist",
         llm=addie.llm,
         system_prompt=(
@@ -1192,7 +1187,6 @@ def ensure_course_slide_style(
                     "Teaching Faculty",
                     "Instructional Designer",
                     "Course Coordinator",
-                    "Teaching Assistant",
                     "Summarizer",
                 ],
                 "selected_style": asdict(style.selected_style),

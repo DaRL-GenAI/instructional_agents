@@ -255,11 +255,13 @@ For each slide, execute the following sub-steps:
 
 ### Final Compilation
 
-After the six curriculum documents and chapter list are complete, the five core
-agents run `presentation_design` as the seventh foundation deliberation. Its
-readable summary is saved in `result_presentation_design.md`; the selected
+After the six curriculum documents and chapter list are complete, the four
+foundation roles—Teaching Faculty, Instructional Designer, Course Coordinator,
+and Summarizer—run `presentation_design` as the seventh foundation deliberation.
+Its readable summary is saved in `result_presentation_design.md`; the selected
 Frontend Slides asset is also materialized into validated design tokens and
-compact Teaching Assistant guidance in `course_slide_style.json`. Ordinary
+compact guidance for the downstream Teaching Assistant in
+`course_slide_style.json`. Ordinary
 catalogs may provide an optional `presentation_style_preferences` object. The
 selector receives it as distinct instructor-supplied visual guidance while it
 compares exact inventory candidates. Compatible preferences are honored;
@@ -292,10 +294,10 @@ Presenter controls are hidden during PDF and PPTX export.
 
 | Agent Name | Main Responsibilities | Participating Deliberations |
 |-----------|---------------------|---------------------------|
-| **Teaching Faculty** | Define instructional goals, assess resources, analyze student needs, design syllabus, plan assessments, create instructional content | All Tasks 1-6 in Foundation Phase, content generation in SlidesDeliberation |
-| **Instructional Designer** | Review objectives, assess technology resources, organize slide structure | Tasks 1, 2, 4, 5, 6 in Foundation Phase, structure design in SlidesDeliberation |
-| **Course Coordinator** | Provide institutional data and student feedback | Task 3 in Foundation Phase |
-| **Summarizer** | Generate final document summaries | All Tasks 1-6 in Foundation Phase |
+| **Teaching Faculty** | Define instructional goals, assess resources, analyze student needs, design syllabus, plan assessments, create instructional content | All Tasks 1-6 and Presentation Design in Foundation Phase, content generation in SlidesDeliberation |
+| **Instructional Designer** | Review objectives, assess technology resources, organize slide structure, assess presentation rendering feasibility | Tasks 1, 2, 4, 5, 6 and Presentation Design in Foundation Phase, structure design in SlidesDeliberation |
+| **Course Coordinator** | Provide institutional data and student feedback | Task 3 and Presentation Design in Foundation Phase |
+| **Summarizer** | Generate final document summaries | All Tasks 1-6 and Presentation Design in Foundation Phase |
 | **SyllabusProcessor** | Process syllabus and extract chapters | Syllabus Processing phase |
 | **Teaching Assistant** | Create LaTeX code, speaking scripts, and assessment content | All steps in SlidesDeliberation |
 | **LaTeXCompiler** | Compile LaTeX files to PDF | Final compilation phase |

@@ -66,10 +66,11 @@ exp/my-course/
 ```
 
 It never starts chapter generation. Presentation design is the seventh
-foundation deliberation: five core agents choose one course-wide slide style
-and presentation method, then save its readable summary in
-`result_presentation_design.md`. Repeating the same command reloads the frozen
-decision and resumes only missing work. Use `--reselect-presentation-design`
+foundation deliberation: the four roles used by the other foundation
+deliberations choose one course-wide slide style and presentation method, then
+save its readable summary in `result_presentation_design.md`. Repeating the same
+command reloads the frozen decision and resumes only missing work. Use
+`--reselect-presentation-design`
 only when intentionally replacing the course-wide style. Omitted model,
 catalog, seed, and temperature values inherit the existing manifest on reruns.
 Conflicting settings are rejected instead of mixing outputs.

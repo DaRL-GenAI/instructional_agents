@@ -477,7 +477,7 @@ def test_dense_nested_list_balances_with_a_short_preamble() -> None:
     assert right[1].items[0].text == "Encoding Categorical Variables"
 
 
-def test_style_workflow_uses_five_roles_and_selected_asset_only(
+def test_style_workflow_uses_foundational_roles_and_selected_asset_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: dict[str, object] = {}
@@ -501,11 +501,17 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
         seen["instruction_prompt"] = self.instruction_prompt
         seen["selection_constraint"] = self.summary_agent.output_constraint
         seen["roles"] = [agent.name for agent in self.agents] + [self.summary_agent.name]
+        seen["instructional_designer_prompt"] = next(
+            agent.system_prompt
+            for agent in self.agents
+            if agent.name == "Instructional Designer"
+        )
         self.discussion_history = [{"agent": "Teaching Faculty", "content": "Discussion"}]
         return selection, 1.0, 10
 
     def fake_generate(self, prompt, stream=True, save_to_history=False):
-        if self.name == "Teaching Assistant" and "Selected style asset" in prompt:
+        if self.name == "Instructional Designer" and "Selected style asset" in prompt:
+            seen["materializer"] = self.name
             seen["materialization_prompt"] = prompt
             return materialization, 1.0, 10
         raise AssertionError(f"Unexpected repair call for {self.name}")
@@ -535,9 +541,13 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
         "Teaching Faculty",
         "Instructional Designer",
         "Course Coordinator",
-        "Teaching Assistant",
         "Summarizer",
     ]
+    assert seen["materializer"] == "Instructional Designer"
+    assert "Beamer content" in str(seen["instructional_designer_prompt"])
+    assert "1920x1080 HTML rendering" in str(
+        seen["instructional_designer_prompt"]
+    )
     assert seen["deliberation_calls"] == 1
     assert seen["max_rounds"] == 1
     assert "compare at least three exact inventory candidates" in str(
@@ -581,6 +591,13 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
     stats = json.loads(
         (tmp_path / "statistics_slide_style.json").read_text(encoding="utf-8")
     )
+    assert stats["participating_agents"] == [
+        "Teaching Faculty",
+        "Instructional Designer",
+        "Course Coordinator",
+        "Summarizer",
+    ]
+    assert "Teaching Assistant" not in stats["participating_agents"]
     assert stats["catalog_style_preferences"] == style_preferences
     assert len(stats["selection_evidence"]["course_requirements"]) == 3
     assert len(stats["selection_evidence"]["alternatives"]) == 2
@@ -692,7 +709,7 @@ def test_explicit_reselection_replaces_existing_style(
         return selection, 1.0, 10
 
     def fake_generate(self, _prompt, stream=True, save_to_history=False):
-        assert self.name == "Teaching Assistant"
+        assert self.name == "Instructional Designer"
         return materialization, 1.0, 10
 
     monkeypatch.setattr(
@@ -755,7 +772,7 @@ def test_style_selection_canonicalizes_literal_union_slug_and_layout_aliases(
     def fake_generate(self, prompt, stream=True, save_to_history=False):
         if self.name == "Summarizer":
             raise AssertionError("Unambiguous aliases should not require an LLM repair")
-        if self.name == "Teaching Assistant":
+        if self.name == "Instructional Designer":
             return materialization, 1.0, 10
         raise AssertionError(f"Unexpected agent call for {self.name}")
 
