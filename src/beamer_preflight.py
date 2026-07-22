@@ -26,6 +26,28 @@ _LINE_ENV_TOKEN = re.compile(
 )
 _LINE_ITEM = re.compile(r"\\item(?:\s|\[|$)")
 
+# Top-level AMS display environments are not legal inside ``equation``. LLMs
+# commonly wrap ``align*`` in ``equation`` when asked for a multi-line formula;
+# the inner variants below are specifically designed for that context.
+_DISPLAY_MATH_ENV_TOKEN = re.compile(
+    r"\\(?P<action>begin|end)\{"
+    r"(?P<environment>equation\*?|align\*?|alignat\*?|flalign\*?|"
+    r"gather\*?|multline\*?)"
+    r"\}"
+)
+_EQUATION_INNER_ENVIRONMENTS = {
+    "align": "aligned",
+    "align*": "aligned",
+    "alignat": "alignedat",
+    "alignat*": "alignedat",
+    "flalign": "aligned",
+    "flalign*": "aligned",
+    "gather": "gathered",
+    "gather*": "gathered",
+    "multline": "gathered",
+    "multline*": "gathered",
+}
+
 # Color-bearing commands whose mandatory argument is a color *name* unless an
 # optional [model] argument turns it into a raw spec such as [HTML]{FF0000}.
 _COLOR_ARG_COMMAND = re.compile(
@@ -188,6 +210,7 @@ class BeamerPreflightResult:
     normalized_max_list_depth: int
     injected_color_definitions: tuple[str, ...] = ()
     inserted_list_closures: int = 0
+    repaired_nested_math_environments: int = 0
 
     @property
     def changed(self) -> bool:
@@ -195,6 +218,7 @@ class BeamerPreflightResult:
             self.removed_list_wrapper_pairs > 0
             or bool(self.injected_color_definitions)
             or self.inserted_list_closures > 0
+            or self.repaired_nested_math_environments > 0
         )
 
 
@@ -213,7 +237,7 @@ def normalize_beamer_source(
 ) -> BeamerPreflightResult:
     """Repair safely recoverable defects in assembled Beamer source.
 
-    Three deterministic passes run in order:
+    Four deterministic passes run in order:
 
     1. Close an indented child list when an outdented sibling ``\\item`` shows
        that the generated source omitted the closing environment. A repair is
@@ -222,7 +246,10 @@ def normalize_beamer_source(
        nested ``\\item`` content is retained at the deepest supported level.
        Other malformed list structures are left unchanged so preflight never
        makes an invalid environment sequence harder to diagnose.
-    3. Inject ``\\providecolor`` definitions before ``\\begin{document}`` for
+    3. Replace top-level AMS display environments nested directly in
+       ``equation`` with their inner-safe counterparts (for example,
+       ``align*`` becomes ``aligned``).
+    4. Inject ``\\providecolor`` definitions before ``\\begin{document}`` for
        every referenced-but-undefined color name, so LLM-coined names such as
        ``electricblue`` can never abort pdflatex with "Undefined color".
        ``\\providecolor`` is a no-op for already-defined names, which makes
@@ -240,7 +267,10 @@ def normalize_beamer_source(
     normalized, removed_pairs, original_depth, normalized_depth = (
         _normalize_lists(structurally_repaired, max_list_depth)
     )
-    repaired, injected = _ensure_color_definitions(normalized)
+    math_repaired, repaired_math_environments = _repair_nested_display_math(
+        normalized
+    )
+    repaired, injected = _ensure_color_definitions(math_repaired)
 
     return BeamerPreflightResult(
         source=repaired,
@@ -249,6 +279,7 @@ def normalize_beamer_source(
         normalized_max_list_depth=normalized_depth,
         injected_color_definitions=injected,
         inserted_list_closures=inserted_closures,
+        repaired_nested_math_environments=repaired_math_environments,
     )
 
 
@@ -311,6 +342,61 @@ def _normalize_lists(
     output.append(source[cursor:])
 
     return "".join(output), removed_pairs, original_max_depth, normalized_max_depth
+
+
+def _repair_nested_display_math(source: str) -> tuple[str, int]:
+    """Make top-level display environments legal inside ``equation``.
+
+    The rewrite is deliberately structural rather than a broad regular-expression
+    substitution: all relevant environments must be balanced, and tokens in
+    comments or verbatim-style environments are ignored. If the math structure
+    is malformed, the source is returned untouched so preflight cannot obscure
+    the original compiler error.
+    """
+    protected_spans = _protected_spans(source)
+    stack: list[tuple[str, str | None]] = []
+    replacements: list[tuple[int, int, str]] = []
+    repaired_pairs = 0
+
+    for match in _DISPLAY_MATH_ENV_TOKEN.finditer(source):
+        if _is_commented(source, match.start()) or _in_spans(
+            match.start(), protected_spans
+        ):
+            continue
+
+        action = match.group("action")
+        environment = match.group("environment")
+        if action == "begin":
+            replacement = None
+            if stack and stack[-1][0].rstrip("*") == "equation":
+                replacement = _EQUATION_INNER_ENVIRONMENTS.get(environment)
+                if replacement is not None:
+                    replacements.append(
+                        (
+                            match.start(),
+                            match.end(),
+                            f"\\begin{{{replacement}}}",
+                        )
+                    )
+                    repaired_pairs += 1
+            stack.append((environment, replacement))
+            continue
+
+        if not stack or stack[-1][0] != environment:
+            return source, 0
+        _, replacement = stack.pop()
+        if replacement is not None:
+            replacements.append(
+                (match.start(), match.end(), f"\\end{{{replacement}}}")
+            )
+
+    if stack or not replacements:
+        return source, 0
+
+    repaired = source
+    for start, end, replacement in reversed(replacements):
+        repaired = repaired[:start] + replacement + repaired[end:]
+    return repaired, repaired_pairs
 
 
 def _repair_unclosed_lists_before_items(source: str) -> tuple[str, int]:

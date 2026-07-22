@@ -119,12 +119,24 @@ class LaTeXCompiler:
                 else:
                     self.logger.warning(f"pdflatex failed with return code {result.returncode} for {tex_file.name}")
                     # Repair the cache copy once (undefined colors, malformed or
-                    # deep lists)
+                    # deep lists, and nested display math)
                     # so the remaining attempts retry a fixed source instead of
                     # re-running the identical failing input.
+                    repaired = False
                     if not preflight_repair_attempted and attempt < 2:
                         preflight_repair_attempted = True
-                        self._repair_cached_source(cached_tex_file, compilation_logs)
+                        repaired = self._repair_cached_source(
+                            cached_tex_file, compilation_logs
+                        )
+                    if not repaired:
+                        self.logger.error(
+                            f"Stopping retries for {tex_file.name}: deterministic "
+                            "preflight found no repair."
+                        )
+                        compilation_logs.append(
+                            "NO PREFLIGHT REPAIR AVAILABLE; STOPPING RETRIES\n\n"
+                        )
+                        break
 
                 # If this is the last attempt and still no valid PDF, log more details
                 if attempt == 2:
@@ -184,6 +196,12 @@ class LaTeXCompiler:
         if result.inserted_list_closures:
             details.append(
                 f"closed {result.inserted_list_closures} unclosed list environment(s)"
+            )
+        if result.repaired_nested_math_environments:
+            details.append(
+                "repaired "
+                f"{result.repaired_nested_math_environments} nested display-math "
+                "environment(s)"
             )
         summary = "; ".join(details) or "source normalized"
         self.logger.warning(

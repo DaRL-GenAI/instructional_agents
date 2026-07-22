@@ -198,6 +198,7 @@ Guidelines:
 4. Keep the frame focused and not overcrowded
 5. Never nest itemize/enumerate environments more than 3 levels deep; prefer 2 levels for readability
 6. Colors: the preamble is fixed, so you cannot add \\definecolor. Only use standard color names (red, blue, teal, gray, ...), color names already defined in the template or current frame, or inline hex via \\textcolor[HTML]{{RRGGBB}}{{...}}. Never invent named colors such as electricblue
+7. Never nest display-math environments. For multiple aligned lines, use \\begin{{align*}} by itself, or put \\begin{{aligned}} inside \\begin{{equation}}. Never put align, align*, gather, or multline inside equation.
 
 Use LaTeX features like:
 - \\begin{{itemize}} for bullet points
@@ -502,6 +503,12 @@ class SlidesDeliberation:
                 print(
                     "[preflight] Auto-defined missing color(s) before saving "
                     f"slides.tex: {', '.join(preflight.injected_color_definitions)}"
+                )
+            if preflight.repaired_nested_math_environments:
+                print(
+                    "[preflight] Repaired "
+                    f"{preflight.repaired_nested_math_environments} nested "
+                    "display-math environment(s) before saving slides.tex"
                 )
         
         # Step 7: Compile final slides script

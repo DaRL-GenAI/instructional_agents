@@ -238,6 +238,65 @@ def test_sources_without_document_environment_are_left_unchanged() -> None:
     assert result.source == source
 
 
+def test_repairs_alignment_environment_nested_in_equation() -> None:
+    source = _document(
+        "\\begin{equation}\n"
+        "\\begin{align*}\n"
+        "x(t) &= f(t) \\\\\n"
+        "y(t) &= g(t)\n"
+        "\\end{align*}\n"
+        "\\end{equation}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.repaired_nested_math_environments == 1
+    assert r"\begin{equation}" in result.source
+    assert r"\begin{aligned}" in result.source
+    assert r"\end{aligned}" in result.source
+    assert r"\begin{align*}" not in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_repairs_supported_nested_display_math_variants() -> None:
+    source = _document(
+        "\\begin{equation*}\\begin{gather}a=b\\end{gather}\\end{equation*}\n"
+        "\\begin{equation}\\begin{alignat}{2}a&=b\\end{alignat}\\end{equation}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.repaired_nested_math_environments == 2
+    assert r"\begin{gathered}a=b\end{gathered}" in result.source
+    assert r"\begin{alignedat}{2}a&=b\end{alignedat}" in result.source
+
+
+def test_nested_math_in_comments_and_listings_is_ignored() -> None:
+    source = _document(
+        "% \\begin{equation}\\begin{align*}x&=1\\end{align*}\\end{equation}\n"
+        "\\begin{lstlisting}\n"
+        "\\begin{equation}\\begin{align*}x&=1\\end{align*}\\end{equation}\n"
+        "\\end{lstlisting}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+def test_malformed_nested_math_structure_is_not_rewritten() -> None:
+    source = _document(
+        r"\begin{equation}\begin{align*}x&=1\end{equation}\end{align*}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
 _PDFLATEX = shutil.which("pdflatex")
 
 
@@ -268,6 +327,37 @@ def test_repaired_undefined_color_compiles_with_pdflatex(tmp_path: Path) -> None
 
 @pytest.mark.latex
 @pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
+def test_repaired_nested_display_math_compiles_with_pdflatex(
+    tmp_path: Path,
+) -> None:
+    source = _document(
+        "\\begin{frame}[fragile]\n"
+        "\\begin{equation}\n"
+        "\\begin{align*}\n"
+        "x(t) &= f(t) \\\\\n"
+        "y(t) &= g(t)\n"
+        "\\end{align*}\n"
+        "\\end{equation}\n"
+        "\\end{frame}"
+    )
+    tex_path = tmp_path / "slides.tex"
+    tex_path.write_text(normalize_beamer_source(source).source, encoding="utf-8")
+
+    completed = subprocess.run(
+        [_PDFLATEX, "-interaction=nonstopmode", "-halt-on-error", tex_path.name],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    pdf_path = tmp_path / "slides.pdf"
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    assert pdf_path.is_file() and pdf_path.stat().st_size > 0
+
+
+@pytest.mark.latex
+@pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
 def test_compiler_retry_recovers_undefined_color_without_touching_source(
     tmp_path: Path,
 ) -> None:
@@ -276,6 +366,32 @@ def test_compiler_retry_recovers_undefined_color_without_touching_source(
     source = _document(
         "\\begin{frame}\n"
         "\\textcolor{electricblue}{x}\n"
+        "\\end{frame}"
+    )
+    tex_path = tmp_path / "slides.tex"
+    tex_path.write_text(source, encoding="utf-8")
+
+    pdf_path = LaTeXCompiler(str(tmp_path)).compile_one(tex_path)
+
+    assert pdf_path.is_file() and pdf_path.stat().st_size > 0
+    assert tex_path.read_text(encoding="utf-8") == source
+
+
+@pytest.mark.latex
+@pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
+def test_compiler_retry_recovers_nested_math_without_touching_source(
+    tmp_path: Path,
+) -> None:
+    from src.compile import LaTeXCompiler
+
+    source = _document(
+        "\\begin{frame}[fragile]\n"
+        "\\begin{equation}\n"
+        "\\begin{align*}\n"
+        "x(t) &= f(t) \\\\\n"
+        "y(t) &= g(t)\n"
+        "\\end{align*}\n"
+        "\\end{equation}\n"
         "\\end{frame}"
     )
     tex_path = tmp_path / "slides.tex"

@@ -73,6 +73,12 @@ def finalize_chapter(
             "[preflight] Repaired slides.tex by auto-defining missing color(s): "
             f"{', '.join(preflight.injected_color_definitions)}"
         )
+    if preflight.repaired_nested_math_environments:
+        print(
+            "[preflight] Repaired slides.tex by normalizing "
+            f"{preflight.repaired_nested_math_environments} nested display-math "
+            "environment(s)."
+        )
     style = load_course_slide_style(course_path)
     style_path = course_path / STYLE_FILENAME
     source_hash = sha256_file(tex_path)
@@ -212,6 +218,12 @@ def finalize_chapter(
         warnings.append(
             "LaTeX preflight auto-defined missing color(s): "
             + ", ".join(preflight.injected_color_definitions)
+        )
+    if preflight.repaired_nested_math_environments:
+        warnings.append(
+            "LaTeX preflight normalized "
+            f"{preflight.repaired_nested_math_environments} nested display-math "
+            "environment(s)."
         )
     if deck.unsupported_environments:
         warnings.append(

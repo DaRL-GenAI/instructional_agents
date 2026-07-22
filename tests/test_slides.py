@@ -112,6 +112,7 @@ class TestSlideUtils:
         assert "multiple frames" not in prompt
         assert "Part X" not in prompt
         assert "Never nest itemize/enumerate environments more than 3 levels" in prompt
+        assert "Never nest display-math environments" in prompt
 
     def test_generate_latex_frame_prompt_with_feedback(self):
         prompt = SlideUtils.generate_latex_frame_prompt(
