@@ -36,7 +36,7 @@ const translations = {
         catalogSelectLoading: '加载中...',
         catalogSelectPlaceholder: '选择 Catalog...',
         catalogJsonLabel: 'Catalog JSON 数据',
-        catalogJsonPlaceholder: '{"student_profile": {...}, "instructor_preferences": {...}}',
+        catalogJsonPlaceholder: '{"student_profile": {...}, "instructor_preferences": {...}, "presentation_style_preferences": {"preferred_visual_direction": "现代、简洁的学术风格", "additional_notes": "其他视觉偏好"}}',
         submitButtonText: '<span>🚀</span><span>开始生成课程</span>',
         submitButtonLoading: '⏳ 提交中...',
         progressSectionTitle: '生成进度',
@@ -181,7 +181,7 @@ const translations = {
         catalogSelectLoading: 'Loading...',
         catalogSelectPlaceholder: 'Select a catalog...',
         catalogJsonLabel: 'Catalog JSON Data',
-        catalogJsonPlaceholder: '{"student_profile": {...}, "instructor_preferences": {...}}',
+        catalogJsonPlaceholder: '{"student_profile": {...}, "instructor_preferences": {...}, "presentation_style_preferences": {"preferred_visual_direction": "Modern, minimal academic style", "additional_notes": "Other visual preferences"}}',
         submitButtonText: '<span>🚀</span><span>Generate Course</span>',
         submitButtonLoading: '⏳ Submitting...',
         progressSectionTitle: 'Progress',
@@ -1617,4 +1617,3 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
-

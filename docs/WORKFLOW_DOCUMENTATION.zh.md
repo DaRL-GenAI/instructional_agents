@@ -255,6 +255,14 @@
 
 ### 最终编译（Final Compilation）
 
+在六个课程设计文档和章节列表完成后，五个核心Agent会执行第七个基础阶段
+`presentation_design`，为所有章节选择同一个演示样式。Catalog可选地提供
+`presentation_style_preferences` 对象，作为教师给出的直接视觉偏好参与候选
+样式比较。系统会尽量满足兼容的偏好；发生冲突时，无障碍性、可读性、课程
+适配度、渲染可行性以及模板的 Best for/Avoid for 约束优先。该对象只影响样式
+选择，不会改写所选模板的配色、字体或渲染参数。普通恢复会继续使用已冻结的
+样式；只有显式使用 `--reselect-presentation-design` 才会重新选择。
+
 在完成所有章节的SlidesDeliberation后，系统使用**LaTeXCompiler**编译所有LaTeX文件。
 
 **输入（Input）:**
@@ -369,5 +377,4 @@ exp/{experiment_name}/
 ---
 
 本文档提供了系统工作流程的完整中文说明，包括各个Agent的角色、每个子任务的输入输出，以及数据在系统中的流动方式。
-
 

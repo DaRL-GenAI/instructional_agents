@@ -713,10 +713,58 @@ class ADDIE:
             "learner_analysis": "",
             "syllabus_design": "",
             "assessment_planning": "",
+            "presentation_style_preferences": {},
             "slides_length": 30,
         }
         
         if self.catalog:
+            if not isinstance(data_catalog, dict):
+                raise ValueError("Catalog data must be a JSON object.")
+
+            style_preferences = data_catalog.get(
+                "presentation_style_preferences", {}
+            )
+            if style_preferences is None:
+                style_preferences = {}
+            if not isinstance(style_preferences, dict):
+                raise ValueError(
+                    "Catalog section 'presentation_style_preferences' must be a JSON object."
+                )
+
+            allowed_style_preference_fields = {
+                "preferred_visual_direction",
+                "color_preferences",
+                "typography_preferences",
+                "layout_and_density_preferences",
+                "accessibility_requirements",
+                "styles_to_avoid",
+                "additional_notes",
+            }
+            unknown_fields = sorted(
+                set(style_preferences) - allowed_style_preference_fields
+            )
+            if unknown_fields:
+                raise ValueError(
+                    "Catalog section 'presentation_style_preferences' contains "
+                    f"unsupported fields: {', '.join(unknown_fields)}."
+                )
+            invalid_fields = sorted(
+                key
+                for key, value in style_preferences.items()
+                if value is not None and not isinstance(value, str)
+            )
+            if invalid_fields:
+                raise ValueError(
+                    "Catalog section 'presentation_style_preferences' requires "
+                    "text values for populated fields: "
+                    f"{', '.join(invalid_fields)}."
+                )
+            style_preferences = {
+                key: value
+                for key, value in style_preferences.items()
+                if value is not None
+            }
+
             # Debugging line: Check available keys in data_catalog before accessing them.
             # Added to troubleshoot potential KeyError when loading course_structure from JSON.
             print("Debug: data_catalog keys =", data_catalog.keys())
@@ -726,6 +774,7 @@ class ADDIE:
                 "learner_analysis": [data_catalog['student_profile'], data_catalog['prior_feedback']],
                 "syllabus_design": [data_catalog['course_structure'], data_catalog['institutional_requirements'],  data_catalog['instructor_preferences']],
                 "assessment_planning": [data_catalog['assessment_design'], data_catalog['instructor_preferences']],
+                "presentation_style_preferences": style_preferences,
                 "slides_length": int(data_catalog['teaching_constraints']['max_slide_count'])
             }
     

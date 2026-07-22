@@ -481,6 +481,12 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: dict[str, object] = {}
+    style_preferences = {
+        "preferred_visual_direction": (
+            "STYLE-PREFERENCE-SENTINEL: restrained editorial instruction"
+        ),
+        "accessibility_requirements": "High contrast and readable type sizes.",
+    }
     selection = json.dumps(make_selection_payload())
     materialization = json.dumps(
         {
@@ -512,7 +518,11 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
         "src.slide_style.Agent.generate_response",
         fake_generate,
     )
-    addie = SimpleNamespace(course_name="Test Course", llm=object())
+    addie = SimpleNamespace(
+        course_name="Test Course",
+        llm=object(),
+        catalog_dict={"presentation_style_preferences": style_preferences},
+    )
 
     style = ensure_course_slide_style(
         addie,
@@ -534,14 +544,24 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
         seen["instruction_prompt"]
     )
     assert "Best for and Avoid for guidance" in str(seen["instruction_prompt"])
+    assert "STYLE-PREFERENCE-SENTINEL" in str(seen["instruction_prompt"])
+    assert "more specific than the legacy" in str(seen["instruction_prompt"])
+    assert "prioritize accessibility, readability, course suitability" in str(
+        seen["instruction_prompt"]
+    )
+    assert "explain honored and unmet preferences" in str(
+        seen["instruction_prompt"]
+    )
     contract_shape = str(seen["selection_constraint"]).split(
         "ALLOWED_STYLE_PAIRS:", 1
     )[0]
+    assert "when non-empty catalog_style_preferences are supplied" in contract_shape
     assert '"key": "cobalt-grid"' not in contract_shape
     assert '"key": "paper-ink"' not in contract_shape
     prompt = str(seen["materialization_prompt"])
     assert "Cobalt Grid" in prompt
     assert "Complete style inventory" not in prompt
+    assert "STYLE-PREFERENCE-SENTINEL" not in prompt
     assert style.selected_style.key == "cobalt-grid"
     assert load_course_slide_style(tmp_path) == style
     presentation_result = (
@@ -561,6 +581,7 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
     stats = json.loads(
         (tmp_path / "statistics_slide_style.json").read_text(encoding="utf-8")
     )
+    assert stats["catalog_style_preferences"] == style_preferences
     assert len(stats["selection_evidence"]["course_requirements"]) == 3
     assert len(stats["selection_evidence"]["alternatives"]) == 2
     resumed = ensure_course_slide_style(addie, tmp_path, [], [])

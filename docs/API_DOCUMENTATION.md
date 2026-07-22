@@ -227,6 +227,15 @@ Catalog JSON file should contain the following structure:
     "instructor_style_preferences": "...",
     "instructor_focus_for_assessment": "..."
   },
+  "presentation_style_preferences": {
+    "preferred_visual_direction": "...",
+    "color_preferences": "...",
+    "typography_preferences": "...",
+    "layout_and_density_preferences": "...",
+    "accessibility_requirements": "...",
+    "styles_to_avoid": "...",
+    "additional_notes": "..."
+  },
   "course_structure": {
     "course_learning_outcomes": "...",
     "total_number_of_weeks": "...",
@@ -252,6 +261,13 @@ Catalog JSON file should contain the following structure:
   }
 }
 ```
+
+`presentation_style_preferences` is optional, and each child field is optional
+text. It directly guides the course-wide packaged-style selection. The selector
+honors compatible preferences but gives accessibility, readability, course fit,
+renderer feasibility, and packaged-template constraints higher priority. It does
+not use these values to rewrite the selected template's palette, typography, or
+render tokens.
 
 ## Output Structure
 
@@ -351,4 +367,3 @@ Main logic is in `src/ADDIE.py` and `run.py`, need to restart API service after 
 ## License
 
 MIT License
-

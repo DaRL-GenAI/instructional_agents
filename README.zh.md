@@ -506,7 +506,8 @@ curl http://localhost:8000/api/course/results/{task_id}/download/chapter_1/slide
 
 Catalog 文件提供结构化输入数据来指导课程生成过程。包括：
 - 学生画像和背景
-- 教师偏好和风格
+- 教师偏好和教学风格
+- 可选的演示样式偏好，包括视觉方向、颜色、字体、布局密度、无障碍要求和需要避免的样式
 - 课程结构要求
 - 评估设计偏好
 - 教学约束
@@ -526,6 +527,12 @@ python run.py "AI 基础" --catalog ai_catalog
 ```
 
 Catalog 格式详情请查看 [API 文档](docs/API_DOCUMENTATION.zh.md#catalog-格式)。
+
+`presentation_style_preferences` 属于建议性偏好。演示设计Agent会在比较预置
+样式时考虑每个非空偏好；如有冲突，无障碍性、可读性、课程适配度和渲染
+可行性优先。恢复任务时会继续使用已冻结的样式；如需应用修改后的偏好，
+请使用新的实验名称，或在本地课程CLI中使用
+`--reselect-presentation-design`。
 
 ### Copilot 模式
 

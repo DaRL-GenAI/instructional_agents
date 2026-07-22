@@ -529,7 +529,9 @@ For complete API documentation, see [API Documentation](docs/API_DOCUMENTATION.m
 
 Catalog files provide structured input data to guide the course generation process. They include:
 - Student profiles and backgrounds
-- Instructor preferences and style
+- Instructor preferences and teaching style
+- Optional presentation style preferences, including visual direction, colors,
+  typography, layout density, accessibility needs, and styles to avoid
 - Course structure requirements
 - Assessment design preferences
 - Teaching constraints
@@ -549,6 +551,14 @@ python run.py "AI Fundamentals" --catalog ai_catalog
 ```
 
 See [API Documentation](docs/API_DOCUMENTATION.md#catalog-format) for catalog format details.
+
+`presentation_style_preferences` is advisory. The presentation-design agents
+consider every non-empty preference when comparing packaged styles, while
+accessibility, readability, course suitability, and rendering feasibility take
+priority when a preference conflicts with the available designs. The selected
+style remains frozen on resume; use a new experiment or
+`--reselect-presentation-design` in the local course CLI to apply changed
+preferences.
 
 ### Copilot Mode
 

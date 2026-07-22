@@ -965,12 +965,23 @@ def ensure_course_slide_style(
     inventory, inventory_hash = build_style_inventory(assets)
     inventory_payload = [asdict(entry) for entry in inventory]
     selection_constraint = _selection_constraint(inventory)
+    catalog_dict = getattr(addie, "catalog_dict", {})
+    if not isinstance(catalog_dict, dict):
+        raise FrontendSlidesError("ADDIE catalog context must be a dictionary.")
+    catalog_style_preferences = catalog_dict.get(
+        "presentation_style_preferences", {}
+    )
+    if not isinstance(catalog_style_preferences, dict):
+        raise FrontendSlidesError(
+            "Catalog presentation style preferences must be a dictionary."
+        )
     course_context = {
         "course_name": getattr(addie, "course_name", ""),
         "foundation_documents": [
             str(result)[:12000] for result in foundation_results[1:]
         ],
         "chapters": chapters,
+        "catalog_style_preferences": catalog_style_preferences,
     }
 
     teaching_faculty = Agent(
@@ -1041,7 +1052,13 @@ def ensure_course_slide_style(
             "compare at least three exact inventory candidates, and explicitly consider each "
             "candidate's Best for and Avoid for guidance. Explain tradeoffs using course-specific "
             "details; generic claims such as merely being professional, clear, or engaging are "
-            "not sufficient. Preserve the normal sequential discussion: respond to earlier "
+            "not sufficient. Treat every non-empty catalog_style_preferences value as direct, "
+            "instructor-supplied visual guidance and more specific than the legacy "
+            "instructor_style_preferences field. Honor those preferences when compatible, but "
+            "prioritize accessibility, readability, course suitability, and renderer feasibility "
+            "when they conflict with a preference or an inventory asset's guidance. Explicitly "
+            "explain honored and unmet preferences in the course requirements and final selection "
+            "rationale. Preserve the normal sequential discussion: respond to earlier "
             "reviewers while adding your own comparison evidence.\n\n"
             f"Course context:\n{json.dumps(course_context, ensure_ascii=False)}\n\n"
             "Complete style inventory (12 presets and 34 bold templates):\n"
@@ -1179,6 +1196,7 @@ def ensure_course_slide_style(
                     "Summarizer",
                 ],
                 "selected_style": asdict(style.selected_style),
+                "catalog_style_preferences": catalog_style_preferences,
                 "reason": reason,
                 "selection_evidence": selection_evidence,
                 "selection_normalizations": selection_normalizations,
@@ -1457,6 +1475,10 @@ Rules:
   Each rejection must identify a course-specific tradeoff.
 - avoid_for_assessment must accurately state the selected inventory entry's Avoid for
   warning before explaining why it does or does not conflict with this presentation context.
+- when non-empty catalog_style_preferences are supplied, course_requirements and reason
+  must explicitly explain which preferences are honored and which cannot be satisfied;
+  preferences do not override accessibility, readability, course suitability, renderer
+  feasibility, or the selected inventory entry's constraints.
 - do not copy placeholder prose from this contract. Generic claims such as "professional
   and clear" are not adequate without details from the supplied course context.
 

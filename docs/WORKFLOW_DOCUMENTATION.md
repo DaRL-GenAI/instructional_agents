@@ -260,7 +260,14 @@ agents run `presentation_design` as the seventh foundation deliberation. Its
 readable summary is saved in `result_presentation_design.md`; the selected
 Frontend Slides asset is also materialized into validated design tokens and
 compact Teaching Assistant guidance in `course_slide_style.json`. Ordinary
-resumes reuse this frozen course-wide decision. Only an explicit
+catalogs may provide an optional `presentation_style_preferences` object. The
+selector receives it as distinct instructor-supplied visual guidance while it
+compares exact inventory candidates. Compatible preferences are honored;
+accessibility, readability, course fit, renderer feasibility, and each asset's
+Best for/Avoid for constraints take priority. The preferences affect selection
+only and are recorded in `statistics_slide_style.json`; the materialization pass
+still receives only the selected packaged asset. Ordinary resumes reuse this
+frozen course-wide decision. Only an explicit
 `--reselect-presentation-design` request may replace it.
 
 After each SlidesDeliberation, the system immediately runs the shared chapter
