@@ -238,9 +238,9 @@ def require_api_key() -> None:
 def validate_foundation(output_dir: Path) -> list[dict[str, str]]:
     presentation_result = output_dir / "result_presentation_design.md"
     if not _is_nonempty_file(presentation_result):
-        from src.frontend_slides.errors import FrontendSlidesError
-        from src.frontend_slides.style import STYLE_FILENAME, STYLE_SOURCE_FILENAME
-        from src.frontend_slides.style_workflow import (
+        from src.frontend_slides import FrontendSlidesError
+        from src.slide_style import STYLE_FILENAME, STYLE_SOURCE_FILENAME
+        from src.slide_style import (
             load_course_slide_style,
             write_presentation_design_result,
         )
@@ -441,8 +441,8 @@ def validate_chapter_outputs(chapter_dir: Path, chapter_number: int) -> None:
 
 def repair_chapter_speaker_notes(chapter_dir: Path) -> Path:
     """Replace only script.md using the exact parsed Beamer slide order."""
-    from src.frontend_slides.beamer import parse_beamer
-    from src.frontend_slides.notes import repair_speaker_notes_markdown
+    from src.frontend_slides import parse_beamer
+    from src.frontend_slides import repair_speaker_notes_markdown
 
     tex_path = chapter_dir / "slides.tex"
     if not _is_nonempty_file(tex_path):
@@ -478,9 +478,9 @@ def completed_chapter_source_dirs(output_dir: Path) -> list[Path]:
 
 def preflight_existing_chapters_for_style_change(output_dir: Path) -> None:
     """Reject a style switch before selection if legacy notes are ambiguous."""
-    from src.frontend_slides.beamer import parse_beamer
-    from src.frontend_slides.errors import FrontendSlidesError
-    from src.frontend_slides.notes import upgrade_legacy_script
+    from src.frontend_slides import parse_beamer
+    from src.frontend_slides import FrontendSlidesError
+    from src.frontend_slides import upgrade_legacy_script
 
     for chapter_dir in completed_chapter_source_dirs(output_dir):
         try:
@@ -502,9 +502,9 @@ def refinalize_existing_chapters(
     runner: Any | None = None,
 ) -> None:
     """Bring every completed chapter onto the canonical course presentation."""
-    from src.frontend_slides.errors import FrontendSlidesError
-    from src.frontend_slides.finalize import MANIFEST_SCHEMA_VERSION, finalize_chapter
-    from src.frontend_slides.style import STYLE_FILENAME, sha256_file
+    from src.frontend_slides import FrontendSlidesError
+    from src.frontend_slides import MANIFEST_SCHEMA_VERSION, finalize_chapter
+    from src.slide_style import STYLE_FILENAME, sha256_file
 
     for chapter_dir in completed_chapter_source_dirs(output_dir):
         manifest_path = chapter_dir / "frontend-slides-manifest.json"
@@ -543,7 +543,7 @@ def refinalize_existing_chapters(
 
 def assert_course_style_consistency(output_dir: Path) -> None:
     """Require all completed frontend manifests to use the root style hash."""
-    from src.frontend_slides.style import STYLE_FILENAME, sha256_file
+    from src.slide_style import STYLE_FILENAME, sha256_file
 
     style_path = output_dir / STYLE_FILENAME
     expected_hash = sha256_file(style_path)
@@ -578,7 +578,7 @@ def run_chapter(args: argparse.Namespace) -> int:
             f"Chapter {args.number} is out of range for {config.course_name!r}. "
             f"Choose a chapter from 1 to {len(disk_chapters)}."
         )
-    from src.frontend_slides.style import STYLE_FILENAME, STYLE_SOURCE_FILENAME
+    from src.slide_style import STYLE_FILENAME, STYLE_SOURCE_FILENAME
 
     missing_style = [
         name

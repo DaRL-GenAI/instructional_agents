@@ -9,13 +9,11 @@ from pathlib import Path
 import pytest
 
 from local_course_cli import cli
-from src.frontend_slides.models import (
+from src.slide_style import (
     CourseSlideStyle,
     PresentationMethod,
     RenderTheme,
     SelectedStyle,
-)
-from src.frontend_slides.style import (
     ASSET_VERSION,
     STYLE_FILENAME,
     STYLE_SOURCE_FILENAME,

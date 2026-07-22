@@ -63,7 +63,7 @@ version = {attr = "src.__version__"}
 py-modules = ["run", "api_server", "evaluate"]
 
 [tool.setuptools.packages.find]
-include = ["src*"]
+include = ["src*", "assets.slide_gen*"]
 
 [tool.setuptools.package-data]
 "*" = [
@@ -74,9 +74,9 @@ include = ["src*"]
     "frontend/*.css",
     "src/*.js",
 ]
-"src.frontend_slides" = [
-    "skill_assets/frontend_slides/**/*",
-    "runtime_assets/**/*",
+"assets.slide_gen" = [
+    "skill/**/*",
+    "runtime/**/*",
 ]
 
 [tool.pytest.ini_options]

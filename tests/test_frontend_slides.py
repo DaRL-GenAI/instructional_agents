@@ -11,29 +11,30 @@ from PIL import Image
 from PyPDF2 import PdfReader, PdfWriter
 from pptx import Presentation
 
-from src.frontend_slides.assets import load_assets
-from src.frontend_slides.beamer import parse_beamer
-from src.frontend_slides.errors import FrontendSlidesError
-from src.frontend_slides.export import capture_slide_screenshots, export_html_deck
-from src.frontend_slides.finalize import MANIFEST_SCHEMA_VERSION, finalize_chapter
-from src.frontend_slides.models import (
+from src.frontend_slides import load_assets
+from src.frontend_slides import parse_beamer
+from src.frontend_slides import FrontendSlidesError
+from src.frontend_slides import capture_slide_screenshots, export_html_deck
+from src.frontend_slides import MANIFEST_SCHEMA_VERSION, finalize_chapter
+from src.frontend_slides import (
     ContentElement,
-    CourseSlideStyle,
     ListItem,
-    PresentationMethod,
-    RenderTheme,
-    SelectedStyle,
 )
-from src.frontend_slides.notes import render_speaker_notes_markdown
-from src.frontend_slides.render import (
+from src.frontend_slides import render_speaker_notes_markdown
+from src.frontend_slides import (
     _split_columns,
     render_course_presentation_html,
 )
-from src.frontend_slides.runtime import prepare_offline_runtime
-from src.frontend_slides.style import (
+from src.frontend_slides import prepare_offline_runtime, runtime_asset_root
+from src.slide_style import (
     ASSET_VERSION,
     COLOR_KEYS,
+    CourseSlideStyle,
     PRESENTATION_DESIGN_FILENAME,
+    PresentationMethod,
+    RenderTheme,
+    SelectedStyle,
+    SkillAssetError,
     STYLE_FILENAME,
     STYLE_SOURCE_FILENAME,
     build_style_inventory,
@@ -42,19 +43,20 @@ from src.frontend_slides.style import (
     selected_asset_text,
     sha256_file,
     sha256_text,
+    slide_gen_asset_root,
     validate_materialization,
     validate_selection,
     write_course_style,
 )
-from src.frontend_slides.style_workflow import (
+from src.slide_style import (
     ensure_course_slide_style,
     load_course_slide_style,
 )
-from src.frontend_slides.validation import (
+from src.frontend_slides import (
     validate_html_contract,
     validate_offline_contract,
 )
-from src.frontend_slides.weights import element_weight
+from src.frontend_slides import element_weight
 
 
 def make_style(source_text: str | None = None) -> CourseSlideStyle:
@@ -204,6 +206,23 @@ def test_inventory_contains_all_46_styles() -> None:
     assert sum(item.source == "preset" for item in inventory) == 12
     assert sum(item.source == "bold_template" for item in inventory) == 34
     assert len(digest) == 64
+
+
+def test_slide_resources_use_the_root_asset_package() -> None:
+    root = slide_gen_asset_root()
+    skill_root = root / "skill"
+
+    assert load_assets().root == skill_root
+    assert runtime_asset_root() == root / "runtime"
+    assert len(list(skill_root.glob("bold-template-pack/templates/*/design.md"))) == 34
+    assert not list(skill_root.rglob("preview.md"))
+    assert not (skill_root / "html-template.md").exists()
+    assert not (skill_root / "animation-patterns.md").exists()
+
+
+def test_load_assets_rejects_an_incomplete_override(tmp_path: Path) -> None:
+    with pytest.raises(SkillAssetError, match="Missing required frontend-slides assets"):
+        load_assets(tmp_path)
 
 
 def test_materialization_rejects_arbitrary_css_and_unknown_fonts() -> None:
@@ -486,11 +505,11 @@ def test_style_workflow_uses_five_roles_and_selected_asset_only(
         raise AssertionError(f"Unexpected repair call for {self.name}")
 
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Deliberation.run",
+        "src.slide_style.Deliberation.run",
         fake_deliberation_run,
     )
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Agent.generate_response",
+        "src.slide_style.Agent.generate_response",
         fake_generate,
     )
     addie = SimpleNamespace(course_name="Test Course", llm=object())
@@ -556,7 +575,7 @@ def test_style_resume_makes_no_agent_calls(
 ) -> None:
     write_style(tmp_path)
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Deliberation.run",
+        "src.slide_style.Deliberation.run",
         lambda _self: pytest.fail("style deliberation should be skipped"),
     )
 
@@ -577,19 +596,19 @@ def test_style_resume_uses_frozen_authority_when_inventory_changes(
 ) -> None:
     write_style(tmp_path)
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.build_style_inventory",
+        "src.slide_style.build_style_inventory",
         lambda *_args, **_kwargs: pytest.fail(
             "ordinary resume must not consult inventory or reselect"
         ),
     )
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.selected_asset_text",
+        "src.slide_style.selected_asset_text",
         lambda *_args, **_kwargs: pytest.fail(
             "ordinary resume must use the frozen source snapshot"
         ),
     )
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Deliberation.run",
+        "src.slide_style.Deliberation.run",
         lambda _self: pytest.fail("style deliberation should be skipped"),
     )
 
@@ -610,7 +629,7 @@ def test_invalid_frozen_style_requires_explicit_reselection(
     write_style(tmp_path)
     (tmp_path / STYLE_SOURCE_FILENAME).write_text("tampered", encoding="utf-8")
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Deliberation.run",
+        "src.slide_style.Deliberation.run",
         lambda _self: pytest.fail("invalid authority must not be silently reselected"),
     )
 
@@ -656,11 +675,11 @@ def test_explicit_reselection_replaces_existing_style(
         return materialization, 1.0, 10
 
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Deliberation.run",
+        "src.slide_style.Deliberation.run",
         fake_deliberation_run,
     )
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Agent.generate_response",
+        "src.slide_style.Agent.generate_response",
         fake_generate,
     )
 
@@ -720,11 +739,11 @@ def test_style_selection_canonicalizes_literal_union_slug_and_layout_aliases(
         raise AssertionError(f"Unexpected agent call for {self.name}")
 
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Deliberation.run",
+        "src.slide_style.Deliberation.run",
         fake_deliberation_run,
     )
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Agent.generate_response",
+        "src.slide_style.Agent.generate_response",
         fake_generate,
     )
 
@@ -751,7 +770,7 @@ def test_invalid_style_selection_retries_twice_then_fails(
 ) -> None:
     repair_calls = 0
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Deliberation.run",
+        "src.slide_style.Deliberation.run",
         lambda _self: ('{"selected_style":{"source":"preset","key":"missing"}}', 1.0, 5),
     )
 
@@ -761,7 +780,7 @@ def test_invalid_style_selection_retries_twice_then_fails(
         return "not json", 1.0, 5
 
     monkeypatch.setattr(
-        "src.frontend_slides.style_workflow.Agent.generate_response",
+        "src.slide_style.Agent.generate_response",
         invalid_repair,
     )
 
@@ -805,7 +824,7 @@ def test_finalizer_regenerates_only_missing_export(
     calls: list[tuple[Path | None, Path | None]] = []
 
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.LaTeXCompiler.compile_one",
+        "src.frontend_slides.LaTeXCompiler.compile_one",
         lambda *_args: pytest.fail("LaTeX should not recompile"),
     )
 
@@ -814,7 +833,7 @@ def test_finalizer_regenerates_only_missing_export(
         assert pdf_path is None
         pptx_path.write_bytes(b"pptx")
 
-    monkeypatch.setattr("src.frontend_slides.finalize.export_html_deck", fake_export)
+    monkeypatch.setattr("src.frontend_slides.export_html_deck", fake_export)
 
     result = finalize_chapter(course, chapter)
 
@@ -855,11 +874,11 @@ def test_schema_two_layout_migrates_without_recompiling_latex(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.LaTeXCompiler.compile_one",
+        "src.frontend_slides.LaTeXCompiler.compile_one",
         lambda *_args: pytest.fail("A layout migration must not recompile LaTeX"),
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.validate_with_playwright",
+        "src.frontend_slides.validate_with_playwright",
         lambda *_args: [],
     )
 
@@ -868,7 +887,7 @@ def test_schema_two_layout_migrates_without_recompiling_latex(
         pptx_path.write_bytes(b"pptx")
 
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.export_html_deck", fake_export
+        "src.frontend_slides.export_html_deck", fake_export
     )
 
     result = finalize_chapter(course, chapter)
@@ -901,15 +920,15 @@ def test_export_failure_preserves_successful_and_previous_artifacts(
     (chapter / "slides.pdf").write_bytes(b"%PDF-latex")
     (chapter / "slides-html.pdf").write_bytes(b"%PDF-previous")
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.LaTeXCompiler.compile_one",
+        "src.frontend_slides.LaTeXCompiler.compile_one",
         lambda *_args: chapter / "slides.pdf",
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.validate_with_playwright",
+        "src.frontend_slides.validate_with_playwright",
         lambda *_args: [],
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.export_html_deck",
+        "src.frontend_slides.export_html_deck",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("capture failed")),
     )
 
@@ -932,11 +951,11 @@ def test_export_failure_promotes_a_completed_sibling_export(
     write_beamer(chapter / "slides.tex")
     (chapter / "slides.pdf").write_bytes(b"%PDF-latex")
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.LaTeXCompiler.compile_one",
+        "src.frontend_slides.LaTeXCompiler.compile_one",
         lambda *_args: chapter / "slides.pdf",
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.validate_with_playwright",
+        "src.frontend_slides.validate_with_playwright",
         lambda *_args: [],
     )
 
@@ -948,7 +967,7 @@ def test_export_failure_promotes_a_completed_sibling_export(
         raise RuntimeError("PPTX failed")
 
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.export_html_deck", partial_export
+        "src.frontend_slides.export_html_deck", partial_export
     )
 
     with pytest.raises(FrontendSlidesError, match="successful artifacts were preserved"):
@@ -978,11 +997,11 @@ def test_style_change_does_not_recompile_latex(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.LaTeXCompiler.compile_one",
+        "src.frontend_slides.LaTeXCompiler.compile_one",
         lambda *_args: pytest.fail("A style-only change must not recompile LaTeX"),
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.validate_with_playwright",
+        "src.frontend_slides.validate_with_playwright",
         lambda *_args: [],
     )
 
@@ -991,7 +1010,7 @@ def test_style_change_does_not_recompile_latex(
         pptx_path.write_bytes(b"pptx")
 
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.export_html_deck", fake_export
+        "src.frontend_slides.export_html_deck", fake_export
     )
 
     result = finalize_chapter(course, chapter)
@@ -1021,11 +1040,11 @@ def test_script_change_regenerates_html_without_recompiling_latex(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.LaTeXCompiler.compile_one",
+        "src.frontend_slides.LaTeXCompiler.compile_one",
         lambda *_args: pytest.fail("A notes-only change must not recompile LaTeX"),
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.validate_with_playwright",
+        "src.frontend_slides.validate_with_playwright",
         lambda *_args: [],
     )
     exports = 0
@@ -1037,7 +1056,7 @@ def test_script_change_regenerates_html_without_recompiling_latex(
         pptx_path.write_bytes(b"pptx")
 
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.export_html_deck", fake_export
+        "src.frontend_slides.export_html_deck", fake_export
     )
 
     finalize_chapter(course, chapter)
@@ -1080,11 +1099,11 @@ def test_failed_html_validation_preserves_previous_html(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.LaTeXCompiler.compile_one",
+        "src.frontend_slides.LaTeXCompiler.compile_one",
         lambda *_args: pytest.fail("A style-only change must not recompile LaTeX"),
     )
     monkeypatch.setattr(
-        "src.frontend_slides.finalize.validate_with_playwright",
+        "src.frontend_slides.validate_with_playwright",
         lambda *_args: ["synthetic overflow"],
     )
 

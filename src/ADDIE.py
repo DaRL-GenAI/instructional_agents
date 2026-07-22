@@ -11,8 +11,8 @@ from src.agents import (
 
 from src.slides import SlidesDeliberation
 from src.frontend_slides import ensure_course_slide_style, finalize_chapter
-from src.frontend_slides.style import PRESENTATION_DESIGN_FILENAME
-from src.frontend_slides.style_workflow import PRESENTATION_DESIGN_NAME
+from src.slide_style import PRESENTATION_DESIGN_FILENAME
+from src.slide_style import PRESENTATION_DESIGN_NAME
 
 class SyllabusProcessor(Agent):
     """

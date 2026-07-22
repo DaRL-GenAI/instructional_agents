@@ -9,8 +9,8 @@ from src.agents import (
     Agent,
 )
 from src.beamer_preflight import normalize_beamer_source
-from src.frontend_slides.beamer import parse_beamer_source
-from src.frontend_slides.notes import render_speaker_notes_markdown
+from src.frontend_slides import parse_beamer_source
+from src.frontend_slides import render_speaker_notes_markdown
 
 
 class SlideUtils:
