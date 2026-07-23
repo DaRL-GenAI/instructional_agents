@@ -60,6 +60,20 @@ class CourseRequest(BaseModel):
     catalog: Optional[str] = Field(default=None, description="Catalog name to use")
     catalog_data: Optional[Dict[str, Any]] = Field(default=None, description="Catalog data as JSON object")
     generate_pptx: Optional[bool] = Field(default=False, description="Also generate PPTX slides")
+    enable_image_generation: bool = Field(
+        default=False,
+        description="Persist opt-in to dynamic frontend slide image generation",
+    )
+    replace_images: bool = Field(
+        default=False,
+        description="Replace images for every processed chapter; implies enablement",
+    )
+    max_images_per_chapter: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=3,
+        description="Persistent experiment default image cap",
+    )
 
 class OptimizeRequest(BaseModel):
     storage_id: str = Field(..., description="ID of the stored PDF files")
@@ -804,7 +818,10 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
             copilot="default_copilot" if request.copilot else None,
             catalog=catalog_source,
             model_name=request.model_name,
-            exp_name=request.exp_name
+            exp_name=request.exp_name,
+            enable_image_generation=request.enable_image_generation,
+            replace_images=request.replace_images,
+            max_images_per_chapter=request.max_images_per_chapter,
         )
         
         # Generate PPTX if requested
@@ -975,4 +992,3 @@ if __name__ == "__main__":
         port=8000,
         reload=True
     )
-

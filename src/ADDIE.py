@@ -11,6 +11,7 @@ from src.agents import (
 
 from src.slides import SlidesDeliberation
 from src.frontend_slides import ensure_course_slide_style, finalize_chapter
+from src.slide_images import ImageGenerationConfig, load_image_generation_config
 from src.slide_style import PRESENTATION_DESIGN_FILENAME
 from src.slide_style import PRESENTATION_DESIGN_NAME
 
@@ -107,6 +108,7 @@ class ADDIERunner:
         output_dir="output",
         resume: bool = False,
         reselect_presentation_design: bool = False,
+        image_generation_config: ImageGenerationConfig | None = None,
     ):
         """
         Initialize the runner with an ADDIE instance
@@ -124,6 +126,14 @@ class ADDIERunner:
         self.output_dir = output_dir
         self.resume = resume
         self.reselect_presentation_design = reselect_presentation_design
+        if image_generation_config is None:
+            try:
+                image_generation_config = load_image_generation_config(output_dir)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid persisted image-generation configuration: {exc}"
+                ) from exc
+        self.image_generation_config = image_generation_config.validated()
         self.results = []
         self.chapters = []
 
@@ -233,6 +243,10 @@ class ADDIERunner:
             self.results,
             self.chapters,
             reselect=self.reselect_presentation_design,
+            image_generation_requested=(
+                self.image_generation_config.enabled
+                or self.image_generation_config.replace_images
+            ),
         )
         result_path = os.path.join(self.output_dir, PRESENTATION_DESIGN_FILENAME)
         with open(result_path, "r", encoding="utf-8") as result_file:
@@ -491,13 +505,85 @@ class ADDIERunner:
 
     def finalize_chapter(self, chapter_dir):
         """Compile and create all deterministic frontend artifacts for one chapter."""
-        result = finalize_chapter(self.output_dir, chapter_dir)
+        match = re.search(r"chapter_(\d+)$", os.path.basename(str(chapter_dir)))
+        chapter = None
+        if match:
+            index = int(match.group(1)) - 1
+            if 0 <= index < len(self.chapters):
+                chapter = self.chapters[index]
+        result = finalize_chapter(
+            self.output_dir,
+            chapter_dir,
+            llm=self.addie.llm,
+            chapter=chapter,
+            image_config=self.image_generation_config,
+        )
         action = "already current" if result.skipped else "generated"
         print(
             f"Frontend slides {action}: {result.html_path.name}, "
             f"{result.html_pdf_path.name}, {result.html_pptx_path.name}"
         )
+        if match:
+            self._append_image_statistics_to_course(
+                chapter_dir, int(match.group(1))
+            )
         return result
+
+    def _append_image_statistics_to_course(
+        self, chapter_dir, chapter_number: int
+    ) -> None:
+        chapter_stats_path = os.path.join(
+            str(chapter_dir), "statistics_slide_images.json"
+        )
+        course_stats_path = os.path.join(self.output_dir, "statistics.json")
+        try:
+            with open(chapter_stats_path, "r", encoding="utf-8") as handle:
+                chapter_stats = json.load(handle)
+            runs = chapter_stats.get("runs", [])
+            if not isinstance(runs, list) or not runs:
+                return
+            latest = runs[-1]
+            if not isinstance(latest, dict):
+                return
+            course_stats = []
+            if os.path.isfile(course_stats_path):
+                with open(course_stats_path, "r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                if isinstance(loaded, list):
+                    course_stats = loaded
+            course_stats.append(
+                {
+                    "deliberation": f"slide_images_chapter_{chapter_number}",
+                    "timestamp": latest.get("timestamp"),
+                    "elapsed_time": latest.get("elapsed_time", 0),
+                    "token_usage": latest.get("token_usage", 0),
+                    "image_count": latest.get("generated", 0),
+                    "current_image_count": latest.get(
+                        "current_image_count", 0
+                    ),
+                    "estimated_cost_usd": latest.get(
+                        "estimated_cost_usd", 0
+                    ),
+                    "reused_from_cache": latest.get(
+                        "reused_from_cache", False
+                    ),
+                    "replaced": latest.get("replaced", False),
+                    "committed": latest.get("committed", False),
+                    "request_fingerprint": latest.get(
+                        "request_fingerprint", ""
+                    ),
+                }
+            )
+            temporary = course_stats_path + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(course_stats, handle, indent=2)
+                handle.write("\n")
+            os.replace(temporary, course_stats_path)
+        except (OSError, json.JSONDecodeError, AttributeError):
+            print(
+                "Warning: could not append image-generation statistics "
+                f"for chapter {chapter_number} to statistics.json"
+            )
     
     def _create_slides_deliberation(self, chapter, chapter_dir_name):
         """
@@ -739,6 +825,7 @@ class ADDIE:
                 "accessibility_requirements",
                 "styles_to_avoid",
                 "additional_notes",
+                "image_generation_preferences",
             }
             unknown_fields = sorted(
                 set(style_preferences) - allowed_style_preference_fields
@@ -1078,7 +1165,11 @@ class ADDIE:
         )
 
         
-    def run(self, output_dir: str = "./outputs/") -> List[str]:
+    def run(
+        self,
+        output_dir: str = "./outputs/",
+        image_generation_config: ImageGenerationConfig | None = None,
+    ) -> List[str]:
         """Run the ADDIE workflow using the ADDIERunner
         
         Args:
@@ -1087,5 +1178,10 @@ class ADDIE:
         Returns:
             List of results from each deliberation
         """
-        runner = ADDIERunner(self, output_dir=output_dir, resume=self.resume)
+        runner = ADDIERunner(
+            self,
+            output_dir=output_dir,
+            resume=self.resume,
+            image_generation_config=image_generation_config,
+        )
         return runner.run()

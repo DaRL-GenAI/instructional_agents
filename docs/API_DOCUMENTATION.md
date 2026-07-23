@@ -84,7 +84,10 @@ Content-Type: application/json
   "exp_name": "ml_intro_v1",
   "copilot": false,
   "catalog": "default_catalog",
-  "catalog_data": {...}
+  "catalog_data": {...},
+  "enable_image_generation": false,
+  "replace_images": false,
+  "max_images_per_chapter": 1
 }
 ```
 
@@ -203,6 +206,10 @@ GET /api/catalog/list
 | copilot | boolean | No | Enable Copilot mode |
 | catalog | string | No | Catalog filename (without .json) |
 | catalog_data | object | No | Catalog data (JSON object) |
+| generate_pptx | boolean | No | Also run the legacy PPTX conversion |
+| enable_image_generation | boolean | No | Persist opt-in to generated frontend slide images (default: false) |
+| replace_images | boolean | No | Replace images for every processed chapter; implies enablement |
+| max_images_per_chapter | integer | No | Persistent image cap from 0 to 3 |
 
 ## Workflow
 

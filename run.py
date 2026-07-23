@@ -2,6 +2,7 @@ import os
 import time
 import argparse
 import json
+from dataclasses import replace
 
 
 def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catalog") -> dict:
@@ -34,7 +35,19 @@ def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catal
     return data_catalog
 
 
-def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False):
+def run_instructional_design(
+    course_name: str,
+    copilot=None,
+    catalog=None,
+    model_name: str = "gpt-4o-mini",
+    exp_name: str = "test",
+    seed: int = None,
+    temperature: float = None,
+    resume: bool = False,
+    enable_image_generation: bool = False,
+    replace_images: bool = False,
+    max_images_per_chapter: int | None = None,
+):
     """
     Main function to run the instructional design workflow by sequentially
     executing the six deliberation processes
@@ -100,9 +113,40 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
     # Run the workflow
     output_dir = f"./exp/{exp_name}/"
     os.makedirs(output_dir, exist_ok=True)
+    from src.slide_images import (
+        configured_for_invocation,
+        load_image_generation_config,
+        style_has_explicit_image_guidance,
+        write_image_generation_config,
+    )
+
+    stored_image_config = load_image_generation_config(output_dir)
+    if (
+        (enable_image_generation or replace_images)
+        and os.path.isfile(os.path.join(output_dir, "course_slide_style.json"))
+        and not style_has_explicit_image_guidance(output_dir)
+    ):
+        raise ValueError(
+            "This legacy course has no image guidance. Rerun foundation with "
+            "--reselect-presentation-design --enable-image-generation first."
+        )
+    if max_images_per_chapter is not None:
+        stored_image_config = replace(
+            stored_image_config,
+            max_images_per_chapter=max_images_per_chapter,
+        ).validated()
+    image_config = configured_for_invocation(
+        stored_image_config,
+        enable=enable_image_generation,
+        replace_images=replace_images,
+    )
+    write_image_generation_config(output_dir, image_config)
     if resume:
         print(f"[resume] Resuming from existing outputs in {output_dir}")
-    addie.run(output_dir=output_dir)
+    addie.run(
+        output_dir=output_dir,
+        image_generation_config=image_config,
+    )
     
     # Calculate execution time
     execution_time = time.time() - start_time
@@ -219,6 +263,24 @@ def main():
              "already exist in exp/<exp_name>/ and pick up chapter generation "
              "from the last incomplete chapter (or mid-chapter checkpoint)."
     )
+    parser.add_argument(
+        "--enable-image-generation",
+        action="store_true",
+        help="Persist opt-in to dynamic frontend slide image generation.",
+    )
+    parser.add_argument(
+        "--replace-images",
+        action="store_true",
+        help="Regenerate images for every processed chapter; implies enablement.",
+    )
+    parser.add_argument(
+        "--max-images-per-chapter",
+        type=int,
+        choices=range(0, 4),
+        default=None,
+        metavar="0-3",
+        help="Persist the experiment default image cap (0 to 3).",
+    )
 
     # Optimize mode arguments
     parser.add_argument(
@@ -303,6 +365,9 @@ def main():
             seed=args.seed,
             temperature=args.temperature,
             resume=args.resume,
+            enable_image_generation=args.enable_image_generation,
+            replace_images=args.replace_images,
+            max_images_per_chapter=args.max_images_per_chapter,
         )
 
 

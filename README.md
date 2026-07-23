@@ -472,10 +472,22 @@ Options:
   --exp EXP_NAME           Experiment name for saving output (default: exp1)
   --seed SEED              Random seed for reproducibility
   --temperature TEMP       Sampling temperature for LLM
+  --enable-image-generation
+                           Persist opt-in to generated frontend slide images
+  --replace-images         Replace images in every processed chapter; implies opt-in
+  --max-images-per-chapter {0,1,2,3}
+                           Persist the experiment's image cap
   --optimize STORAGE_ID    Optimize mode: provide storage_id of uploaded PDFs
   --requirements TEXT      User requirements for optimization (with --optimize)
   --chapter NAME           Specific chapter to optimize (with --optimize)
 ```
+
+Dynamic slide images are off by default. When enabled, the presentation-design
+deliberation may still veto imagery or choose a lower per-chapter budget.
+Generated images appear only in the HTML, HTML-derived PDF, and HTML-derived
+PPTX; the Beamer source and PDF are unchanged. See
+[`docs/image-generation-implementation-spec.html`](docs/image-generation-implementation-spec.html)
+for cache, replacement, and local-course CLI behavior.
 
 ### Method 3: Direct API Calls
 

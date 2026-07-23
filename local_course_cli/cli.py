@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -297,6 +297,7 @@ def build_runner(
     output_dir: Path,
     resume: bool = True,
     reselect_presentation_design: bool = False,
+    image_generation_config: Any | None = None,
 ) -> Any:
     """Construct the existing workflow runner. Kept as a seam for tests."""
     from src.ADDIE import ADDIE, ADDIERunner
@@ -316,6 +317,7 @@ def build_runner(
         output_dir=str(output_dir),
         resume=resume,
         reselect_presentation_design=reselect_presentation_design,
+        image_generation_config=image_generation_config,
     )
 
 
@@ -372,6 +374,41 @@ def run_foundation(args: argparse.Namespace) -> int:
     load_catalog(config.catalog)
     write_manifest(output_dir, config)
     reselect = getattr(args, "reselect_presentation_design", False)
+    from src.slide_images import (
+        configured_for_invocation,
+        load_image_generation_config,
+        style_has_explicit_image_guidance,
+        write_image_generation_config,
+    )
+
+    enable_images = bool(getattr(args, "enable_image_generation", False))
+    replace_images = bool(getattr(args, "replace_images", False))
+    if (
+        (enable_images or replace_images)
+        and (output_dir / "course_slide_style.json").is_file()
+        and not style_has_explicit_image_guidance(output_dir)
+        and not reselect
+    ):
+        raise CliError(
+            "This legacy course has no image guidance. Rerun foundation using "
+            "--reselect-presentation-design --enable-image-generation."
+        )
+    try:
+        stored_images = load_image_generation_config(output_dir)
+        max_images = getattr(args, "max_images_per_chapter", None)
+        if max_images is not None:
+            stored_images = replace(
+                stored_images,
+                max_images_per_chapter=max_images,
+            ).validated()
+        image_config = configured_for_invocation(
+            stored_images,
+            enable=enable_images,
+            replace_images=replace_images,
+        )
+        write_image_generation_config(output_dir, image_config)
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
     if reselect:
         preflight_existing_chapters_for_style_change(output_dir)
 
@@ -380,12 +417,13 @@ def run_foundation(args: argparse.Namespace) -> int:
         output_dir,
         resume=True,
         reselect_presentation_design=reselect,
+        image_generation_config=image_config,
     )
     runner.setup()
     runner.run_foundation_deliberations()
     chapters = validate_foundation(output_dir)
-    if reselect:
-        refinalize_existing_chapters(output_dir, runner)
+    if reselect or enable_images or replace_images or max_images is not None:
+        refinalize_existing_chapters(output_dir, runner, force=True)
     assert_course_style_consistency(output_dir)
 
     print(f"\nFoundation complete for {config.course_name!r}.")
@@ -500,6 +538,8 @@ def preflight_existing_chapters_for_style_change(output_dir: Path) -> None:
 def refinalize_existing_chapters(
     output_dir: Path,
     runner: Any | None = None,
+    *,
+    force: bool = False,
 ) -> None:
     """Bring every completed chapter onto the canonical course presentation."""
     from src.frontend_slides import FrontendSlidesError
@@ -525,7 +565,8 @@ def refinalize_existing_chapters(
             chapter_dir / "html" / "assets" / "mathjax" / "tex-svg.js"
         )
         if (
-            isinstance(manifest, dict)
+            not force
+            and isinstance(manifest, dict)
             and artifacts_complete
             and all(manifest.get(key) == value for key, value in expected.items())
         ):
@@ -572,6 +613,35 @@ def run_chapter(args: argparse.Namespace) -> int:
     output_dir = course_dir(args.course_id)
     config = load_manifest(output_dir)
     disk_chapters = validate_foundation(output_dir)
+    from src.slide_images import (
+        configured_for_invocation,
+        load_image_generation_config,
+        style_has_explicit_image_guidance,
+        write_image_generation_config,
+    )
+
+    enable_images = bool(getattr(args, "enable_image_generation", False))
+    replace_images = bool(getattr(args, "replace_images", False))
+    if (
+        (enable_images or replace_images)
+        and not style_has_explicit_image_guidance(output_dir)
+    ):
+        raise CliError(
+            "This legacy course has no image guidance. Rerun foundation using "
+            "--reselect-presentation-design --enable-image-generation."
+        )
+    try:
+        stored_images = load_image_generation_config(output_dir)
+        image_config = configured_for_invocation(
+            stored_images,
+            enable=enable_images,
+            replace_images=replace_images,
+            max_images_override=getattr(args, "max_images_per_chapter", None),
+        )
+        if enable_images or replace_images:
+            write_image_generation_config(output_dir, image_config)
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
 
     if args.number < 1 or args.number > len(disk_chapters):
         raise CliError(
@@ -591,7 +661,12 @@ def run_chapter(args: argparse.Namespace) -> int:
             + ", ".join(missing_style)
         )
 
-    runner = build_runner(config, output_dir, resume=True)
+    runner = build_runner(
+        config,
+        output_dir,
+        resume=True,
+        image_generation_config=image_config,
+    )
     runner.setup()
     # Validation above guarantees every artifact exists, so this reloads them
     # through the workflow's supported resume path without making model calls.
@@ -630,6 +705,11 @@ def run_chapter(args: argparse.Namespace) -> int:
         raise CliError(f"Chapter frontend finalization failed: {exc}") from exc
 
     validate_chapter_outputs(chapter_dir_path, args.number)
+    if hasattr(runner, "image_generation_config"):
+        runner.image_generation_config = replace(
+            runner.image_generation_config,
+            replace_images=False,
+        )
     refinalize_existing_chapters(output_dir, runner)
     assert_course_style_consistency(output_dir)
     print(f"\nChapter {args.number} complete: {chapter['title']}")
@@ -789,6 +869,24 @@ def build_parser() -> argparse.ArgumentParser:
             "eligible chapter frontend artifacts."
         ),
     )
+    foundation.add_argument(
+        "--enable-image-generation",
+        action="store_true",
+        help="Persist opt-in to dynamic frontend slide image generation.",
+    )
+    foundation.add_argument(
+        "--replace-images",
+        action="store_true",
+        help="Replace images for all completed chapters; implies enablement.",
+    )
+    foundation.add_argument(
+        "--max-images-per-chapter",
+        type=int,
+        choices=range(0, 4),
+        default=None,
+        metavar="0-3",
+        help="Persist the experiment default image cap.",
+    )
     foundation.set_defaults(handler=run_foundation)
 
     chapters = subparsers.add_parser(
@@ -809,6 +907,24 @@ def build_parser() -> argparse.ArgumentParser:
             "Replace only script.md with notes derived from the exact saved "
             "slides.tex order before frontend finalization."
         ),
+    )
+    chapter.add_argument(
+        "--enable-image-generation",
+        action="store_true",
+        help="Persist image generation and apply it to this chapter.",
+    )
+    chapter.add_argument(
+        "--replace-images",
+        action="store_true",
+        help="Replace generated images for this chapter only; implies enablement.",
+    )
+    chapter.add_argument(
+        "--max-images-per-chapter",
+        type=int,
+        choices=range(0, 4),
+        default=None,
+        metavar="0-3",
+        help="Tighten the image cap for this invocation without persisting it.",
     )
     chapter.set_defaults(handler=run_chapter)
 

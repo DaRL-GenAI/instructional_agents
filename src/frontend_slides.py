@@ -21,6 +21,19 @@ from pylatexenc.latex2text import LatexNodes2Text
 
 from src.beamer_preflight import normalize_beamer_file
 from src.compile import LaTeXCompiler
+from src.slide_images import (
+    IMAGE_PIPELINE_VERSION,
+    ChapterImageResult,
+    ImageGenerationConfig,
+    append_image_statistics,
+    augment_deck_with_generated_images,
+    commit_image_result,
+    desired_image_state,
+    discard_image_result,
+    image_cache_is_current,
+    image_request_fingerprint,
+    load_image_generation_config,
+)
 from src.slide_style import (
     CourseSlideStyle,
     FONT_FAMILIES,
@@ -66,6 +79,7 @@ class ContentElement:
     language: str | None = None
     children: list["ContentElement"] = field(default_factory=list)
     image_data_uri: str | None = None
+    image_labels: list[str] = field(default_factory=list)
     env: str | None = None
 
 
@@ -1443,6 +1457,14 @@ def render_deck_html(
             object-fit: contain;
         }}
         .gen-image-card {{ margin: 0; }}
+        .layout-media .slide-body {{
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(420px, 0.92fr);
+            gap: calc(42px * var(--fit-scale));
+            align-items: center;
+        }}
+        .layout-media .media-copy,
+        .layout-media .media-figure {{ min-width: 0; }}
         .gen-image-card img {{
             display: block;
             margin: 0 auto;
@@ -1454,6 +1476,28 @@ def render_deck_html(
             border-radius: 14px;
             border: 1px solid var(--border);
             box-shadow: {theme['shadow']};
+        }}
+        .gen-image-card figcaption {{
+            margin-top: calc(12px * var(--fit-scale));
+            color: var(--muted);
+            font-size: calc(20px * var(--density) * var(--fit-scale));
+            line-height: 1.3;
+        }}
+        .gen-image-labels {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: calc(7px * var(--fit-scale)) calc(12px * var(--fit-scale));
+            margin: calc(10px * var(--fit-scale)) 0 0;
+            padding: 0;
+            list-style: none;
+        }}
+        .gen-image-labels li {{
+            margin: 0;
+            padding: calc(5px * var(--fit-scale)) calc(9px * var(--fit-scale));
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            color: var(--text-primary);
+            font-size: calc(18px * var(--density) * var(--fit-scale));
         }}
         table {{
             width: 100%;
@@ -1908,6 +1952,16 @@ def choose_layout(
     - "top-cols": dense slides get a full-width header and a two-column body.
     - "top": everything in between - full-width header, single column below.
     """
+    has_image = any(
+        element.kind in {"generated_image", "user_image"}
+        for element in slide.elements
+    )
+    has_non_image = any(
+        element.kind not in {"generated_image", "user_image"}
+        for element in slide.elements
+    )
+    if has_image and has_non_image:
+        return "media"
     weight = sum(element_weight(element) for element in slide.elements)
     main, equations = _partition_equations(slide.elements)
     if equations and main and sum(element_weight(element) for element in main) <= 12:
@@ -1977,6 +2031,23 @@ def _render_body(slide: BeamerSlide, layout: str) -> str:
     elements = slide.elements
     if not elements:
         return '<div class="slide-body reveal"><p data-editable></p></div>'
+    if layout == "media":
+        media = [
+            element
+            for element in elements
+            if element.kind in {"generated_image", "user_image"}
+        ]
+        copy = [
+            element
+            for element in elements
+            if element.kind not in {"generated_image", "user_image"}
+        ]
+        return (
+            '<div class="slide-body">'
+            f'<div class="media-copy reveal">{_render_elements(copy)}</div>'
+            f'<div class="media-figure reveal">{_render_elements(media)}</div>'
+            "</div>"
+        )
     if layout == "math":
         main, aside = _partition_equations(elements)
         return (
@@ -2194,8 +2265,22 @@ def render_element(element: ContentElement) -> str:
         if not element.image_data_uri:
             return ""
         fallback = "Generated illustration" if element.kind == "generated_image" else "Provided image"
-        alt = html.escape(element.title or fallback)
-        return f'<figure class="gen-image-card"><img src="{element.image_data_uri}" alt="{alt}"></figure>'
+        title = element.title or fallback
+        alt = html.escape(title)
+        labels = "".join(
+            f"<li>{html.escape(label)}</li>" for label in element.image_labels
+        )
+        legend = (
+            f'<ul class="gen-image-labels" aria-label="Figure labels">{labels}</ul>'
+            if labels
+            else ""
+        )
+        caption = f"<figcaption>{html.escape(title)}</figcaption>"
+        return (
+            '<figure class="gen-image-card">'
+            f'<img src="{element.image_data_uri}" alt="{alt}">'
+            f"{caption}{legend}</figure>"
+        )
     return f'<div class="raw-card"><pre data-editable>{html.escape(element.raw or element.text)}</pre></div>'
 
 
@@ -2924,6 +3009,10 @@ LEGACY_SPLIT_REPORT_FILENAME = "slide-splits.json"
 def finalize_chapter(
     course_dir: Path | str,
     chapter_dir: Path | str,
+    *,
+    llm: Any | None = None,
+    chapter: dict[str, str] | None = None,
+    image_config: ImageGenerationConfig | None = None,
 ) -> ChapterFrontendResult:
     """Compile LaTeX and deterministically create resumable offline frontend artifacts."""
     course_path = Path(course_dir)
@@ -2966,6 +3055,16 @@ def finalize_chapter(
             "environment(s)."
         )
     style = load_course_slide_style(course_path)
+    image_config_warnings: list[str] = []
+    if image_config is None:
+        try:
+            image_config = load_image_generation_config(course_path)
+        except ValueError as exc:
+            image_config = ImageGenerationConfig()
+            image_config_warnings.append(
+                f"Invalid image-generation configuration was treated as disabled: {exc}"
+            )
+    image_config = image_config.validated()
     style_path = course_path / STYLE_FILENAME
     source_hash = sha256_file(tex_path)
     initial_script_hash = sha256_file(script_path)
@@ -2978,6 +3077,36 @@ def finalize_chapter(
     inputs_match = (
         manifest_matches and source_matches and script_matches and style_matches
     )
+    image_fingerprint = image_request_fingerprint(
+        source_sha256=source_hash,
+        style_sha256=style_hash,
+        chapter=chapter,
+        config=image_config,
+        guidance=style.image_guidance,
+    )
+    wants_images = desired_image_state(image_config, style.image_guidance)
+    raw_previous_image_state = previous.get("images")
+    previous_image_state = (
+        raw_previous_image_state
+        if isinstance(raw_previous_image_state, dict)
+        else {}
+    )
+    previous_generated = previous_image_state.get("generated", 0)
+    if not wants_images and raw_previous_image_state is None:
+        # Legacy manifests are already in the desired default-disabled state.
+        image_state_current = True
+    else:
+        image_state_current = (
+            previous_image_state.get("request_fingerprint") == image_fingerprint
+            and isinstance(previous_generated, int)
+            and (
+                image_cache_is_current(chapter_path, image_fingerprint)
+                if wants_images
+                else previous_generated == 0
+            )
+        )
+    if image_config.replace_images:
+        image_state_current = False
     legacy_split_report_path.unlink(missing_ok=True)
 
     if not source_matches or not _nonempty(latex_pdf_path):
@@ -2998,7 +3127,22 @@ def finalize_chapter(
             manifest_path,
         )
     )
-    if inputs_match and runtime_ok and complete:
+    if inputs_match and runtime_ok and complete and image_state_current:
+        cached_run = ChapterImageResult(
+            generated=int(previous_generated),
+            reused_from_cache=bool(wants_images),
+            committed=True,
+            slides=[
+                int(index)
+                for index in previous_image_state.get("slide_indexes", [])
+                if isinstance(index, int) and not isinstance(index, bool)
+            ],
+            request_fingerprint=image_fingerprint,
+        )
+        try:
+            append_image_statistics(chapter_path, cached_run)
+        except OSError as exc:
+            print(f"Warning: could not record image-generation statistics: {exc}")
         _remove_legacy_frontend_layout(chapter_path)
         return ChapterFrontendResult(
             html_path=html_path,
@@ -3026,33 +3170,61 @@ def finalize_chapter(
     speaker_notes = correlate_speaker_notes(
         deck, script_path.read_text(encoding="utf-8")
     )
+    image_result = augment_deck_with_generated_images(
+        deck,
+        chapter_path=chapter_path,
+        style=style,
+        chapter=chapter,
+        llm=llm,
+        config=image_config,
+        source_sha256=source_hash,
+        style_sha256=style_hash,
+    )
+    image_result.warnings[:0] = image_config_warnings
 
-    html_stale = not inputs_match or not _nonempty(html_path) or not runtime_ok
+    html_stale = (
+        not inputs_match
+        or not _nonempty(html_path)
+        or not runtime_ok
+        or not image_state_current
+        or image_config.replace_images
+    )
+    staged_html_path: Path | None = None
     if html_stale:
-        _, font_css = prepare_offline_runtime(chapter_path, style)
-        html = render_course_presentation_html(
-            deck,
-            style,
-            assets,
-            font_css=font_css,
-            speaker_notes=speaker_notes,
-        )
-        errors = validate_html_contract(html, deck.slide_count, assets.viewport_css)
-        errors.extend(validate_offline_contract(html))
-        if errors:
-            raise FrontendSlidesError("; ".join(errors))
         html_temporary = html_path.with_name("slides.tmp.html")
         try:
+            _, font_css = prepare_offline_runtime(chapter_path, style)
+            html = render_course_presentation_html(
+                deck,
+                style,
+                assets,
+                font_css=font_css,
+                speaker_notes=speaker_notes,
+            )
+            errors = validate_html_contract(
+                html, deck.slide_count, assets.viewport_css
+            )
+            errors.extend(validate_offline_contract(html))
+            if errors:
+                raise FrontendSlidesError("; ".join(errors))
             html_temporary.write_text(html, encoding="utf-8")
             visual_errors = validate_with_playwright(
                 html_temporary, deck.slide_count
             )
             if visual_errors:
                 raise FrontendSlidesError("; ".join(visual_errors))
-            html_temporary.replace(html_path)
-        finally:
-            if html_temporary.exists():
-                html_temporary.unlink()
+            staged_html_path = html_temporary
+        except Exception:
+            discard_image_result(image_result)
+            html_temporary.unlink(missing_ok=True)
+            image_result.warnings.append(
+                "Frontend validation failed; staged image changes were discarded."
+            )
+            try:
+                append_image_statistics(chapter_path, image_result)
+            except OSError:
+                pass
+            raise
 
     need_pdf = html_stale or not _nonempty(html_pdf_path)
     need_pptx = html_stale or not _nonempty(html_pptx_path)
@@ -3064,28 +3236,66 @@ def finalize_chapter(
     )
     try:
         export_html_deck(
-            html_path,
+            staged_html_path or html_path,
             pdf_path=pdf_temporary,
             pptx_path=pptx_temporary,
         )
         if pdf_temporary is not None:
             if not _nonempty(pdf_temporary):
                 raise FrontendSlidesError("HTML PDF exporter produced no output.")
-            pdf_temporary.replace(html_pdf_path)
         if pptx_temporary is not None:
             if not _nonempty(pptx_temporary):
                 raise FrontendSlidesError("HTML PPTX exporter produced no output.")
+        if staged_html_path is not None:
+            staged_html_path.replace(html_path)
+        if pdf_temporary is not None:
+            pdf_temporary.replace(html_pdf_path)
+        if pptx_temporary is not None:
             pptx_temporary.replace(html_pptx_path)
     except Exception as exc:
-        # The exporters write complete files before returning. Preserve any
-        # independently completed output even if the sibling export failed.
-        if pdf_temporary is not None and _valid_pdf(pdf_temporary):
-            pdf_temporary.replace(html_pdf_path)
-        if pptx_temporary is not None and _valid_pptx(pptx_temporary):
-            pptx_temporary.replace(html_pptx_path)
+        image_transaction = (
+            image_config.replace_images
+            or image_result.pending_manifest is not None
+        )
+        discard_image_result(image_result)
+        image_result.warnings.append(
+            "Frontend export failed; staged image changes were discarded."
+        )
+        if image_transaction:
+            if staged_html_path is not None:
+                staged_html_path.unlink(missing_ok=True)
+            if pdf_temporary is not None:
+                pdf_temporary.unlink(missing_ok=True)
+            if pptx_temporary is not None:
+                pptx_temporary.unlink(missing_ok=True)
+            message = "prior artifacts were preserved"
+        else:
+            if staged_html_path is not None and staged_html_path.is_file():
+                staged_html_path.replace(html_path)
+            if pdf_temporary is not None and _valid_pdf(pdf_temporary):
+                pdf_temporary.replace(html_pdf_path)
+            elif pdf_temporary is not None:
+                pdf_temporary.unlink(missing_ok=True)
+            if pptx_temporary is not None and _valid_pptx(pptx_temporary):
+                pptx_temporary.replace(html_pptx_path)
+            elif pptx_temporary is not None:
+                pptx_temporary.unlink(missing_ok=True)
+            message = "successful artifacts were preserved"
+        try:
+            append_image_statistics(chapter_path, image_result)
+        except OSError:
+            pass
         raise FrontendSlidesError(
-            f"Frontend export failed; successful artifacts were preserved: {exc}"
+            f"Frontend export failed; {message}: {exc}"
         ) from exc
+    try:
+        commit_image_result(chapter_path, image_result)
+    except OSError as exc:
+        discard_image_result(image_result)
+        image_result.committed = False
+        image_result.warnings.append(
+            f"Image manifest commit failed; the next run will retry: {exc}"
+        )
 
     warnings = []
     if preflight.removed_list_wrapper_pairs:
@@ -3116,6 +3326,8 @@ def finalize_chapter(
             "Unsupported LaTeX environments were preserved as source cards: "
             + ", ".join(deck.unsupported_environments)
         )
+    warnings.extend(image_result.warnings)
+    current_images = [record.manifest_dict() for record in image_result.images]
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "source": tex_path.name,
@@ -3129,6 +3341,28 @@ def finalize_chapter(
         "runtime": "html/assets",
         "warnings": warnings,
         "speaker_notes": notes_manifest(speaker_notes),
+        "images": {
+            "pipeline_version": IMAGE_PIPELINE_VERSION,
+            "enabled": image_config.enabled,
+            "guidance_enabled": style.image_guidance.enabled,
+            "effective": wants_images,
+            "effective_cap": min(
+                image_config.effective_operator_cap,
+                style.image_guidance.max_images_per_chapter,
+            ),
+            "model": image_config.model,
+            "size": image_config.size,
+            "quality": image_config.quality,
+            "request_fingerprint": image_fingerprint,
+            "generated": len(current_images),
+            "slide_indexes": image_result.slides,
+            "records": current_images,
+            "reused_from_cache": image_result.reused_from_cache,
+            "replacement_requested": image_config.replace_images,
+            "committed": image_result.committed,
+            "incremental_estimated_cost_usd": image_result.estimated_cost_usd,
+            "pipeline_warnings": image_result.warnings,
+        },
         "artifacts": {
             "latex_pdf": latex_pdf_path.name,
             "html": html_path.relative_to(chapter_path).as_posix(),
@@ -3145,6 +3379,10 @@ def finalize_chapter(
     _atomic_write(
         manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
+    try:
+        append_image_statistics(chapter_path, image_result)
+    except OSError as exc:
+        print(f"Warning: could not record image-generation statistics: {exc}")
     _remove_legacy_frontend_layout(chapter_path)
     return ChapterFrontendResult(
         html_path=html_path,

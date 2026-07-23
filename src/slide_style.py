@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -58,6 +58,15 @@ class RenderTheme:
 
 
 @dataclass(frozen=True)
+class ImageGuidance:
+    enabled: bool
+    visual_types: list[str]
+    prompt_style_notes: str
+    avoid_notes: str
+    max_images_per_chapter: int
+
+
+@dataclass(frozen=True)
 class CourseSlideStyle:
     schema_version: int
     asset_version: str
@@ -67,6 +76,9 @@ class CourseSlideStyle:
     render_theme: RenderTheme
     inventory_sha256: str
     selected_asset_sha256: str
+    image_guidance: ImageGuidance = field(
+        default_factory=lambda: DEFAULT_IMAGE_GUIDANCE
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +187,33 @@ def load_assets(root: Path | str | None = None) -> FrontendSlidesAssets:
 # ---------------------------------------------------------------------------
 
 STYLE_SCHEMA_VERSION = 1
+
+
+IMAGE_VISUAL_TYPES = {
+    "conceptual-diagram",
+    "process-flow",
+    "architecture-overview",
+    "data-metaphor",
+    "comparison-illustration",
+    "scene-illustration",
+    "abstract-motif",
+    "icon-composition",
+}
+
+
+DEFAULT_IMAGE_GUIDANCE = ImageGuidance(
+    enabled=False,
+    visual_types=[],
+    prompt_style_notes="",
+    avoid_notes="",
+    max_images_per_chapter=0,
+)
+
+
+IMAGE_SAFETY_GUIDANCE = (
+    "Generated images must never include embedded text, letters, numbers, "
+    "labels, logos, watermarks, UI chrome, or real identifiable people."
+)
 
 
 ASSET_VERSION = "frontend-slides-2026-07"
@@ -641,6 +680,75 @@ def canonicalize_materialization_payload(
     return normalized, notes
 
 
+def _validate_image_guidance(raw: Any) -> ImageGuidance:
+    if not isinstance(raw, dict):
+        raise FrontendSlidesError("image_guidance must be an object.")
+    allowed_fields = {
+        "enabled",
+        "visual_types",
+        "prompt_style_notes",
+        "avoid_notes",
+        "max_images_per_chapter",
+    }
+    unknown_fields = sorted(set(raw) - allowed_fields)
+    if unknown_fields:
+        raise FrontendSlidesError(
+            "image_guidance contains unsupported fields: "
+            + ", ".join(unknown_fields)
+        )
+    enabled = raw.get("enabled")
+    if not isinstance(enabled, bool):
+        raise FrontendSlidesError("image_guidance.enabled must be a boolean.")
+    raw_types = raw.get("visual_types")
+    if not isinstance(raw_types, list) or any(
+        not isinstance(item, str) for item in raw_types
+    ):
+        raise FrontendSlidesError("image_guidance.visual_types must be a list of strings.")
+    visual_types = list(dict.fromkeys(item.strip() for item in raw_types if item.strip()))
+    invalid = sorted(set(visual_types) - IMAGE_VISUAL_TYPES)
+    if invalid:
+        raise FrontendSlidesError(
+            "image_guidance.visual_types contains unsupported values: "
+            + ", ".join(invalid)
+        )
+    prompt_notes = raw.get("prompt_style_notes", "")
+    avoid_notes = raw.get("avoid_notes", "")
+    if not isinstance(prompt_notes, str) or len(prompt_notes.strip()) > 1200:
+        raise FrontendSlidesError(
+            "image_guidance.prompt_style_notes must be text of at most 1200 characters."
+        )
+    if not isinstance(avoid_notes, str) or len(avoid_notes.strip()) > 600:
+        raise FrontendSlidesError(
+            "image_guidance.avoid_notes must be text of at most 600 characters."
+        )
+    budget = raw.get("max_images_per_chapter")
+    if isinstance(budget, bool) or not isinstance(budget, int) or not 0 <= budget <= 3:
+        raise FrontendSlidesError(
+            "image_guidance.max_images_per_chapter must be an integer from 0 to 3."
+        )
+    if not enabled:
+        return DEFAULT_IMAGE_GUIDANCE
+    if not visual_types:
+        raise FrontendSlidesError(
+            "Enabled image guidance requires at least one visual type."
+        )
+    if len(prompt_notes.strip()) < 40:
+        raise FrontendSlidesError(
+            "Enabled image guidance requires at least 40 characters of prompt style notes."
+        )
+    if budget < 1:
+        raise FrontendSlidesError(
+            "Enabled image guidance requires max_images_per_chapter of at least 1."
+        )
+    return ImageGuidance(
+        enabled=True,
+        visual_types=visual_types,
+        prompt_style_notes=prompt_notes.strip(),
+        avoid_notes=avoid_notes.strip(),
+        max_images_per_chapter=budget,
+    )
+
+
 def validate_materialization(
     payload: dict[str, Any],
     *,
@@ -648,6 +756,7 @@ def validate_materialization(
     presentation_method: PresentationMethod,
     inventory_sha256: str,
     selected_asset_sha256: str,
+    image_guidance: ImageGuidance | None = None,
 ) -> CourseSlideStyle:
     guidance = _bounded_string(payload, "ta_guidance", 4000)
     raw_theme = payload.get("render_theme")
@@ -680,6 +789,13 @@ def validate_materialization(
     ):
         raise FrontendSlidesError("render_theme.grid_opacity must be between 0 and 0.8.")
 
+    resolved_image_guidance = (
+        image_guidance
+        if image_guidance is not None
+        else _validate_image_guidance(
+            payload.get("image_guidance", asdict(DEFAULT_IMAGE_GUIDANCE))
+        )
+    )
     return CourseSlideStyle(
         schema_version=STYLE_SCHEMA_VERSION,
         asset_version=ASSET_VERSION,
@@ -700,6 +816,7 @@ def validate_materialization(
         ),
         inventory_sha256=inventory_sha256,
         selected_asset_sha256=selected_asset_sha256,
+        image_guidance=resolved_image_guidance,
     )
 
 
@@ -708,6 +825,10 @@ def course_style_from_dict(data: dict[str, Any]) -> CourseSlideStyle:
         selected_data = data["selected_style"]
         method_data = data["presentation_method"]
         theme_data = data["render_theme"]
+        raw_image_guidance = data.get(
+            "image_guidance", asdict(DEFAULT_IMAGE_GUIDANCE)
+        )
+        image_guidance = _validate_image_guidance(raw_image_guidance)
         style = CourseSlideStyle(
             schema_version=int(data["schema_version"]),
             asset_version=str(data["asset_version"]),
@@ -717,8 +838,9 @@ def course_style_from_dict(data: dict[str, Any]) -> CourseSlideStyle:
             render_theme=RenderTheme(**theme_data),
             inventory_sha256=str(data["inventory_sha256"]),
             selected_asset_sha256=str(data["selected_asset_sha256"]),
+            image_guidance=image_guidance,
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, FrontendSlidesError) as exc:
         raise FrontendSlidesError(f"Malformed {STYLE_FILENAME}: {exc}") from exc
     if style.schema_version != STYLE_SCHEMA_VERSION:
         raise FrontendSlidesError(
@@ -752,6 +874,7 @@ def course_style_from_dict(data: dict[str, Any]) -> CourseSlideStyle:
         {
             "ta_guidance": style.ta_guidance,
             "render_theme": asdict(style.render_theme),
+            "image_guidance": asdict(style.image_guidance),
         },
         selected_style=style.selected_style,
         presentation_method=style.presentation_method,
@@ -940,10 +1063,20 @@ def ensure_course_slide_style(
     chapters: list[dict[str, str]],
     *,
     reselect: bool = False,
+    image_generation_requested: bool = False,
 ) -> CourseSlideStyle:
     output_path = Path(output_dir)
     style_path = output_path / STYLE_FILENAME
     if style_path.is_file() and not reselect:
+        legacy_without_image_guidance = False
+        try:
+            persisted_style = json.loads(style_path.read_text(encoding="utf-8"))
+            legacy_without_image_guidance = (
+                isinstance(persisted_style, dict)
+                and "image_guidance" not in persisted_style
+            )
+        except (OSError, json.JSONDecodeError):
+            pass
         try:
             style = load_course_slide_style(output_path)
         except FrontendSlidesError as exc:
@@ -953,9 +1086,22 @@ def ensure_course_slide_style(
                 "the foundation command with --reselect-presentation-design. "
                 f"Details: {exc}"
             ) from exc
-        upgraded_style = _with_required_guidance(style)
+        upgraded_style = _with_required_image_safety_guidance(
+            _with_required_guidance(style)
+        )
         if upgraded_style != style:
-            write_course_style(style_path, upgraded_style)
+            if legacy_without_image_guidance:
+                legacy_payload = asdict(upgraded_style)
+                legacy_payload.pop("image_guidance", None)
+                _atomic_write(
+                    style_path,
+                    json.dumps(
+                        legacy_payload, indent=2, sort_keys=True
+                    )
+                    + "\n",
+                )
+            else:
+                write_course_style(style_path, upgraded_style)
         style = upgraded_style
         write_presentation_design_result(output_path, style)
         print(f"[resume] Loaded course slide style: {style.selected_style.name}")
@@ -982,6 +1128,7 @@ def ensure_course_slide_style(
         ],
         "chapters": chapters,
         "catalog_style_preferences": catalog_style_preferences,
+        "operator_image_generation_opt_in": image_generation_requested,
     }
 
     teaching_faculty = Agent(
@@ -1054,7 +1201,11 @@ def ensure_course_slide_style(
             "when they conflict with a preference or an inventory asset's guidance. Explicitly "
             "explain honored and unmet preferences in the course requirements and final selection "
             "rationale. Preserve the normal sequential discussion: respond to earlier "
-            "reviewers while adding your own comparison evidence.\n\n"
+            "reviewers while adding your own comparison evidence. Also decide whether "
+            "AI-generated, text-free imagery would materially improve this specific "
+            "course, which supported visual types fit, and a budget from zero to three "
+            "images per chapter. The operator opt-in permits image spending but does "
+            "not require it: an image recommendation of disabled remains a valid veto.\n\n"
             f"Course context:\n{json.dumps(course_context, ensure_ascii=False)}\n\n"
             "Complete style inventory (12 presets and 34 bold templates):\n"
             f"{json.dumps(inventory_payload, ensure_ascii=False)}"
@@ -1064,6 +1215,7 @@ def ensure_course_slide_style(
     summary, total_time, total_tokens = deliberation.run()
     selected_style: SelectedStyle | None = None
     presentation_method: PresentationMethod | None = None
+    image_recommendation: ImageGuidance | None = None
     reason = ""
     selection_evidence: dict[str, Any] | None = None
     selection_error = ""
@@ -1084,6 +1236,22 @@ def ensure_course_slide_style(
                 reason,
                 selection_evidence,
             ) = validate_selection(payload, inventory)
+            raw_image_recommendation = payload.get("image_recommendation")
+            if raw_image_recommendation is None:
+                image_recommendation = DEFAULT_IMAGE_GUIDANCE
+            else:
+                try:
+                    image_recommendation = _validate_image_guidance(
+                        raw_image_recommendation
+                    )
+                except FrontendSlidesError as image_exc:
+                    image_recommendation = DEFAULT_IMAGE_GUIDANCE
+                    note = (
+                        "Image recommendation was invalid and safely degraded "
+                        f"to disabled guidance ({image_exc})."
+                    )
+                    selection_normalizations.append(note)
+                    print(f"[style normalization] {note}")
             break
         except FrontendSlidesError as exc:
             selection_error = str(exc)
@@ -1106,6 +1274,7 @@ def ensure_course_slide_style(
         selected_style is not None
         and presentation_method is not None
         and selection_evidence is not None
+        and image_recommendation is not None
     )
 
     selected_source = selected_asset_text(selected_style, assets)
@@ -1122,11 +1291,23 @@ def ensure_course_slide_style(
         ),
         output_constraint=_MATERIALIZATION_CONSTRAINT,
     )
+    materialization_image_context = {
+        "course_name": course_context["course_name"],
+        "chapters": course_context["chapters"],
+        "operator_image_generation_opt_in": image_generation_requested,
+        "image_generation_preferences": catalog_style_preferences.get(
+            "image_generation_preferences", ""
+        ),
+    }
     materialization_prompt = (
         "Selected style:\n"
         f"{json.dumps(asdict(selected_style), indent=2)}\n\n"
         "Selected presentation method:\n"
         f"{json.dumps(asdict(presentation_method), indent=2)}\n\n"
+        "Validated image recommendation from the presentation deliberation:\n"
+        f"{json.dumps(asdict(image_recommendation), indent=2)}\n\n"
+        "Course and chapter context for operational image prompting:\n"
+        f"{json.dumps(materialization_image_context, ensure_ascii=False)[:16000]}\n\n"
         "Selected style asset (this is the only style asset available for this pass):\n"
         f"{selected_source}"
     )
@@ -1143,6 +1324,36 @@ def ensure_course_slide_style(
                 materialization_payload,
                 normalization_notes,
             ) = canonicalize_materialization_payload(materialization_payload)
+            try:
+                materialized_image_guidance = _validate_image_guidance(
+                    materialization_payload.get("image_guidance")
+                )
+                if (
+                    materialized_image_guidance.enabled
+                    != image_recommendation.enabled
+                ):
+                    raise FrontendSlidesError(
+                        "image_guidance.enabled must preserve the deliberation verdict."
+                    )
+                if materialized_image_guidance.enabled and (
+                    not set(materialized_image_guidance.visual_types).issubset(
+                        image_recommendation.visual_types
+                    )
+                    or materialized_image_guidance.max_images_per_chapter
+                    > image_recommendation.max_images_per_chapter
+                ):
+                    raise FrontendSlidesError(
+                        "image_guidance cannot expand the deliberated visual "
+                        "types or image budget."
+                    )
+            except FrontendSlidesError as image_exc:
+                materialized_image_guidance = DEFAULT_IMAGE_GUIDANCE
+                note = (
+                    "Image guidance materialization was invalid and safely "
+                    f"degraded to disabled guidance ({image_exc})."
+                )
+                if note not in materialization_normalizations:
+                    materialization_normalizations.append(note)
             for note in normalization_notes:
                 if note not in materialization_normalizations:
                     materialization_normalizations.append(note)
@@ -1153,6 +1364,7 @@ def ensure_course_slide_style(
                 presentation_method=presentation_method,
                 inventory_sha256=inventory_hash,
                 selected_asset_sha256=selected_hash,
+                image_guidance=materialized_image_guidance,
             )
             break
         except FrontendSlidesError as exc:
@@ -1172,7 +1384,7 @@ def ensure_course_slide_style(
             total_time += retry_time
             total_tokens += retry_tokens
     assert style is not None
-    style = _with_required_guidance(style)
+    style = _with_required_image_safety_guidance(_with_required_guidance(style))
 
     output_path.mkdir(parents=True, exist_ok=True)
     write_course_style(style_path, style)
@@ -1190,6 +1402,7 @@ def ensure_course_slide_style(
                     "Summarizer",
                 ],
                 "selected_style": asdict(style.selected_style),
+                "image_recommendation": asdict(image_recommendation),
                 "catalog_style_preferences": catalog_style_preferences,
                 "reason": reason,
                 "selection_evidence": selection_evidence,
@@ -1286,6 +1499,12 @@ def presentation_design_markdown(
     )
     layouts = ", ".join(method.layout_rotation)
     evidence_markdown = _selection_evidence_markdown(selection_evidence)
+    image_guidance = style.image_guidance
+    image_types = (
+        ", ".join(image_guidance.visual_types)
+        if image_guidance.visual_types
+        else "None"
+    )
     return (
         f"{PRESENTATION_DESIGN_NAME}\n"
         f"{'=' * len(PRESENTATION_DESIGN_NAME)}\n\n"
@@ -1309,6 +1528,12 @@ def presentation_design_markdown(
         f"{fonts}\n\n"
         "## Implementation Guidance\n\n"
         f"{style.ta_guidance.strip()}\n\n"
+        "## Image Generation Guidance\n\n"
+        f"- Enabled by deliberation: {image_guidance.enabled}\n"
+        f"- Visual types: {image_types}\n"
+        f"- Maximum images per chapter: {image_guidance.max_images_per_chapter}\n"
+        f"- Prompt style: {image_guidance.prompt_style_notes or 'None'}\n"
+        f"- Avoid: {image_guidance.avoid_notes or 'None'}\n\n"
         "## Course-Wide Requirements\n\n"
         "- Use this one selected style for every chapter; chapter generation must "
         "not select or substitute another theme.\n"
@@ -1325,6 +1550,24 @@ def _with_required_guidance(style: CourseSlideStyle) -> CourseSlideStyle:
     return replace(
         style,
         ta_guidance=f"{existing}{separator}{EQUATION_GUIDANCE}",
+    )
+
+
+def _with_required_image_safety_guidance(
+    style: CourseSlideStyle,
+) -> CourseSlideStyle:
+    guidance = style.image_guidance
+    if not guidance.enabled or IMAGE_SAFETY_GUIDANCE in guidance.avoid_notes:
+        return style
+    separator = "\n\n" if guidance.avoid_notes.strip() else ""
+    available = 600 - len(separator) - len(IMAGE_SAFETY_GUIDANCE)
+    existing = guidance.avoid_notes.strip()[:available].rstrip()
+    return replace(
+        style,
+        image_guidance=replace(
+            guidance,
+            avoid_notes=f"{existing}{separator}{IMAGE_SAFETY_GUIDANCE}",
+        ),
     )
 
 
@@ -1433,6 +1676,13 @@ Return one JSON object only, with this shape:
     "layout_rotation": ["hero", "columns"],
     "engagement": "<course-specific engagement method of at least 20 characters>"
   }},
+  "image_recommendation": {{
+    "enabled": true,
+    "visual_types": ["conceptual-diagram", "scene-illustration"],
+    "prompt_style_notes": "<at least 40 course-specific characters describing suitable image style>",
+    "avoid_notes": "<optional course-specific exclusions>",
+    "max_images_per_chapter": 2
+  }},
   "selection_evidence": {{
     "course_requirements": [
       "<course-specific visual requirement one, at least 20 characters>",
@@ -1462,6 +1712,11 @@ Rules:
 - source and key must be copied as one exact pair from ALLOWED_STYLE_PAIRS below.
   Preserve every hyphen; do not replace hyphens with underscores or spaces.
 - density must be exactly "low", "medium", or "high".
+- image_recommendation.enabled must be a boolean. When enabled, visual_types
+  must contain supported values, prompt_style_notes must be course-specific,
+  and max_images_per_chapter must be 1 to 3. When disabled, return an empty
+  visual_types list and a zero budget.
+- supported image visual types are: {", ".join(sorted(IMAGE_VISUAL_TYPES))}.
 - layout_rotation must contain at least two distinct values selected from:
   "hero", "split", "top", "columns", "math".
 - alternatives must contain 2 to 4 distinct exact inventory pairs, must not contain
@@ -1533,6 +1788,13 @@ _MATERIALIZATION_CONSTRAINT = f"""
 Return only this JSON shape:
 {{
   "ta_guidance": "compact visual guidance under 4000 characters",
+  "image_guidance": {{
+    "enabled": true,
+    "visual_types": ["conceptual-diagram"],
+    "prompt_style_notes": "course-specific image style guidance of at least 40 characters",
+    "avoid_notes": "course-specific exclusions under 600 characters",
+    "max_images_per_chapter": 2
+  }},
   "render_theme": {{
     "colors": {{
       "stage_bg": "#RRGGBB",
@@ -1559,6 +1821,8 @@ Return only this JSON shape:
   }}
 }}
 title_size must be 72-128, heading_size 44-78, grid_opacity 0-0.8.
+image_guidance.enabled must preserve the validated deliberation verdict.
+Allowed image visual types: {", ".join(sorted(IMAGE_VISUAL_TYPES))}.
 Choose exactly one value for each enum; never return pipe-separated alternatives.
 Allowed display_font values: archivo, source-serif-4, space-grotesk.
 Allowed body_font values: archivo, dm-sans, source-serif-4, space-grotesk.
