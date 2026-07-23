@@ -303,7 +303,7 @@ def test_prompt_writer_failure_uses_text_free_deterministic_fallback(
         llm=SimpleNamespace(),
     )
     assert tokens == 0
-    assert "absolutely no words" in prompts[0]["prompt"]
+    assert "absolutely no text" in prompts[0]["prompt"]
     assert "#2255cc" in prompts[0]["prompt"]
     assert any("fallback" in warning for warning in warnings)
 
@@ -367,6 +367,7 @@ def test_generation_commits_provenance_and_normal_rerun_reuses_cache(
     assert record["slide_index"] == 2
     assert record["labels"] == ["Input", "Feedback"]
     assert record["prompt_sha256"]
+    assert "absolutely no text" in record["prompt"]
     assert (manifest_path.parent / record["file"]).is_file()
 
     monkeypatch.setattr(
@@ -520,6 +521,70 @@ def test_media_layout_has_no_browser_overflow(tmp_path: Path) -> None:
     document = html_path.read_text(encoding="utf-8")
     assert document.count("gen-image-card") >= 1
     assert 'class="slide-content layout-media"' in document
+    assert validate_with_playwright(html_path, deck.slide_count) == []
+
+
+@pytest.mark.playwright
+def test_dense_media_layout_balances_copy_before_adding_figure(
+    tmp_path: Path,
+) -> None:
+    tex_path = tmp_path / "dense.tex"
+    tex_path.write_text(
+        r"""\documentclass{beamer}
+\title{Differential Equations}
+\begin{document}
+\begin{frame}{Separable Equations}
+\begin{block}{Definition}
+Separable equations have the form
+\[
+\frac{dy}{dx}=g(x)h(y).
+\]
+\end{block}
+\begin{block}{Method of Separation of Variables}
+\begin{enumerate}
+\item Rewrite the equation.
+\item Separate the variables.
+\item Integrate both sides.
+\item Solve explicitly for \(y\).
+\item Add the constant of integration.
+\end{enumerate}
+\end{block}
+\begin{block}{Example}
+For \(\frac{dy}{dx}=3y^2\sin(x)\):
+\begin{itemize}
+\item Separate the variables.
+\item Integrate both sides.
+\item Solve for the dependent variable.
+\end{itemize}
+\end{block}
+\end{frame}
+\end{document}
+""",
+        encoding="utf-8",
+    )
+    deck = parse_beamer(tex_path)
+    deck.slides[0].elements.append(
+        ContentElement(
+            kind="generated_image",
+            title="Variables separate into two integrals",
+            image_data_uri=f"data:image/png;base64,{_png_b64()}",
+            image_labels=["Dependent variable", "Independent variable"],
+        )
+    )
+    assert choose_layout(deck.slides[0]) == "media-dense"
+    _, font_css = prepare_offline_runtime(tmp_path, _style())
+    html_path = tmp_path / "html" / "slides.html"
+    html_path.write_text(
+        render_course_presentation_html(
+            deck,
+            _style(),
+            load_assets(),
+            font_css=font_css,
+        ),
+        encoding="utf-8",
+    )
+    document = html_path.read_text(encoding="utf-8")
+    assert "slide-content layout-media-dense" in document
     assert validate_with_playwright(html_path, deck.slide_count) == []
 
 

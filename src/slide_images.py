@@ -26,8 +26,13 @@ IMAGE_MANIFEST_FILENAME = "image-manifest.json"
 IMAGE_STATISTICS_FILENAME = "statistics_slide_images.json"
 IMAGE_CONFIG_SCHEMA_VERSION = 1
 IMAGE_MANIFEST_SCHEMA_VERSION = 2
-IMAGE_PIPELINE_VERSION = "slide-images-2026-07-23-v1"
+IMAGE_PIPELINE_VERSION = "slide-images-2026-07-23-v2"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+TEXT_FREE_PROMPT_SUFFIX = (
+    " The pixels must contain absolutely no text, letters, numbers, labels, "
+    "captions, logos, watermarks, UI chrome, or identifiable real people. "
+    "Any requested labels or legend content will be rendered separately in HTML."
+)
 
 
 @dataclass(frozen=True)
@@ -686,7 +691,9 @@ def _write_prompts(
             for placement in placements
         ], tokens, warnings
     by_index = {
-        entry["slide_index"]: entry["prompt"].strip()
+        entry["slide_index"]: _with_text_free_prompt(
+            entry["prompt"].strip()
+        )
         for entry in payload["prompts"]
     }
     return [
@@ -1126,12 +1133,17 @@ def _validate_prompt_payload(
 
 
 def _fallback_prompt(concept: str, accent: str, background: str) -> str:
-    return (
+    return _with_text_free_prompt(
         f"Clean minimal presentation figure illustrating: {concept}. "
         "True 16:9 landscape composition, flat modern illustration, palette "
-        f"accents {accent} on {background}, generous negative space, absolutely "
-        "no words, letters, numbers, labels, logos, UI chrome, people, or watermarks."
+        f"accents {accent} on {background}, generous negative space."
     )
+
+
+def _with_text_free_prompt(prompt: str) -> str:
+    available = 1500 - len(TEXT_FREE_PROMPT_SUFFIX)
+    base = prompt.strip()[:available].rstrip()
+    return f"{base}{TEXT_FREE_PROMPT_SUFFIX}"
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:

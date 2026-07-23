@@ -1465,6 +1465,29 @@ def render_deck_html(
         }}
         .layout-media .media-copy,
         .layout-media .media-figure {{ min-width: 0; }}
+        .layout-media-dense .slide-body {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: calc(34px * var(--fit-scale)) calc(52px * var(--fit-scale));
+            align-items: start;
+        }}
+        .layout-media-dense .media-copy,
+        .layout-media-dense .media-figure,
+        .layout-media-dense .media-stack {{ min-width: 0; }}
+        .layout-media-dense .media-stack {{
+            display: grid;
+            gap: calc(18px * var(--fit-scale));
+            align-content: start;
+        }}
+        .layout-media-dense .gen-image-card img {{
+            max-height: calc(280px * var(--fit-scale));
+        }}
+        .layout-media-dense .gen-image-card figcaption {{
+            font-size: calc(17px * var(--density) * var(--fit-scale));
+        }}
+        .layout-media-dense .gen-image-labels li {{
+            font-size: calc(16px * var(--density) * var(--fit-scale));
+        }}
         .gen-image-card img {{
             display: block;
             margin: 0 auto;
@@ -1961,7 +1984,12 @@ def choose_layout(
         for element in slide.elements
     )
     if has_image and has_non_image:
-        return "media"
+        copy_weight = sum(
+            element_weight(element)
+            for element in slide.elements
+            if element.kind not in {"generated_image", "user_image"}
+        )
+        return "media-dense" if copy_weight > 12 else "media"
     weight = sum(element_weight(element) for element in slide.elements)
     main, equations = _partition_equations(slide.elements)
     if equations and main and sum(element_weight(element) for element in main) <= 12:
@@ -2046,6 +2074,42 @@ def _render_body(slide: BeamerSlide, layout: str) -> str:
             '<div class="slide-body">'
             f'<div class="media-copy reveal">{_render_elements(copy)}</div>'
             f'<div class="media-figure reveal">{_render_elements(media)}</div>'
+            "</div>"
+        )
+    if layout == "media-dense":
+        media = [
+            element
+            for element in elements
+            if element.kind in {"generated_image", "user_image"}
+        ]
+        copy = [
+            element
+            for element in elements
+            if element.kind not in {"generated_image", "user_image"}
+        ]
+        left, right = _split_columns(copy)
+        left_weight = sum(element_weight(element) for element in left)
+        right_weight = sum(element_weight(element) for element in right)
+        if left_weight <= right_weight:
+            left_html = (
+                '<div class="media-stack">'
+                f'<div class="media-copy">{_render_elements(left)}</div>'
+                f'<div class="media-figure">{_render_elements(media)}</div>'
+                "</div>"
+            )
+            right_html = _render_elements(right)
+        else:
+            left_html = _render_elements(left)
+            right_html = (
+                '<div class="media-stack">'
+                f'<div class="media-copy">{_render_elements(right)}</div>'
+                f'<div class="media-figure">{_render_elements(media)}</div>'
+                "</div>"
+            )
+        return (
+            '<div class="slide-body">'
+            f'<div class="col reveal">{left_html}</div>'
+            f'<div class="col reveal">{right_html}</div>'
             "</div>"
         )
     if layout == "math":
@@ -3003,6 +3067,9 @@ MANIFEST_FILENAME = "frontend-slides-manifest.json"
 MANIFEST_SCHEMA_VERSION = 3
 
 
+FRONTEND_RENDERER_VERSION = "frontend-slides-2026-07-23-media-dense-v2"
+
+
 LEGACY_SPLIT_REPORT_FILENAME = "slide-splits.json"
 
 
@@ -3071,11 +3138,19 @@ def finalize_chapter(
     style_hash = sha256_file(style_path)
     previous = _read_manifest(manifest_path)
     manifest_matches = previous.get("schema_version") == MANIFEST_SCHEMA_VERSION
+    renderer_matches = (
+        previous.get("renderer_version") == FRONTEND_RENDERER_VERSION
+        or "images" not in previous
+    )
     source_matches = previous.get("source_sha256") == source_hash
     script_matches = previous.get("script_sha256") == initial_script_hash
     style_matches = previous.get("style_sha256") == style_hash
     inputs_match = (
-        manifest_matches and source_matches and script_matches and style_matches
+        manifest_matches
+        and renderer_matches
+        and source_matches
+        and script_matches
+        and style_matches
     )
     image_fingerprint = image_request_fingerprint(
         source_sha256=source_hash,
@@ -3330,6 +3405,7 @@ def finalize_chapter(
     current_images = [record.manifest_dict() for record in image_result.images]
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
+        "renderer_version": FRONTEND_RENDERER_VERSION,
         "source": tex_path.name,
         "source_sha256": source_hash,
         "script": script_path.name,
