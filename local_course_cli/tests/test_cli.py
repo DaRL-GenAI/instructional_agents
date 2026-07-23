@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from local_course_cli import cli
-from src.slide_style import (
+from src.html_slides_style import (
     CourseSlideStyle,
     PresentationMethod,
     RenderTheme,

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agents import Agent, LLM
-from src.slide_style import (
+from src.html_slides_style import (
     CourseSlideStyle,
     IMAGE_VISUAL_TYPES,
     ImageGuidance,
@@ -885,7 +885,7 @@ def _filter_placements(
 
 
 def _technically_dominated(slide: Any) -> bool:
-    from src.frontend_slides import element_weight
+    from src.html_slides import element_weight
 
     weights = [(element.kind, element_weight(element)) for element in slide.elements]
     total = sum(weight for _kind, weight in weights)
@@ -900,7 +900,7 @@ def _technically_dominated(slide: Any) -> bool:
 
 
 def _deck_outline(deck: Any) -> list[dict[str, Any]]:
-    from src.frontend_slides import element_weight
+    from src.html_slides import element_weight
 
     outline: list[dict[str, Any]] = []
     for slide in deck.slides[:60]:
@@ -940,7 +940,7 @@ def _element_fragments(element: Any) -> list[str]:
 def _attach_records(
     deck: Any, records: list[GeneratedImageRecord], warnings: list[str]
 ) -> None:
-    from src.frontend_slides import ContentElement
+    from src.html_slides import ContentElement
 
     slides = {slide.index: slide for slide in deck.slides}
     for record in records:

@@ -11,7 +11,7 @@ import pytest
 from PIL import Image
 
 from local_course_cli.cli import build_parser
-from src.frontend_slides import (
+from src.html_slides import (
     BeamerDeck,
     BeamerSlide,
     ContentElement,
@@ -25,7 +25,7 @@ from src.frontend_slides import (
     render_speaker_notes_markdown,
     validate_with_playwright,
 )
-from src.slide_images import (
+from src.html_slides_img import (
     IMAGE_MANIFEST_FILENAME,
     ImageGenerationConfig,
     append_image_statistics,
@@ -38,7 +38,7 @@ from src.slide_images import (
     _filter_placements,
     _write_prompts,
 )
-from src.slide_style import (
+from src.html_slides_style import (
     ASSET_VERSION,
     CourseSlideStyle,
     ImageGuidance,
@@ -196,7 +196,7 @@ def _install_agent_responses(
         return json.dumps(payload), 0.01, 7
 
     monkeypatch.setattr(
-        "src.slide_images.Agent.generate_response", fake_generate
+        "src.html_slides_img.Agent.generate_response", fake_generate
     )
 
 
@@ -292,7 +292,7 @@ def test_prompt_writer_failure_uses_text_free_deterministic_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "src.slide_images.Agent.generate_response",
+        "src.html_slides_img.Agent.generate_response",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("writer unavailable")
         ),
@@ -312,7 +312,7 @@ def test_disabled_boundary_makes_no_agent_or_image_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "src.slide_images.Agent.generate_response",
+        "src.html_slides_img.Agent.generate_response",
         lambda *_args, **_kwargs: pytest.fail("agent call was not expected"),
     )
     images = _FakeImages([])
@@ -371,7 +371,7 @@ def test_generation_commits_provenance_and_normal_rerun_reuses_cache(
     assert (manifest_path.parent / record["file"]).is_file()
 
     monkeypatch.setattr(
-        "src.slide_images.Agent.generate_response",
+        "src.html_slides_img.Agent.generate_response",
         lambda *_args, **_kwargs: pytest.fail("cache reuse called an agent"),
     )
     cached_images = _FakeImages([])
@@ -633,11 +633,11 @@ Signals move through a loop and change later behavior.
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "src.frontend_slides.LaTeXCompiler.compile_one",
+        "src.html_slides.LaTeXCompiler.compile_one",
         lambda *_args: (chapter_path / "slides.pdf").write_bytes(b"%PDF"),
     )
     monkeypatch.setattr(
-        "src.frontend_slides.validate_with_playwright",
+        "src.html_slides.validate_with_playwright",
         lambda *_args: [],
     )
 
@@ -647,7 +647,7 @@ Signals move through a loop and change later behavior.
         if pptx_path is not None:
             pptx_path.write_bytes(b"pptx")
 
-    monkeypatch.setattr("src.frontend_slides.export_html_deck", fake_export)
+    monkeypatch.setattr("src.html_slides.export_html_deck", fake_export)
     _install_agent_responses(monkeypatch, [_placement(2)])
     image_client = _FakeImages([_png_b64()])
     config = ImageGenerationConfig(enabled=True)
@@ -672,7 +672,7 @@ Signals move through a loop and change later behavior.
     ).read_text(encoding="utf-8")
 
     monkeypatch.setattr(
-        "src.slide_images.Agent.generate_response",
+        "src.html_slides_img.Agent.generate_response",
         lambda *_args, **_kwargs: pytest.fail("cache path called an agent"),
     )
     second = finalize_chapter(
@@ -688,7 +688,7 @@ Signals move through a loop and change later behavior.
 def test_statistics_are_an_append_only_invocation_ledger(
     tmp_path: Path,
 ) -> None:
-    from src.slide_images import ChapterImageResult
+    from src.html_slides_img import ChapterImageResult
 
     append_image_statistics(
         tmp_path,

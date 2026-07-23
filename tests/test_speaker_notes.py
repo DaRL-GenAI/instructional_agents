@@ -6,18 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from src.frontend_slides import load_assets
-from src.frontend_slides import parse_beamer
-from src.frontend_slides import FrontendSlidesError
-from src.frontend_slides import StyleCandidate
-from src.frontend_slides import (
+from src.html_slides import load_assets
+from src.html_slides import parse_beamer
+from src.html_slides import FrontendSlidesError
+from src.html_slides import StyleCandidate
+from src.html_slides import (
     correlate_speaker_notes,
     notes_manifest,
     parse_speaker_notes,
     render_speaker_notes_markdown,
     upgrade_legacy_script,
 )
-from src.frontend_slides import render_deck_html
+from src.html_slides import render_deck_html
 
 
 def _deck(tmp_path: Path):

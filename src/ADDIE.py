@@ -10,10 +10,10 @@ from src.agents import (
 )
 
 from src.slides import SlidesDeliberation
-from src.frontend_slides import ensure_course_slide_style, finalize_chapter
-from src.slide_images import ImageGenerationConfig, load_image_generation_config
-from src.slide_style import PRESENTATION_DESIGN_FILENAME
-from src.slide_style import PRESENTATION_DESIGN_NAME
+from src.html_slides import ensure_course_slide_style, finalize_chapter
+from src.html_slides_img import ImageGenerationConfig, load_image_generation_config
+from src.html_slides_style import PRESENTATION_DESIGN_FILENAME
+from src.html_slides_style import PRESENTATION_DESIGN_NAME
 
 class SyllabusProcessor(Agent):
     """

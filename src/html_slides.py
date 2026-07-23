@@ -21,7 +21,7 @@ from pylatexenc.latex2text import LatexNodes2Text
 
 from src.beamer_preflight import normalize_beamer_file
 from src.compile import LaTeXCompiler
-from src.slide_images import (
+from src.html_slides_img import (
     IMAGE_PIPELINE_VERSION,
     ChapterImageResult,
     ImageGenerationConfig,
@@ -34,7 +34,7 @@ from src.slide_images import (
     image_request_fingerprint,
     load_image_generation_config,
 )
-from src.slide_style import (
+from src.html_slides_style import (
     CourseSlideStyle,
     FONT_FAMILIES,
     FrontendSlidesAssets,

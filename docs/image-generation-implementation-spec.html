@@ -341,9 +341,9 @@
 <nav class="toc" aria-label="Sections">
   <a href="#overview">Overview &amp; invariants</a>
   <a href="#hook">Where it hooks in <span class="file">pipeline</span></a>
-  <a href="#deliberation">Deliberation extension <span class="file">src/slide_style.py</span></a>
-  <a href="#module">Image pipeline module <span class="file">src/slide_images.py</span></a>
-  <a href="#finalize">finalize_chapter hook <span class="file">src/frontend_slides.py</span></a>
+  <a href="#deliberation">Deliberation extension <span class="file">src/html_slides_style.py</span></a>
+  <a href="#module">Image pipeline module <span class="file">src/html_slides_img.py</span></a>
+  <a href="#finalize">finalize_chapter hook <span class="file">src/html_slides.py</span></a>
   <a href="#wiring">Wiring &amp; config surface <span class="file">ADDIE.py · cli.py</span></a>
   <a href="#cost">Cost &amp; statistics</a>
   <a href="#testing">Testing</a>
@@ -359,7 +359,7 @@
 
   <div class="callout ok">
     <span class="tag">Head start</span>
-    <p>The consumer side already exists, unused, in <code>src/frontend_slides.py</code>: <code>ContentElement.image_data_uri</code> (~line 68), <code>element_weight()</code> weight 4 for <code>generated_image</code>/<code>user_image</code> (~1067), <code>render_element()</code> emitting <code>&lt;figure class="gen-image-card"&gt;&lt;img src="{image_data_uri}" alt="{title}"&gt;</code> (~2193), and the <code>.gen-image-card img</code> CSS (~1445, max-height 460px, themed border/shadow). Nothing constructs those elements today — only the producer side is missing.</p>
+    <p>The consumer side already exists, unused, in <code>src/html_slides.py</code>: <code>ContentElement.image_data_uri</code> (~line 68), <code>element_weight()</code> weight 4 for <code>generated_image</code>/<code>user_image</code> (~1067), <code>render_element()</code> emitting <code>&lt;figure class="gen-image-card"&gt;&lt;img src="{image_data_uri}" alt="{title}"&gt;</code> (~2193), and the <code>.gen-image-card img</code> CSS (~1445, max-height 460px, themed border/shadow). Nothing constructs those elements today — only the producer side is missing.</p>
   </div>
 
   <h3>Invariants — do not break</h3>
@@ -410,7 +410,7 @@
       <div class="pl-dot">2</div>
       <div>
         <div class="pl-head">Presentation Design deliberation <span class="badge">extended</span></div>
-        <div class="pl-sub"><code>ensure_course_slide_style()</code> in <code>src/slide_style.py</code>. The 3-agent discussion now also debates whether AI imagery suits the course; the materializer emits a new <code>image_guidance</code> block persisted in <code>course_slide_style.json</code>.</div>
+        <div class="pl-sub"><code>ensure_course_slide_style()</code> in <code>src/html_slides_style.py</code>. The 3-agent discussion now also debates whether AI imagery suits the course; the materializer emits a new <code>image_guidance</code> block persisted in <code>course_slide_style.json</code>.</div>
       </div>
     </div>
     <div class="pl-stage">
@@ -424,7 +424,7 @@
       <div class="pl-dot">4</div>
       <div>
         <div class="pl-head">Finalize chapter <span class="badge">new hook</span></div>
-        <div class="pl-sub"><code>finalize_chapter()</code> in <code>src/frontend_slides.py</code> (~line 2924): normalize → LaTeX compile → <code>parse_beamer</code> → <code>correlate_speaker_notes</code> → <strong><code>augment_deck_with_generated_images()</code></strong> (new, from <code>src/slide_images.py</code>) → render HTML → Playwright validate → export PDF/PPTX → manifest.</div>
+        <div class="pl-sub"><code>finalize_chapter()</code> in <code>src/html_slides.py</code> (~line 2924): normalize → LaTeX compile → <code>parse_beamer</code> → <code>correlate_speaker_notes</code> → <strong><code>augment_deck_with_generated_images()</code></strong> (new, from <code>src/html_slides_img.py</code>) → render HTML → Playwright validate → export PDF/PPTX → manifest.</div>
       </div>
     </div>
     <div class="pl-stage">
@@ -439,7 +439,7 @@
 
 <!-- ================================================================ -->
 <section id="deliberation">
-  <span class="sec-eyebrow">src/slide_style.py</span>
+  <span class="sec-eyebrow">src/html_slides_style.py</span>
   <h2>Deliberation extension — image guidance</h2>
 
   <h3>New schema</h3>
@@ -499,7 +499,7 @@ IMAGE_SAFETY_GUIDANCE = (
 
 <!-- ================================================================ -->
 <section id="module">
-  <span class="sec-eyebrow">src/slide_images.py — new module</span>
+  <span class="sec-eyebrow">src/html_slides_img.py — new module</span>
   <h2>The image pipeline — scout → synthesize → prompt → generate</h2>
 
   <h3>Config and result types</h3>
@@ -562,7 +562,7 @@ IMAGE_SAFETY_GUIDANCE = (
     <li>Reject slides where code, table, or equation content dominates total element weight; a small technical element is not disqualifying.</li>
     <li>Reject <code>visual_type</code> values outside <code>style.image_guidance.visual_types</code>; require non-empty single-sentence <code>rationale</code>/<code>image_concept</code> under 500 chars.</li>
     <li>Truncate the surviving list to the effective cap (this enforces the budget — truncation, not failure).</li>
-    <li>All JSON calls use the repair-retry pattern from <code>slide_style.py</code>: feed validation errors and the truncated previous response back, at most 2 retries; persistent failure → empty result plus warnings, deck untouched.</li>
+    <li>All JSON calls use the repair-retry pattern from <code>html_slides_style.py</code>: feed validation errors and the truncated previous response back, at most 2 retries; persistent failure → empty result plus warnings, deck untouched.</li>
   </ul>
 
   <h3>Stage 3 — batched prompt writer</h3>
@@ -623,7 +623,7 @@ IMAGE_SAFETY_GUIDANCE = (
 
 <!-- ================================================================ -->
 <section id="finalize">
-  <span class="sec-eyebrow">src/frontend_slides.py</span>
+  <span class="sec-eyebrow">src/html_slides.py</span>
   <h2>Hook into <code>finalize_chapter</code></h2>
   <p>New parameters are keyword-only with defaults so the existing 2-positional-arg call sites (<code>ADDIE.py:~492</code> and <code>local_course_cli/cli.py</code>'s <code>refinalize_existing_chapters</code>) keep working unchanged:</p>
 <pre><code><span class="k">def</span> finalize_chapter(
@@ -715,7 +715,7 @@ html_stale = html_stale <span class="k">or not</span> image_state_current <span 
   <h2>Testing</h2>
 
   <h3>Extend <code>tests/test_frontend_slides.py</code></h3>
-  <p class="note">Slide-style and finalize tests already live here; reuse the established monkeypatch pattern (<code>monkeypatch.setattr("src.slide_style.Agent.generate_response", …)</code>, <code>SimpleNamespace</code> fakes).</p>
+  <p class="note">Slide-style and finalize tests already live here; reuse the established monkeypatch pattern (<code>monkeypatch.setattr("src.html_slides_style.Agent.generate_response", …)</code>, <code>SimpleNamespace</code> fakes).</p>
   <ul class="check">
     <li>Legacy <code>course_slide_style.json</code> without <code>image_guidance</code> loads via <code>load_course_slide_style</code> with <code>enabled=False</code> — no exception, no forced reselect.</li>
     <li>Materialization validator: vocabulary, bounds, enabled ⇒ non-empty <code>visual_types</code>, notes-length and budget-range rejections.</li>
@@ -744,12 +744,12 @@ html_stale = html_stale <span class="k">or not</span> image_state_current <span 
   <h2>Implementation order</h2>
   <p>Sized so an implementing model can execute sequentially, locking schema correctness in before touching the renderer.</p>
   <ol class="order">
-    <li><div>Schema, validator, materializer prompt + context, safety-guidance helper, markdown section, backward-compatible loading.<span class="o-file">src/slide_style.py</span></div></li>
+    <li><div>Schema, validator, materializer prompt + context, safety-guidance helper, markdown section, backward-compatible loading.<span class="o-file">src/html_slides_style.py</span></div></li>
     <li><div>Add <code>image_generation_preferences</code> to the catalog allow-list.<span class="o-file">src/ADDIE.py (set_catalog)</span></div></li>
     <li><div>Tests for steps 1–2: legacy default, validator bounds, materializer receives course context.<span class="o-file">tests/test_frontend_slides.py</span></div></li>
-    <li><div>New module: config/result types, scouts, synthesis, prompt writer + fallback, generation loop, cache manifest, entry point.<span class="o-file">src/slide_images.py (new)</span></div></li>
+    <li><div>New module: config/result types, scouts, synthesis, prompt writer + fallback, generation loop, cache manifest, entry point.<span class="o-file">src/html_slides_img.py (new)</span></div></li>
     <li><div>Fully mocked tests for the new module.<span class="o-file">tests/test_slide_images.py (new)</span></div></li>
-    <li><div>Hook into <code>finalize_chapter</code>: keyword-only params, augmentation call, <code>html_stale</code> forcing, stats file, manifest <code>"images"</code> block.<span class="o-file">src/frontend_slides.py</span></div></li>
+    <li><div>Hook into <code>finalize_chapter</code>: keyword-only params, augmentation call, <code>html_stale</code> forcing, stats file, manifest <code>"images"</code> block.<span class="o-file">src/html_slides.py</span></div></li>
     <li><div>Tests for step 6: 2-arg backward compat, hook ordering.<span class="o-file">tests/test_frontend_slides.py</span></div></li>
     <li><div>Runner wiring: constructor param, chapter derivation, forwarding, course-level stats merge.<span class="o-file">src/ADDIE.py (ADDIERunner)</span></div></li>
     <li><div>CLI flags on the <code>chapter</code> subcommand, threaded through <code>build_runner</code>.<span class="o-file">local_course_cli/cli.py</span></div></li>

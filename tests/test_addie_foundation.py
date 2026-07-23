@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.ADDIE import ADDIERunner
-from src.slide_style import (
+from src.html_slides_style import (
     CourseSlideStyle,
     PresentationMethod,
     RenderTheme,

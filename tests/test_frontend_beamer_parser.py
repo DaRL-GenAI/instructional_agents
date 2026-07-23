@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.frontend_slides import parse_beamer
+from src.html_slides import parse_beamer
 
 
 def test_parse_nested_lists_equations_tables_and_code(tmp_path: Path) -> None:

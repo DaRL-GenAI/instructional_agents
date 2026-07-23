@@ -113,7 +113,7 @@ def run_instructional_design(
     # Run the workflow
     output_dir = f"./exp/{exp_name}/"
     os.makedirs(output_dir, exist_ok=True)
-    from src.slide_images import (
+    from src.html_slides_img import (
         configured_for_invocation,
         load_image_generation_config,
         style_has_explicit_image_guidance,

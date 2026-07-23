@@ -1,4 +1,4 @@
-from src.frontend_slides import ContentElement, render_element
+from src.html_slides import ContentElement, render_element
 
 
 def _equation(text: str, env: str | None = None) -> str:

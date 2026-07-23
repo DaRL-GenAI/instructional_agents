@@ -1,4 +1,4 @@
-"""Course-wide slide style selection, validation, assets, and persistence."""
+"""Course-wide HTML slide style selection, validation, assets, and persistence."""
 
 from __future__ import annotations
 
