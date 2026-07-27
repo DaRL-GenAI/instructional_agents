@@ -63,7 +63,7 @@ class ImageGuidance:
     visual_types: list[str]
     prompt_style_notes: str
     avoid_notes: str
-    max_images_per_chapter: int
+    max_images_per_chapter: int | None
 
 
 @dataclass(frozen=True)
@@ -721,10 +721,19 @@ def _validate_image_guidance(raw: Any) -> ImageGuidance:
         raise FrontendSlidesError(
             "image_guidance.avoid_notes must be text of at most 600 characters."
         )
-    budget = raw.get("max_images_per_chapter")
-    if isinstance(budget, bool) or not isinstance(budget, int) or not 0 <= budget <= 3:
+    if "max_images_per_chapter" not in raw:
         raise FrontendSlidesError(
-            "image_guidance.max_images_per_chapter must be an integer from 0 to 3."
+            "image_guidance.max_images_per_chapter is required."
+        )
+    budget = raw["max_images_per_chapter"]
+    if budget is not None and (
+        isinstance(budget, bool)
+        or not isinstance(budget, int)
+        or not 0 <= budget <= 3
+    ):
+        raise FrontendSlidesError(
+            "image_guidance.max_images_per_chapter must be null or an integer "
+            "from 0 to 3."
         )
     if not enabled:
         return DEFAULT_IMAGE_GUIDANCE
@@ -736,9 +745,10 @@ def _validate_image_guidance(raw: Any) -> ImageGuidance:
         raise FrontendSlidesError(
             "Enabled image guidance requires at least 40 characters of prompt style notes."
         )
-    if budget < 1:
+    if budget is not None and budget < 1:
         raise FrontendSlidesError(
-            "Enabled image guidance requires max_images_per_chapter of at least 1."
+            "Enabled capped image guidance requires max_images_per_chapter of "
+            "at least 1."
         )
     return ImageGuidance(
         enabled=True,
@@ -1064,6 +1074,7 @@ def ensure_course_slide_style(
     *,
     reselect: bool = False,
     image_generation_requested: bool = False,
+    ai_decides_image_count: bool = False,
 ) -> CourseSlideStyle:
     output_path = Path(output_dir)
     style_path = output_path / STYLE_FILENAME
@@ -1129,6 +1140,7 @@ def ensure_course_slide_style(
         "chapters": chapters,
         "catalog_style_preferences": catalog_style_preferences,
         "operator_image_generation_opt_in": image_generation_requested,
+        "operator_ai_decides_image_count": ai_decides_image_count,
     }
 
     teaching_faculty = Agent(
@@ -1203,9 +1215,13 @@ def ensure_course_slide_style(
             "rationale. Preserve the normal sequential discussion: respond to earlier "
             "reviewers while adding your own comparison evidence. Also decide whether "
             "AI-generated, text-free imagery would materially improve this specific "
-            "course, which supported visual types fit, and a budget from zero to three "
-            "images per chapter. The operator opt-in permits image spending but does "
-            "not require it: an image recommendation of disabled remains a valid veto.\n\n"
+            "course and which supported visual types fit. If "
+            "operator_ai_decides_image_count is true, use null for "
+            "max_images_per_chapter so the chapter placement referee can choose every "
+            "strong eligible placement without a numeric budget. Otherwise choose a "
+            "budget from zero to three images per chapter. The operator opt-in permits "
+            "image spending but does not require it: an image recommendation of "
+            "disabled remains a valid veto.\n\n"
             f"Course context:\n{json.dumps(course_context, ensure_ascii=False)}\n\n"
             "Complete style inventory (12 presets and 34 bold templates):\n"
             f"{json.dumps(inventory_payload, ensure_ascii=False)}"
@@ -1244,6 +1260,23 @@ def ensure_course_slide_style(
                     image_recommendation = _validate_image_guidance(
                         raw_image_recommendation
                     )
+                    if (
+                        ai_decides_image_count
+                        and image_recommendation.enabled
+                        and image_recommendation.max_images_per_chapter
+                        is not None
+                    ):
+                        image_recommendation = replace(
+                            image_recommendation,
+                            max_images_per_chapter=None,
+                        )
+                        note = (
+                            "Normalized the image recommendation to AI-decides "
+                            "count mode because the operator requested no fixed "
+                            "chapter cap."
+                        )
+                        selection_normalizations.append(note)
+                        print(f"[style normalization] {note}")
                 except FrontendSlidesError as image_exc:
                     image_recommendation = DEFAULT_IMAGE_GUIDANCE
                     note = (
@@ -1295,6 +1328,7 @@ def ensure_course_slide_style(
         "course_name": course_context["course_name"],
         "chapters": course_context["chapters"],
         "operator_image_generation_opt_in": image_generation_requested,
+        "operator_ai_decides_image_count": ai_decides_image_count,
         "image_generation_preferences": catalog_style_preferences.get(
             "image_generation_preferences", ""
         ),
@@ -1335,12 +1369,38 @@ def ensure_course_slide_style(
                     raise FrontendSlidesError(
                         "image_guidance.enabled must preserve the deliberation verdict."
                     )
+                recommendation_cap = image_recommendation.max_images_per_chapter
+                materialized_cap = (
+                    materialized_image_guidance.max_images_per_chapter
+                )
+                if (
+                    ai_decides_image_count
+                    and materialized_image_guidance.enabled
+                    and materialized_cap is not None
+                ):
+                    materialized_image_guidance = replace(
+                        materialized_image_guidance,
+                        max_images_per_chapter=None,
+                    )
+                    materialized_cap = None
+                    note = (
+                        "Normalized materialized image guidance to AI-decides "
+                        "count mode."
+                    )
+                    if note not in materialization_normalizations:
+                        materialization_normalizations.append(note)
+                expands_budget = (
+                    recommendation_cap is not None
+                    and (
+                        materialized_cap is None
+                        or materialized_cap > recommendation_cap
+                    )
+                )
                 if materialized_image_guidance.enabled and (
                     not set(materialized_image_guidance.visual_types).issubset(
                         image_recommendation.visual_types
                     )
-                    or materialized_image_guidance.max_images_per_chapter
-                    > image_recommendation.max_images_per_chapter
+                    or expands_budget
                 ):
                     raise FrontendSlidesError(
                         "image_guidance cannot expand the deliberated visual "
@@ -1505,6 +1565,11 @@ def presentation_design_markdown(
         if image_guidance.visual_types
         else "None"
     )
+    image_cap_text = (
+        "AI decides (no fixed cap)"
+        if image_guidance.max_images_per_chapter is None
+        else str(image_guidance.max_images_per_chapter)
+    )
     return (
         f"{PRESENTATION_DESIGN_NAME}\n"
         f"{'=' * len(PRESENTATION_DESIGN_NAME)}\n\n"
@@ -1531,7 +1596,7 @@ def presentation_design_markdown(
         "## Image Generation Guidance\n\n"
         f"- Enabled by deliberation: {image_guidance.enabled}\n"
         f"- Visual types: {image_types}\n"
-        f"- Maximum images per chapter: {image_guidance.max_images_per_chapter}\n"
+        f"- Maximum images per chapter: {image_cap_text}\n"
         f"- Prompt style: {image_guidance.prompt_style_notes or 'None'}\n"
         f"- Avoid: {image_guidance.avoid_notes or 'None'}\n\n"
         "## Course-Wide Requirements\n\n"
@@ -1713,9 +1778,10 @@ Rules:
   Preserve every hyphen; do not replace hyphens with underscores or spaces.
 - density must be exactly "low", "medium", or "high".
 - image_recommendation.enabled must be a boolean. When enabled, visual_types
-  must contain supported values, prompt_style_notes must be course-specific,
-  and max_images_per_chapter must be 1 to 3. When disabled, return an empty
-  visual_types list and a zero budget.
+  must contain supported values and prompt_style_notes must be course-specific.
+  When operator_ai_decides_image_count is true, max_images_per_chapter must be
+  null. Otherwise it must be 1 to 3. When disabled, return an empty visual_types
+  list and a zero budget.
 - supported image visual types are: {", ".join(sorted(IMAGE_VISUAL_TYPES))}.
 - layout_rotation must contain at least two distinct values selected from:
   "hero", "split", "top", "columns", "math".
@@ -1822,6 +1888,8 @@ Return only this JSON shape:
 }}
 title_size must be 72-128, heading_size 44-78, grid_opacity 0-0.8.
 image_guidance.enabled must preserve the validated deliberation verdict.
+max_images_per_chapter may be null to delegate the chapter image count to the
+placement referee without a fixed numeric cap.
 Allowed image visual types: {", ".join(sorted(IMAGE_VISUAL_TYPES))}.
 Choose exactly one value for each enum; never return pipe-separated alternatives.
 Allowed display_font values: archivo, source-serif-4, space-grotesk.

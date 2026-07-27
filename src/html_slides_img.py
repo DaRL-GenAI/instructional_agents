@@ -39,6 +39,7 @@ TEXT_FREE_PROMPT_SUFFIX = (
 class ImageGenerationConfig:
     enabled: bool = False
     max_images_per_chapter: int = 3
+    ai_decides_image_count: bool = False
     model: str = "gpt-image-2"
     size: str = "1536x864"
     quality: str = "medium"
@@ -47,8 +48,14 @@ class ImageGenerationConfig:
     max_images_override: int | None = None
 
     def validated(self) -> "ImageGenerationConfig":
-        if not isinstance(self.enabled, bool) or not isinstance(self.replace_images, bool):
-            raise ValueError("Image enable and replacement values must be booleans.")
+        if (
+            not isinstance(self.enabled, bool)
+            or not isinstance(self.replace_images, bool)
+            or not isinstance(self.ai_decides_image_count, bool)
+        ):
+            raise ValueError(
+                "Image enable, replacement, and AI-count values must be booleans."
+            )
         if (
             isinstance(self.max_images_per_chapter, bool)
             or not isinstance(self.max_images_per_chapter, int)
@@ -84,10 +91,12 @@ class ImageGenerationConfig:
         return self
 
     @property
-    def effective_operator_cap(self) -> int:
-        if self.max_images_override is None:
-            return self.max_images_per_chapter
-        return min(self.max_images_per_chapter, self.max_images_override)
+    def effective_operator_cap(self) -> int | None:
+        if self.max_images_override is not None:
+            return self.max_images_override
+        if self.ai_decides_image_count:
+            return None
+        return self.max_images_per_chapter
 
 
 @dataclass(frozen=True)
@@ -157,6 +166,7 @@ def load_image_generation_config(
             "schema_version",
             "enabled",
             "max_images_per_chapter",
+            "ai_decides_image_count",
             "model",
             "size",
             "quality",
@@ -173,6 +183,7 @@ def load_image_generation_config(
         config = ImageGenerationConfig(
             enabled=raw.get("enabled", False),
             max_images_per_chapter=raw.get("max_images_per_chapter", 3),
+            ai_decides_image_count=raw.get("ai_decides_image_count", False),
             model=raw.get("model", "gpt-image-2"),
             size=raw.get("size", "1536x864"),
             quality=raw.get("quality", "medium"),
@@ -195,6 +206,7 @@ def write_image_generation_config(
         "schema_version": IMAGE_CONFIG_SCHEMA_VERSION,
         "enabled": config.enabled or config.replace_images,
         "max_images_per_chapter": config.max_images_per_chapter,
+        "ai_decides_image_count": config.ai_decides_image_count,
         "model": config.model,
         "size": config.size,
         "quality": config.quality,
@@ -210,12 +222,18 @@ def configured_for_invocation(
     enable: bool = False,
     replace_images: bool = False,
     max_images_override: int | None = None,
+    ai_decides_image_count: bool | None = None,
 ) -> ImageGenerationConfig:
     resolved = replace(
         stored,
         enabled=stored.enabled or enable or replace_images,
         replace_images=replace_images,
         max_images_override=max_images_override,
+        ai_decides_image_count=(
+            stored.ai_decides_image_count
+            if ai_decides_image_count is None
+            else ai_decides_image_count
+        ),
     )
     return resolved.validated()
 
@@ -233,11 +251,15 @@ def style_has_explicit_image_guidance(course_dir: Path | str) -> bool:
     )
 
 
-def effective_cap(config: ImageGenerationConfig, guidance: ImageGuidance) -> int:
-    return min(
-        config.validated().effective_operator_cap,
-        guidance.max_images_per_chapter,
-    )
+def effective_cap(
+    config: ImageGenerationConfig, guidance: ImageGuidance
+) -> int | None:
+    operator_cap = config.validated().effective_operator_cap
+    if operator_cap is None:
+        return None
+    if guidance.max_images_per_chapter is None:
+        return operator_cap
+    return min(operator_cap, guidance.max_images_per_chapter)
 
 
 def image_request_fingerprint(
@@ -271,7 +293,12 @@ def image_request_fingerprint(
 def desired_image_state(
     config: ImageGenerationConfig, guidance: ImageGuidance
 ) -> bool:
-    return bool(config.enabled and guidance.enabled and effective_cap(config, guidance))
+    cap = effective_cap(config, guidance)
+    return bool(
+        config.enabled
+        and guidance.enabled
+        and (cap is None or cap > 0)
+    )
 
 
 def image_cache_is_current(
@@ -537,15 +564,29 @@ def _plan_placements(
     chapter: dict[str, str] | None,
     guidance: ImageGuidance,
     llm: LLM,
-    cap: int,
+    cap: int | None,
 ) -> tuple[list[dict[str, Any]], int, list[str], bool]:
     warnings: list[str] = []
     tokens = 0
     outline = _deck_outline(deck)
+    image_count_policy = {
+        "mode": "ai_decides" if cap is None else "capped",
+        "maximum": cap,
+    }
+    guidance_payload = asdict(guidance)
+    if cap is None:
+        guidance_payload["max_images_per_chapter"] = None
+    count_instruction = (
+        "The image count is delegated to you without a numeric chapter budget; "
+        "propose every strong eligible opportunity."
+        if cap is None
+        else f"Do not propose more than the chapter maximum of {cap}."
+    )
     context = json.dumps(
         {
             "chapter": chapter or {},
-            "guidance": asdict(guidance),
+            "guidance": guidance_payload,
+            "image_count_policy": image_count_policy,
             "slides": outline,
         },
         ensure_ascii=False,
@@ -569,7 +610,8 @@ def _plan_placements(
             system_prompt=(
                 "You decide where text-free AI-generated imagery genuinely improves "
                 f"a slide deck. {lens} Few or zero suggestions is correct. Never "
-                "suggest title slides or technically dominated slides."
+                "suggest title slides or technically dominated slides. "
+                f"{count_instruction}"
             ),
             prompt=context,
             output_constraint=_placement_contract("suggestions", len(deck.slides)),
@@ -608,10 +650,17 @@ def _plan_placements(
         system_prompt=(
             "Merge two image-placement reports. Keep only images that materially "
             "improve learning, at most one per slide, and return an empty list if "
-            "none is strong enough."
+            "none is strong enough. When image_count_policy.mode is ai_decides, "
+            "keep every strong eligible placement without applying a numeric "
+            "chapter budget."
         ),
         prompt=json.dumps(
-            {"slides": outline, "scout_reports": scouts}, ensure_ascii=False
+            {
+                "slides": outline,
+                "image_count_policy": image_count_policy,
+                "scout_reports": scouts,
+            },
+            ensure_ascii=False,
         ),
         output_constraint=_placement_contract("placements", len(deck.slides)),
         validator=lambda value: _validate_payload_list(value, "placements"),
@@ -634,7 +683,8 @@ def _plan_placements(
             continue
         seen.add(placement["slide_index"])
         deduped.append(placement)
-    return deduped[:cap], tokens, warnings, True
+    selected = deduped if cap is None else deduped[:cap]
+    return selected, tokens, warnings, True
 
 
 def _write_prompts(
@@ -903,7 +953,7 @@ def _deck_outline(deck: Any) -> list[dict[str, Any]]:
     from src.html_slides import element_weight
 
     outline: list[dict[str, Any]] = []
-    for slide in deck.slides[:60]:
+    for slide in deck.slides:
         fragments = [
             fragment
             for element in slide.elements

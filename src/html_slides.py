@@ -30,6 +30,7 @@ from src.html_slides_img import (
     commit_image_result,
     desired_image_state,
     discard_image_result,
+    effective_cap,
     image_cache_is_current,
     image_request_fingerprint,
     load_image_generation_config,
@@ -3434,9 +3435,13 @@ def finalize_chapter(
             "enabled": image_config.enabled,
             "guidance_enabled": style.image_guidance.enabled,
             "effective": wants_images,
-            "effective_cap": min(
-                image_config.effective_operator_cap,
-                style.image_guidance.max_images_per_chapter,
+            "image_count_mode": (
+                "ai_decides"
+                if image_config.effective_operator_cap is None
+                else "capped"
+            ),
+            "effective_cap": effective_cap(
+                image_config, style.image_guidance
             ),
             "model": image_config.model,
             "size": image_config.size,

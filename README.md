@@ -450,6 +450,9 @@ python run.py "AI Fundamentals" --catalog ai_catalog
 
 # Combine catalog and copilot
 python run.py "Educational Psychology" --copilot --catalog edu_psy
+
+# Enable images with no numeric per-chapter cap
+python run.py "Systems Thinking" --enable-image-generation --ai-decides-image-count
 ```
 
 **Minimal Working Example** (generates a small 3-week course in ~5 min):
@@ -477,13 +480,19 @@ Options:
   --replace-images         Replace images in every processed chapter; implies opt-in
   --max-images-per-chapter {0,1,2,3}
                            Persist the experiment's image cap
+  --ai-decides-image-count
+                           Remove the numeric chapter cap and let the placement AI
+                           choose all strong eligible image opportunities
   --optimize STORAGE_ID    Optimize mode: provide storage_id of uploaded PDFs
   --requirements TEXT      User requirements for optimization (with --optimize)
   --chapter NAME           Specific chapter to optimize (with --optimize)
 ```
 
 Dynamic slide images are off by default. When enabled, the presentation-design
-deliberation may still veto imagery or choose a lower per-chapter budget.
+deliberation may still veto imagery or choose a lower per-chapter budget. Use
+`--ai-decides-image-count` instead of `--max-images-per-chapter` to remove the
+numeric budget; the placement AI may then choose zero, five, six, or any other
+number up to the chapter's eligible slides.
 Generated images appear only in the HTML, HTML-derived PDF, and HTML-derived
 PPTX; the Beamer source and PDF are unchanged. See
 [`docs/image-generation-implementation-spec.html`](docs/image-generation-implementation-spec.html)

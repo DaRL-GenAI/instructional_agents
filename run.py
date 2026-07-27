@@ -47,6 +47,7 @@ def run_instructional_design(
     enable_image_generation: bool = False,
     replace_images: bool = False,
     max_images_per_chapter: int | None = None,
+    ai_decides_image_count: bool = False,
 ):
     """
     Main function to run the instructional design workflow by sequentially
@@ -134,6 +135,12 @@ def run_instructional_design(
         stored_image_config = replace(
             stored_image_config,
             max_images_per_chapter=max_images_per_chapter,
+            ai_decides_image_count=False,
+        ).validated()
+    elif ai_decides_image_count:
+        stored_image_config = replace(
+            stored_image_config,
+            ai_decides_image_count=True,
         ).validated()
     image_config = configured_for_invocation(
         stored_image_config,
@@ -273,13 +280,22 @@ def main():
         action="store_true",
         help="Regenerate images for every processed chapter; implies enablement.",
     )
-    parser.add_argument(
+    image_count_group = parser.add_mutually_exclusive_group()
+    image_count_group.add_argument(
         "--max-images-per-chapter",
         type=int,
         choices=range(0, 4),
         default=None,
         metavar="0-3",
         help="Persist the experiment default image cap (0 to 3).",
+    )
+    image_count_group.add_argument(
+        "--ai-decides-image-count",
+        action="store_true",
+        help=(
+            "Remove the numeric per-chapter image cap and let the placement AI "
+            "choose every strong eligible image opportunity."
+        ),
     )
 
     # Optimize mode arguments
@@ -368,6 +384,7 @@ def main():
             enable_image_generation=args.enable_image_generation,
             replace_images=args.replace_images,
             max_images_per_chapter=args.max_images_per_chapter,
+            ai_decides_image_count=args.ai_decides_image_count,
         )
 
 

@@ -87,7 +87,8 @@ Content-Type: application/json
   "catalog_data": {...},
   "enable_image_generation": false,
   "replace_images": false,
-  "max_images_per_chapter": 1
+  "max_images_per_chapter": null,
+  "ai_decides_image_count": true
 }
 ```
 
@@ -209,7 +210,8 @@ GET /api/catalog/list
 | generate_pptx | boolean | No | Also run the legacy PPTX conversion |
 | enable_image_generation | boolean | No | Persist opt-in to generated frontend slide images (default: false) |
 | replace_images | boolean | No | Replace images for every processed chapter; implies enablement |
-| max_images_per_chapter | integer | No | Persistent image cap from 0 to 3 |
+| max_images_per_chapter | integer or null | No | Persistent image cap from 0 to 3; omit or use null with AI-decides mode |
+| ai_decides_image_count | boolean | No | Remove the numeric chapter cap and let the placement AI choose all strong eligible opportunities; mutually exclusive with `max_images_per_chapter` |
 
 ## Workflow
 

@@ -367,7 +367,7 @@
     <li><strong><code>slides.tex</code> and <code>slides.pdf</code> stay byte-identical.</strong> Images exist only in the HTML deck and its exports (which screenshot the HTML, so they pick images up for free).</li>
     <li><strong>Best-effort everywhere.</strong> No stage of the image pipeline may ever abort a chapter build — every failure degrades to a warning, matching the reference implementation.</li>
     <li><strong>Backward compatible.</strong> Existing <code>course_slide_style.json</code> files (no <code>image_guidance</code> block) must load with images disabled — no schema-version bump, no forced <code>--reselect-presentation-design</code>. Existing 2-positional-argument calls to <code>finalize_chapter(course_dir, chapter_dir)</code> must keep working.</li>
-    <li><strong>Two gates for any spend.</strong> The persisted experiment opt-in (<code>course_image_generation.json</code>, default disabled) <em>and</em> the deliberation's verdict (<code>style.image_guidance.enabled</code>) must both be on. Invocation caps can only tighten the stored and deliberated budgets.</li>
+    <li><strong>Two gates for any spend.</strong> The persisted experiment opt-in (<code>course_image_generation.json</code>, default disabled) <em>and</em> the deliberation's verdict (<code>style.image_guidance.enabled</code>) must both be on. Capped mode takes the strictest configured budget; AI-decides mode removes the numeric chapter cap.</li>
     <li><strong>Alt text comes from <code>element.title</code></strong>, not <code>element.text</code> — set <code>title=concept</code> when constructing the element.</li>
     <li><strong>Title slides never render elements.</strong> <code>choose_layout()</code> early-returns for <code>slide.is_titlepage</code>, so an image placed there would silently vanish — exclude title slides in code, not just in prompts.</li>
   </ul>
@@ -385,9 +385,9 @@
       <div class="d-why">No surprise API costs. The first <code>--enable-image-generation</code> or <code>--replace-images</code> persists the experiment opt-in; later chapter runs inherit it.</div>
     </div>
     <div class="decision">
-      <div class="d-label">Budget</div>
-      <div class="d-value">Hard cap, default 3</div>
-      <div class="d-why">Enforced in code after validation. The deliberation may set a lower budget (0–3); the operator flag can lower it further.</div>
+      <div class="d-label">Image count</div>
+      <div class="d-value">Capped or AI-decides</div>
+      <div class="d-why">Capped mode defaults to 3. The optional AI-decides mode applies no numeric chapter budget, so every strong eligible placement may be selected.</div>
     </div>
   </div>
 </section>
@@ -450,7 +450,7 @@
     visual_types: list[str]        <span class="c"># subset of IMAGE_VISUAL_TYPES</span>
     prompt_style_notes: str        <span class="c"># &lt;=1200 chars — palette/mood/subject guidance for prompt writing</span>
     avoid_notes: str               <span class="c"># &lt;=600 chars — universal + course-specific "never depict" rules</span>
-    max_images_per_chapter: int    <span class="c"># 0–3</span>
+    max_images_per_chapter: int | None <span class="c"># 0–3, or None when AI decides</span>
 
 IMAGE_VISUAL_TYPES = {
     <span class="s">"conceptual-diagram"</span>, <span class="s">"process-flow"</span>, <span class="s">"architecture-overview"</span>,
@@ -470,7 +470,7 @@ IMAGE_SAFETY_GUIDANCE = (
 
   <h3>Where the decision is made</h3>
   <ul>
-    <li><strong>Group deliberation:</strong> extend the summarizer contract with a separately validated <code>image_recommendation</code>. Reviewers decide whether imagery helps this course, which types fit, and the per-chapter budget in the existing call.</li>
+    <li><strong>Group deliberation:</strong> extend the summarizer contract with a separately validated <code>image_recommendation</code>. Reviewers decide whether imagery helps this course and which types fit. In capped mode they also choose a per-chapter budget; in AI-decides mode they return a null budget.</li>
     <li><strong>Preserve existing style validation:</strong> extract the image recommendation, then pass the remaining payload through the established selection canonicalizer and validator.</li>
     <li><strong>Materializer:</strong> consume the validated recommendation plus course/chapter/catalog context and emit operational <code>image_guidance</code>. It may refine prompt notes but may not reverse the deliberation's enabled verdict.</li>
   </ul>
@@ -478,8 +478,8 @@ IMAGE_SAFETY_GUIDANCE = (
   <h3>Validator rules — <code>_validate_image_guidance(raw)</code></h3>
   <ul>
     <li><code>enabled</code> must be a boolean; <code>visual_types</code> must be a list drawn from <code>IMAGE_VISUAL_TYPES</code>.</li>
-    <li>enabled ⇒ <code>visual_types</code> non-empty; enabled ⇒ <code>prompt_style_notes</code> ≥ 40 chars of course-specific guidance; enabled ⇒ <code>max_images_per_chapter</code> ≥ 1.</li>
-    <li><code>max_images_per_chapter</code> is an int in 0–3 (reject bools — <code>isinstance(x, bool)</code> check before the int check).</li>
+    <li>enabled ⇒ <code>visual_types</code> non-empty; enabled ⇒ <code>prompt_style_notes</code> ≥ 40 chars of course-specific guidance; a numeric enabled cap must be at least 1.</li>
+    <li><code>max_images_per_chapter</code> is null for AI-decides mode or an int in 0–3 (reject bools — <code>isinstance(x, bool)</code> check before the int check).</li>
     <li>Disabled normalizes to <code>visual_types=[]</code>, <code>max_images_per_chapter=0</code>; strings are bounds-checked (≤1200 / ≤600) and stripped; <code>visual_types</code> deduplicated preserving order.</li>
     <li>Failures raise <code>FrontendSlidesError</code> and flow through the existing materializer repair-retry loop.</li>
   </ul>
@@ -506,7 +506,8 @@ IMAGE_SAFETY_GUIDANCE = (
 <pre><code><span class="k">@dataclass</span>(frozen=<span class="k">True</span>)
 <span class="k">class</span> ImageGenerationConfig:
     enabled: bool = <span class="k">False</span>
-    max_images_per_chapter: int = 3          <span class="c"># hard cap enforced in code</span>
+    max_images_per_chapter: int = 3          <span class="c"># capped-mode default</span>
+    ai_decides_image_count: bool = <span class="k">False</span> <span class="c"># no numeric chapter cap when true</span>
     model: str = <span class="s">"gpt-image-2"</span>
     size: str = <span class="s">"1536x864"</span>
     quality: str = <span class="s">"medium"</span>
@@ -690,7 +691,7 @@ html_stale = html_stale <span class="k">or not</span> image_state_current <span 
     <tbody>
       <tr><td><code>ImageGenerationConfig.enabled</code></td><td>Persisted experiment opt-in</td><td><code>False</code></td><td class="wrapok">Master switch — nothing runs or spends without it.</td></tr>
       <tr><td><code>style.image_guidance.enabled</code></td><td>Presentation-design deliberation</td><td><code>False</code> (legacy files)</td><td class="wrapok">Pedagogical verdict — persisted course-wide, reused across resumes.</td></tr>
-      <tr><td>Effective cap</td><td><code>min(stored cap, style budget, invocation override)</code></td><td>3</td><td class="wrapok">Operator can only tighten the deliberation's budget, never loosen it.</td></tr>
+      <tr><td>Effective cap</td><td><code>None</code> in AI-decides mode; otherwise <code>min(stored cap, style budget, invocation override)</code></td><td>3</td><td class="wrapok">AI-decides mode keeps every strong eligible placement; capped mode preserves the strictest numeric budget.</td></tr>
     </tbody>
   </table>
   </div>
@@ -700,7 +701,7 @@ html_stale = html_stale <span class="k">or not</span> image_state_current <span 
 <section id="cost">
   <span class="sec-eyebrow">economics</span>
   <h2>Cost &amp; statistics</h2>
-  <p>Per enabled uncached chapter: <strong>2–4 LLM calls</strong> (two scouts, then synthesis and prompt writing only when needed) plus <strong>0–3 image generations</strong> at a conservative configured estimate of $0.06 each (gpt-image-2, 1536×864, medium). Each invocation appends timestamped incremental statistics; cache hits report zero new spend.</p>
+  <p>Per enabled uncached chapter: <strong>2–4 LLM calls</strong> (two scouts, then synthesis and prompt writing only when needed) plus image generations for the selected placements. Capped mode allows 0–3; AI-decides mode may select any number up to the eligible slide count. The configured estimate is $0.06 each (gpt-image-2, 1536×864, medium). Each invocation appends timestamped incremental statistics; cache hits report zero new spend.</p>
   <ul>
     <li><code>chapter_N/statistics_slide_images.json</code> — <code>attempted</code>, <code>generated</code>, <code>reused_from_cache</code>, <code>elapsed_time</code>, <code>token_usage</code>, <code>estimated_cost_usd</code>, <code>warnings</code>.</li>
     <li><code>chapter_N/frontend-slides-manifest.json</code> — new <code>"images"</code> sub-object for quick inspection.</li>

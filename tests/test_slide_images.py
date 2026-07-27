@@ -41,6 +41,7 @@ from src.html_slides_img import (
 from src.html_slides_style import (
     ASSET_VERSION,
     CourseSlideStyle,
+    FrontendSlidesError,
     ImageGuidance,
     PresentationMethod,
     RenderTheme,
@@ -53,7 +54,9 @@ from src.html_slides_style import (
 )
 
 
-def _style(*, images: bool = True, cap: int = 3) -> CourseSlideStyle:
+def _style(
+    *, images: bool = True, cap: int | None = 3
+) -> CourseSlideStyle:
     return CourseSlideStyle(
         schema_version=1,
         asset_version=ASSET_VERSION,
@@ -234,12 +237,45 @@ def test_missing_config_is_disabled_and_replace_persists_enablement(
         load_image_generation_config(tmp_path)
 
 
+def test_ai_decides_image_count_persists_without_a_numeric_cap(
+    tmp_path: Path,
+) -> None:
+    invocation = configured_for_invocation(
+        ImageGenerationConfig(),
+        enable=True,
+        ai_decides_image_count=True,
+    )
+    assert invocation.ai_decides_image_count is True
+    assert invocation.effective_operator_cap is None
+
+    path = write_image_generation_config(tmp_path, invocation)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["ai_decides_image_count"] is True
+    loaded = load_image_generation_config(tmp_path)
+    assert loaded.ai_decides_image_count is True
+    assert loaded.effective_operator_cap is None
+
+
 def test_legacy_style_normalizes_to_disabled_image_guidance() -> None:
     payload = asdict(_style(images=True))
     payload.pop("image_guidance")
     loaded = course_style_from_dict(payload)
     assert loaded.image_guidance.enabled is False
     assert loaded.image_guidance.max_images_per_chapter == 0
+
+
+def test_uncapped_style_guidance_requires_an_explicit_null_budget() -> None:
+    payload = asdict(_style(images=True))
+    payload["image_guidance"]["max_images_per_chapter"] = None
+    loaded = course_style_from_dict(payload)
+    assert loaded.image_guidance.max_images_per_chapter is None
+
+    del payload["image_guidance"]["max_images_per_chapter"]
+    with pytest.raises(
+        FrontendSlidesError,
+        match="max_images_per_chapter is required",
+    ):
+        course_style_from_dict(payload)
 
 
 def test_effective_cap_only_tightens() -> None:
@@ -249,6 +285,23 @@ def test_effective_cap_only_tightens() -> None:
         max_images_override=1,
     )
     assert effective_cap(config, _style(cap=2).image_guidance) == 1
+    assert (
+        effective_cap(
+            ImageGenerationConfig(
+                enabled=True,
+                ai_decides_image_count=True,
+            ),
+            _style(cap=1).image_guidance,
+        )
+        is None
+    )
+    assert (
+        effective_cap(
+            ImageGenerationConfig(enabled=True, max_images_per_chapter=2),
+            _style(cap=None).image_guidance,
+        )
+        == 2
+    )
 
 
 def test_placement_filter_excludes_title_and_technically_dominated_slides() -> None:
@@ -390,6 +443,45 @@ def test_generation_commits_provenance_and_normal_rerun_reuses_cache(
     assert second.generated == 1
     assert cached_images.calls == []
     assert choose_layout(second_deck.slides[1]) == "media"
+
+
+def test_ai_decides_mode_keeps_all_strong_eligible_placements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deck = _deck()
+    for index in range(4, 8):
+        deck.slides.append(
+            BeamerSlide(
+                index=index,
+                title=f"System relationship {index}",
+                elements=[
+                    ContentElement(
+                        kind="paragraph",
+                        text="Connected components exchange signals over time.",
+                    )
+                ],
+                raw_tex="",
+            )
+        )
+    placements = [_placement(index) for index in range(2, 8)]
+    _install_agent_responses(monkeypatch, placements)
+    images = _FakeImages([_png_b64() for _ in placements])
+    result = augment_deck_with_generated_images(
+        deck,
+        chapter_path=tmp_path,
+        style=_style(cap=1),
+        chapter={"title": "Systems", "description": "Introduction"},
+        llm=SimpleNamespace(client=SimpleNamespace(images=images)),
+        config=ImageGenerationConfig(
+            enabled=True,
+            ai_decides_image_count=True,
+        ),
+        source_sha256="source",
+        style_sha256="style",
+    )
+    assert result.generated == 6
+    assert result.slides == [2, 3, 4, 5, 6, 7]
+    assert len(images.calls) == 6
 
 
 def test_incomplete_replacement_retains_prior_set(
@@ -722,6 +814,17 @@ def test_local_cli_parses_image_flags_and_bounds() -> None:
     )
     assert args.replace_images is True
     assert args.max_images_per_chapter == 1
+    uncapped = build_parser().parse_args(
+        [
+            "chapter",
+            "--course-id",
+            "course",
+            "--number",
+            "2",
+            "--ai-decides-image-count",
+        ]
+    )
+    assert uncapped.ai_decides_image_count is True
     with pytest.raises(SystemExit):
         build_parser().parse_args(
             [
@@ -732,6 +835,19 @@ def test_local_cli_parses_image_flags_and_bounds() -> None:
                 "2",
                 "--max-images-per-chapter",
                 "4",
+            ]
+        )
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "chapter",
+                "--course-id",
+                "course",
+                "--number",
+                "2",
+                "--max-images-per-chapter",
+                "2",
+                "--ai-decides-image-count",
             ]
         )
 
@@ -750,8 +866,21 @@ def test_api_request_validates_image_fields() -> None:
     assert request.enable_image_generation is True
     assert request.replace_images is True
     assert request.max_images_per_chapter == 2
+    uncapped = CourseRequest(
+        course_name="Systems",
+        enable_image_generation=True,
+        ai_decides_image_count=True,
+    )
+    assert uncapped.ai_decides_image_count is True
+    assert uncapped.max_images_per_chapter is None
     with pytest.raises(ValidationError):
         CourseRequest(
             course_name="Systems",
             max_images_per_chapter=4,
+        )
+    with pytest.raises(ValidationError):
+        CourseRequest(
+            course_name="Systems",
+            max_images_per_chapter=2,
+            ai_decides_image_count=True,
         )

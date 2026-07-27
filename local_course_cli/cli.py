@@ -400,6 +400,12 @@ def run_foundation(args: argparse.Namespace) -> int:
             stored_images = replace(
                 stored_images,
                 max_images_per_chapter=max_images,
+                ai_decides_image_count=False,
+            ).validated()
+        elif bool(getattr(args, "ai_decides_image_count", False)):
+            stored_images = replace(
+                stored_images,
+                ai_decides_image_count=True,
             ).validated()
         image_config = configured_for_invocation(
             stored_images,
@@ -422,7 +428,13 @@ def run_foundation(args: argparse.Namespace) -> int:
     runner.setup()
     runner.run_foundation_deliberations()
     chapters = validate_foundation(output_dir)
-    if reselect or enable_images or replace_images or max_images is not None:
+    if (
+        reselect
+        or enable_images
+        or replace_images
+        or max_images is not None
+        or bool(getattr(args, "ai_decides_image_count", False))
+    ):
         refinalize_existing_chapters(output_dir, runner, force=True)
     assert_course_style_consistency(output_dir)
 
@@ -637,8 +649,17 @@ def run_chapter(args: argparse.Namespace) -> int:
             enable=enable_images,
             replace_images=replace_images,
             max_images_override=getattr(args, "max_images_per_chapter", None),
+            ai_decides_image_count=(
+                True
+                if bool(getattr(args, "ai_decides_image_count", False))
+                else None
+            ),
         )
-        if enable_images or replace_images:
+        if (
+            enable_images
+            or replace_images
+            or bool(getattr(args, "ai_decides_image_count", False))
+        ):
             write_image_generation_config(output_dir, image_config)
     except ValueError as exc:
         raise CliError(str(exc)) from exc
@@ -879,13 +900,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace images for all completed chapters; implies enablement.",
     )
-    foundation.add_argument(
+    foundation_image_count = foundation.add_mutually_exclusive_group()
+    foundation_image_count.add_argument(
         "--max-images-per-chapter",
         type=int,
         choices=range(0, 4),
         default=None,
         metavar="0-3",
         help="Persist the experiment default image cap.",
+    )
+    foundation_image_count.add_argument(
+        "--ai-decides-image-count",
+        action="store_true",
+        help=(
+            "Remove the numeric chapter cap and let the placement AI choose "
+            "every strong eligible image opportunity."
+        ),
     )
     foundation.set_defaults(handler=run_foundation)
 
@@ -918,13 +948,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace generated images for this chapter only; implies enablement.",
     )
-    chapter.add_argument(
+    chapter_image_count = chapter.add_mutually_exclusive_group()
+    chapter_image_count.add_argument(
         "--max-images-per-chapter",
         type=int,
         choices=range(0, 4),
         default=None,
         metavar="0-3",
         help="Tighten the image cap for this invocation without persisting it.",
+    )
+    chapter_image_count.add_argument(
+        "--ai-decides-image-count",
+        action="store_true",
+        help=(
+            "Remove the numeric cap for this and future chapters and let the "
+            "placement AI choose every strong eligible image opportunity."
+        ),
     )
     chapter.set_defaults(handler=run_chapter)
 

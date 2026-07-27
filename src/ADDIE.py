@@ -247,6 +247,9 @@ class ADDIERunner:
                 self.image_generation_config.enabled
                 or self.image_generation_config.replace_images
             ),
+            ai_decides_image_count=(
+                self.image_generation_config.ai_decides_image_count
+            ),
         )
         result_path = os.path.join(self.output_dir, PRESENTATION_DESIGN_FILENAME)
         with open(result_path, "r", encoding="utf-8") as result_file:

@@ -18,7 +18,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File, H
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional as Opt
 import uvicorn
 
@@ -74,6 +74,25 @@ class CourseRequest(BaseModel):
         le=3,
         description="Persistent experiment default image cap",
     )
+    ai_decides_image_count: bool = Field(
+        default=False,
+        description=(
+            "Remove the numeric per-chapter cap and let the placement AI choose "
+            "every strong eligible image opportunity"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_image_count_mode(self) -> "CourseRequest":
+        if (
+            self.ai_decides_image_count
+            and self.max_images_per_chapter is not None
+        ):
+            raise ValueError(
+                "ai_decides_image_count and max_images_per_chapter are "
+                "mutually exclusive"
+            )
+        return self
 
 class OptimizeRequest(BaseModel):
     storage_id: str = Field(..., description="ID of the stored PDF files")
@@ -822,6 +841,7 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
             enable_image_generation=request.enable_image_generation,
             replace_images=request.replace_images,
             max_images_per_chapter=request.max_images_per_chapter,
+            ai_decides_image_count=request.ai_decides_image_count,
         )
         
         # Generate PPTX if requested
