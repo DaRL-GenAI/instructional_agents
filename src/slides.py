@@ -510,6 +510,12 @@ class SlidesDeliberation:
                     f"{preflight.repaired_nested_math_environments} nested "
                     "display-math environment(s) before saving slides.tex"
                 )
+            if preflight.repaired_equation_commands:
+                print(
+                    "[preflight] Repaired "
+                    f"{preflight.repaired_equation_commands} malformed "
+                    "\\equation{...} command(s) before saving slides.tex"
+                )
         
         # Step 7: Compile final slides script
         slides_script_md = self._compile_slides_script(latex_source)

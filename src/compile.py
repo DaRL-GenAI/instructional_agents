@@ -203,6 +203,12 @@ class LaTeXCompiler:
                 f"{result.repaired_nested_math_environments} nested display-math "
                 "environment(s)"
             )
+        if result.repaired_equation_commands:
+            details.append(
+                "repaired "
+                f"{result.repaired_equation_commands} malformed "
+                "\\equation{...} command(s)"
+            )
         summary = "; ".join(details) or "source normalized"
         self.logger.warning(
             f"Repaired {cached_tex_file.name} before retry ({summary})"

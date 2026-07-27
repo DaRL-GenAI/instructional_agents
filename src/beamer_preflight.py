@@ -47,6 +47,9 @@ _EQUATION_INNER_ENVIRONMENTS = {
     "multline": "gathered",
     "multline*": "gathered",
 }
+_EQUATION_COMMAND_SHORTHAND = re.compile(
+    r"\\equation(?P<star>\*)?[ \t\r\n]*\{"
+)
 
 # Color-bearing commands whose mandatory argument is a color *name* unless an
 # optional [model] argument turns it into a raw spec such as [HTML]{FF0000}.
@@ -211,6 +214,7 @@ class BeamerPreflightResult:
     injected_color_definitions: tuple[str, ...] = ()
     inserted_list_closures: int = 0
     repaired_nested_math_environments: int = 0
+    repaired_equation_commands: int = 0
 
     @property
     def changed(self) -> bool:
@@ -219,6 +223,7 @@ class BeamerPreflightResult:
             or bool(self.injected_color_definitions)
             or self.inserted_list_closures > 0
             or self.repaired_nested_math_environments > 0
+            or self.repaired_equation_commands > 0
         )
 
 
@@ -237,7 +242,7 @@ def normalize_beamer_source(
 ) -> BeamerPreflightResult:
     """Repair safely recoverable defects in assembled Beamer source.
 
-    Four deterministic passes run in order:
+    Five deterministic passes run in order:
 
     1. Close an indented child list when an outdented sibling ``\\item`` shows
        that the generated source omitted the closing environment. A repair is
@@ -246,10 +251,14 @@ def normalize_beamer_source(
        nested ``\\item`` content is retained at the deepest supported level.
        Other malformed list structures are left unchanged so preflight never
        makes an invalid environment sequence harder to diagnose.
-    3. Replace top-level AMS display environments nested directly in
+    3. Replace malformed ``\\equation{...}`` command shorthand with a proper
+       ``equation`` environment. LaTeX exposes ``\\equation`` as the internal
+       environment-opening macro, so the shorthand otherwise leaves all
+       following content in math mode.
+    4. Replace top-level AMS display environments nested directly in
        ``equation`` with their inner-safe counterparts (for example,
        ``align*`` becomes ``aligned``).
-    4. Inject ``\\providecolor`` definitions before ``\\begin{document}`` for
+    5. Inject ``\\providecolor`` definitions before ``\\begin{document}`` for
        every referenced-but-undefined color name, so LLM-coined names such as
        ``electricblue`` can never abort pdflatex with "Undefined color".
        ``\\providecolor`` is a no-op for already-defined names, which makes
@@ -267,8 +276,11 @@ def normalize_beamer_source(
     normalized, removed_pairs, original_depth, normalized_depth = (
         _normalize_lists(structurally_repaired, max_list_depth)
     )
+    equation_repaired, repaired_equation_commands = (
+        _repair_equation_command_shorthand(normalized)
+    )
     math_repaired, repaired_math_environments = _repair_nested_display_math(
-        normalized
+        equation_repaired
     )
     repaired, injected = _ensure_color_definitions(math_repaired)
 
@@ -280,6 +292,7 @@ def normalize_beamer_source(
         injected_color_definitions=injected,
         inserted_list_closures=inserted_closures,
         repaired_nested_math_environments=repaired_math_environments,
+        repaired_equation_commands=repaired_equation_commands,
     )
 
 
@@ -397,6 +410,82 @@ def _repair_nested_display_math(source: str) -> tuple[str, int]:
     for start, end, replacement in reversed(replacements):
         repaired = repaired[:start] + replacement + repaired[end:]
     return repaired, repaired_pairs
+
+
+def _repair_equation_command_shorthand(source: str) -> tuple[str, int]:
+    """Replace generated ``\\equation{...}`` shorthand with an environment.
+
+    ``equation`` is a LaTeX environment, not a one-argument presentation
+    command. The raw ``\\equation`` macro enters math mode and expects a later
+    ``\\endequation``; treating its braced text as an argument therefore leaves
+    subsequent list items in math mode. Only balanced braced forms outside
+    comments and verbatim-style environments are rewritten.
+    """
+    protected_spans = _protected_spans(source)
+    replacements: list[tuple[int, int, str]] = []
+    cursor = 0
+
+    while match := _EQUATION_COMMAND_SHORTHAND.search(source, cursor):
+        if _is_commented(source, match.start()) or _in_spans(
+            match.start(), protected_spans
+        ):
+            cursor = match.end()
+            continue
+
+        opening_brace = match.end() - 1
+        closing_brace = _matching_group_end(source, opening_brace)
+        if closing_brace is None:
+            return source, 0
+
+        environment = "equation*" if match.group("star") else "equation"
+        body = source[opening_brace + 1 : closing_brace]
+        replacements.append(
+            (
+                match.start(),
+                closing_brace + 1,
+                f"\\begin{{{environment}}}{body}\\end{{{environment}}}",
+            )
+        )
+        cursor = closing_brace + 1
+
+    if not replacements:
+        return source, 0
+
+    repaired = source
+    for start, end, replacement in reversed(replacements):
+        repaired = repaired[:start] + replacement + repaired[end:]
+    return repaired, len(replacements)
+
+
+def _matching_group_end(source: str, opening_brace: int) -> int | None:
+    """Return the matching ``}`` while respecting escapes and comments."""
+    depth = 0
+    cursor = opening_brace
+    while cursor < len(source):
+        character = source[cursor]
+        if character == "%" and not _character_is_escaped(source, cursor):
+            newline = source.find("\n", cursor + 1)
+            if newline < 0:
+                return None
+            cursor = newline + 1
+            continue
+        if character in "{}" and not _character_is_escaped(source, cursor):
+            depth += 1 if character == "{" else -1
+            if depth == 0:
+                return cursor
+            if depth < 0:
+                return None
+        cursor += 1
+    return None
+
+
+def _character_is_escaped(source: str, position: int) -> bool:
+    backslashes = 0
+    cursor = position - 1
+    while cursor >= 0 and source[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1
 
 
 def _repair_unclosed_lists_before_items(source: str) -> tuple[str, int]:

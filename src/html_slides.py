@@ -3121,6 +3121,12 @@ def finalize_chapter(
             f"{preflight.repaired_nested_math_environments} nested display-math "
             "environment(s)."
         )
+    if preflight.repaired_equation_commands:
+        print(
+            "[preflight] Repaired slides.tex by replacing "
+            f"{preflight.repaired_equation_commands} malformed "
+            "\\equation{...} command(s)."
+        )
     style = load_course_slide_style(course_path)
     image_config_warnings: list[str] = []
     if image_config is None:
@@ -3395,6 +3401,12 @@ def finalize_chapter(
             "LaTeX preflight normalized "
             f"{preflight.repaired_nested_math_environments} nested display-math "
             "environment(s)."
+        )
+    if preflight.repaired_equation_commands:
+        warnings.append(
+            "LaTeX preflight replaced "
+            f"{preflight.repaired_equation_commands} malformed "
+            "\\equation{...} command(s)."
         )
     if deck.unsupported_environments:
         warnings.append(

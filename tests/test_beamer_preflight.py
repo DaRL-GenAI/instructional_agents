@@ -297,6 +297,52 @@ def test_malformed_nested_math_structure_is_not_rewritten() -> None:
     assert result.source == source
 
 
+def test_repairs_equation_command_shorthand_with_nested_groups() -> None:
+    source = _document(
+        "\\begin{frame}\n"
+        "\\begin{itemize}\n"
+        "  \\item Population dynamics:\n"
+        "    \\equation{\\frac{dP}{dt} = rP\\left(1 - \\frac{P}{K}\\right)}\n"
+        "  \\item RC circuit analysis\n"
+        "\\end{itemize}\n"
+        "\\end{frame}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.repaired_equation_commands == 1
+    assert r"\equation{" not in result.source
+    assert (
+        r"\begin{equation}\frac{dP}{dt} = "
+        r"rP\left(1 - \frac{P}{K}\right)\end{equation}"
+    ) in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_equation_command_shorthand_in_comments_and_listings_is_ignored() -> None:
+    source = _document(
+        "% \\equation{x = 1}\n"
+        "\\begin{lstlisting}\n"
+        "\\equation{y = 2}\n"
+        "\\end{lstlisting}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+def test_unbalanced_equation_command_shorthand_is_not_rewritten() -> None:
+    source = _document(r"\equation{\frac{dP}{dt}")
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
 _PDFLATEX = shutil.which("pdflatex")
 
 
@@ -338,6 +384,36 @@ def test_repaired_nested_display_math_compiles_with_pdflatex(
         "y(t) &= g(t)\n"
         "\\end{align*}\n"
         "\\end{equation}\n"
+        "\\end{frame}"
+    )
+    tex_path = tmp_path / "slides.tex"
+    tex_path.write_text(normalize_beamer_source(source).source, encoding="utf-8")
+
+    completed = subprocess.run(
+        [_PDFLATEX, "-interaction=nonstopmode", "-halt-on-error", tex_path.name],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    pdf_path = tmp_path / "slides.pdf"
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    assert pdf_path.is_file() and pdf_path.stat().st_size > 0
+
+
+@pytest.mark.latex
+@pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
+def test_repaired_equation_command_shorthand_compiles_with_pdflatex(
+    tmp_path: Path,
+) -> None:
+    source = _document(
+        "\\begin{frame}[fragile]\n"
+        "\\begin{itemize}\n"
+        "  \\item Population dynamics:\n"
+        "    \\equation{\\frac{dP}{dt} = rP\\left(1 - \\frac{P}{K}\\right)}\n"
+        "  \\item RC circuit analysis\n"
+        "\\end{itemize}\n"
         "\\end{frame}"
     )
     tex_path = tmp_path / "slides.tex"
