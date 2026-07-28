@@ -516,6 +516,24 @@ class SlidesDeliberation:
                     f"{preflight.repaired_equation_commands} malformed "
                     "\\equation{...} command(s) before saving slides.tex"
                 )
+            if preflight.escaped_prose_ampersands:
+                print(
+                    "[preflight] Escaped "
+                    f"{preflight.escaped_prose_ampersands} prose ampersand(s) "
+                    "before saving slides.tex"
+                )
+            if preflight.repaired_item_comparisons:
+                print(
+                    "[preflight] Protected "
+                    f"{preflight.repaired_item_comparisons} item-leading "
+                    "comparison(s) before saving slides.tex"
+                )
+            if preflight.repaired_big_o_expressions:
+                print(
+                    "[preflight] Wrapped "
+                    f"{preflight.repaired_big_o_expressions} big-O "
+                    "expression(s) in math mode before saving slides.tex"
+                )
         
         # Step 7: Compile final slides script
         slides_script_md = self._compile_slides_script(latex_source)

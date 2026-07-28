@@ -209,6 +209,23 @@ class LaTeXCompiler:
                 f"{result.repaired_equation_commands} malformed "
                 "\\equation{...} command(s)"
             )
+        if result.escaped_prose_ampersands:
+            details.append(
+                "escaped "
+                f"{result.escaped_prose_ampersands} prose ampersand(s)"
+            )
+        if result.repaired_item_comparisons:
+            details.append(
+                "protected "
+                f"{result.repaired_item_comparisons} item-leading "
+                "comparison(s)"
+            )
+        if result.repaired_big_o_expressions:
+            details.append(
+                "wrapped "
+                f"{result.repaired_big_o_expressions} big-O expression(s) "
+                "in math mode"
+            )
         summary = "; ".join(details) or "source normalized"
         self.logger.warning(
             f"Repaired {cached_tex_file.name} before retry ({summary})"

@@ -104,6 +104,88 @@ def test_closes_indented_child_list_before_outdented_sibling_item() -> None:
     assert not normalize_beamer_source(result.source).changed
 
 
+def test_closes_every_open_list_before_frame_end() -> None:
+    source = _document(
+        r"""
+\begin{frame}{Challenges}
+\begin{itemize}
+  \item Challenges
+  \begin{itemize}
+    \item Multicollinearity
+  \end{itemize}
+\end{frame}
+"""
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.inserted_list_closures == 1
+    assert (
+        "\\end{itemize}\n"
+        "\\end{frame}"
+    ) in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_protects_item_leading_comparison_without_changing_overlays() -> None:
+    source = _document(
+        r"""
+\begin{frame}{AUC}
+\begin{itemize}
+  \item < 0.5: Worse than random
+  \item<2-> 0.5: Random
+  % \item < commented comparison
+\begin{verbatim}
+\item < verbatim comparison
+\end{verbatim}
+\end{itemize}
+\end{frame}
+"""
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.repaired_item_comparisons == 1
+    assert r"\item \(<\) 0.5: Worse than random" in result.source
+    assert r"\item<2-> 0.5: Random" in result.source
+    assert r"% \item < commented comparison" in result.source
+    assert r"\item < verbatim comparison" in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_wraps_math_only_big_o_notation_without_touching_existing_math() -> None:
+    source = _document(
+        r"""
+\begin{frame}[fragile]{Complexity}
+\begin{itemize}
+  \item K-means: O(n \cdot k \cdot i)
+  \item Hierarchical: O(n^2)
+  \item Linear: O(n)
+  \item Existing: \(O(n^3)\), $O(n^4)$
+  % Commented: O(n^5)
+\begin{verbatim}
+O(n^6)
+\end{verbatim}
+\end{itemize}
+\end{frame}
+"""
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.repaired_big_o_expressions == 2
+    assert r"K-means: \(O(n \cdot k \cdot i)\)" in result.source
+    assert r"Hierarchical: \(O(n^2)\)" in result.source
+    assert r"Linear: O(n)" in result.source
+    assert r"Existing: \(O(n^3)\), $O(n^4)$" in result.source
+    assert r"% Commented: O(n^5)" in result.source
+    assert "O(n^6)" in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
 def test_normalize_beamer_file_writes_repaired_source_atomically(
     tmp_path: Path,
 ) -> None:
@@ -120,6 +202,41 @@ def test_normalize_beamer_file_writes_repaired_source_atomically(
     assert result.changed
     assert path.read_text(encoding="utf-8") == result.source
     assert not path.with_suffix(".tex.preflight.tmp").exists()
+
+
+def test_escapes_prose_ampersands_without_changing_alignment_or_literals() -> None:
+    source = _document(
+        r"""
+\begin{frame}[fragile]{Correlations}
+\begin{itemize}
+  \item Height & Weight is strongly correlated.
+  \item Research \& Development is already escaped.
+\end{itemize}
+\begin{tabular}{cc}
+Height & Weight \\
+1.00 & 0.70
+\end{tabular}
+\url{https://example.test/?left=height&right=weight}
+% Height & Weight in a comment
+\begin{verbatim}
+Height & Weight in verbatim
+\end{verbatim}
+\end{frame}
+"""
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.escaped_prose_ampersands == 1
+    assert r"\item Height \& Weight is strongly correlated." in result.source
+    assert r"\item Research \& Development is already escaped." in result.source
+    assert "Height & Weight \\\\" in result.source
+    assert "1.00 & 0.70" in result.source
+    assert "left=height&right=weight" in result.source
+    assert "% Height & Weight in a comment" in result.source
+    assert "Height & Weight in verbatim" in result.source
+    assert not normalize_beamer_source(result.source).changed
 
 
 def test_injects_providecolor_for_undefined_named_color() -> None:

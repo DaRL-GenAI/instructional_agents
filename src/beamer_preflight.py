@@ -25,6 +25,16 @@ _LINE_ENV_TOKEN = re.compile(
     r"\}(?P<option>[ \t]*\[[^\]\r\n]*\])?"
 )
 _LINE_ITEM = re.compile(r"\\item(?:\s|\[|$)")
+_LINE_FRAME_END = re.compile(r"\\end\{frame\}(?:\s|$)")
+_ITEM_LEADING_LESS_THAN = re.compile(
+    r"\\item(?P<space>[ \t]+)<(?=[ \t])"
+)
+_BIG_O_NOTATION = re.compile(
+    r"(?<![A-Za-z])O\((?P<body>[^()\r\n]*)\)"
+)
+_MATH_ONLY_BIG_O_CONTENT = re.compile(
+    r"(?<!\\)[_^]|\\[A-Za-z]+"
+)
 
 # Top-level AMS display environments are not legal inside ``equation``. LLMs
 # commonly wrap ``align*`` in ``equation`` when asked for a multi-line formula;
@@ -49,6 +59,17 @@ _EQUATION_INNER_ENVIRONMENTS = {
 }
 _EQUATION_COMMAND_SHORTHAND = re.compile(
     r"\\equation(?P<star>\*)?[ \t\r\n]*\{"
+)
+_AMPERSAND_STRUCTURAL_ENV_TOKEN = re.compile(
+    r"\\(?P<action>begin|end)\{"
+    r"(?P<environment>"
+    r"(?:tabular|tabularx|array|matrix|pmatrix|bmatrix|Bmatrix|"
+    r"vmatrix|Vmatrix|smallmatrix|align|aligned|alignedat|alignat|"
+    r"flalign|eqnarray|cases|split|IEEEeqnarray|tikzpicture)\*?"
+    r")\}"
+)
+_LITERAL_TEXT_COMMAND = re.compile(
+    r"\\(?:url|path|nolinkurl|href)\s*\{"
 )
 
 # Color-bearing commands whose mandatory argument is a color *name* unless an
@@ -215,6 +236,9 @@ class BeamerPreflightResult:
     inserted_list_closures: int = 0
     repaired_nested_math_environments: int = 0
     repaired_equation_commands: int = 0
+    escaped_prose_ampersands: int = 0
+    repaired_item_comparisons: int = 0
+    repaired_big_o_expressions: int = 0
 
     @property
     def changed(self) -> bool:
@@ -224,6 +248,9 @@ class BeamerPreflightResult:
             or self.inserted_list_closures > 0
             or self.repaired_nested_math_environments > 0
             or self.repaired_equation_commands > 0
+            or self.escaped_prose_ampersands > 0
+            or self.repaired_item_comparisons > 0
+            or self.repaired_big_o_expressions > 0
         )
 
 
@@ -242,11 +269,12 @@ def normalize_beamer_source(
 ) -> BeamerPreflightResult:
     """Repair safely recoverable defects in assembled Beamer source.
 
-    Five deterministic passes run in order:
+    Eight deterministic passes run in order:
 
-    1. Close an indented child list when an outdented sibling ``\\item`` shows
-       that the generated source omitted the closing environment. A repair is
-       accepted only when it makes the complete list structure balanced.
+    1. Close an indented child list when an outdented sibling ``\\item`` or
+       ``\\end{frame}`` shows that the generated source omitted the closing
+       environment. A repair is accepted only when it makes the complete list
+       structure balanced.
     2. Flatten list wrappers beyond Beamer's supported nesting depth. The
        nested ``\\item`` content is retained at the deepest supported level.
        Other malformed list structures are left unchanged so preflight never
@@ -258,7 +286,14 @@ def normalize_beamer_source(
     4. Replace top-level AMS display environments nested directly in
        ``equation`` with their inner-safe counterparts (for example,
        ``align*`` becomes ``aligned``).
-    5. Inject ``\\providecolor`` definitions before ``\\begin{document}`` for
+    5. Protect a whitespace-separated less-than comparison immediately after
+       ``\\item`` from Beamer's ``\\item<overlay>`` parser.
+    6. Put generated big-O expressions containing math-only syntax, such as
+       ``O(n^2)`` or ``O(n \\cdot k)``, into inline math mode.
+    7. Escape literal prose ampersands outside alignment environments,
+       comments, verbatim regions, and URL-like command arguments. Structural
+       ampersands in ``tabular``, ``align``, matrices, and TikZ are preserved.
+    8. Inject ``\\providecolor`` definitions before ``\\begin{document}`` for
        every referenced-but-undefined color name, so LLM-coined names such as
        ``electricblue`` can never abort pdflatex with "Undefined color".
        ``\\providecolor`` is a no-op for already-defined names, which makes
@@ -282,7 +317,16 @@ def normalize_beamer_source(
     math_repaired, repaired_math_environments = _repair_nested_display_math(
         equation_repaired
     )
-    repaired, injected = _ensure_color_definitions(math_repaired)
+    item_repaired, repaired_item_comparisons = (
+        _repair_item_leading_comparisons(math_repaired)
+    )
+    big_o_repaired, repaired_big_o_expressions = (
+        _repair_big_o_expressions(item_repaired)
+    )
+    ampersand_repaired, escaped_ampersands = _escape_prose_ampersands(
+        big_o_repaired
+    )
+    repaired, injected = _ensure_color_definitions(ampersand_repaired)
 
     return BeamerPreflightResult(
         source=repaired,
@@ -293,6 +337,9 @@ def normalize_beamer_source(
         inserted_list_closures=inserted_closures,
         repaired_nested_math_environments=repaired_math_environments,
         repaired_equation_commands=repaired_equation_commands,
+        escaped_prose_ampersands=escaped_ampersands,
+        repaired_item_comparisons=repaired_item_comparisons,
+        repaired_big_o_expressions=repaired_big_o_expressions,
     )
 
 
@@ -489,13 +536,14 @@ def _character_is_escaped(source: str, position: int) -> bool:
 
 
 def _repair_unclosed_lists_before_items(source: str) -> tuple[str, int]:
-    """Close indented child lists before an outdented sibling ``\\item``.
+    """Close generated lists before an outdented item or frame boundary.
 
     Generated LaTeX sometimes starts a nested ``itemize`` for one top-level
     item and omits its closing tag before the next sibling item. Indentation
     identifies the intended parent without guessing when formatting is flat.
-    The candidate rewrite is accepted only when every list environment is
-    balanced afterward.
+    Any list still open at ``\\end{frame}`` is necessarily malformed and can be
+    closed without ambiguity. The candidate rewrite is accepted only when
+    every list environment is balanced afterward.
     """
     output: list[str] = []
     stack: list[tuple[str, int, str]] = []
@@ -524,6 +572,17 @@ def _repair_unclosed_lists_before_items(source: str) -> tuple[str, int]:
                 protected_stack.append(token.group("environment"))
             output.append(line)
             continue
+
+        if (
+            not stripped.startswith("%")
+            and _LINE_FRAME_END.match(stripped)
+            and stack
+        ):
+            newline = "\r\n" if line.endswith("\r\n") else "\n"
+            for environment, _width, begin_indent in reversed(stack):
+                output.append(f"{begin_indent}\\end{{{environment}}}{newline}")
+                inserted += 1
+            stack.clear()
 
         if not stripped.startswith("%") and _LINE_ITEM.match(stripped) and stack:
             parent_index = next(
@@ -569,6 +628,179 @@ def _list_structure_is_balanced(source: str) -> bool:
         elif not stack or stack.pop() != token.environment:
             return False
     return not stack
+
+
+def _repair_item_leading_comparisons(source: str) -> tuple[str, int]:
+    """Prevent prose ``\\item < value`` from starting a Beamer overlay spec.
+
+    Legitimate overlays use ``\\item<2->`` without intervening whitespace and
+    therefore do not match this deliberately narrow repair.
+    """
+    protected_spans = _protected_spans(source)
+    replacements: list[tuple[int, int, str]] = []
+    for match in _ITEM_LEADING_LESS_THAN.finditer(source):
+        less_than = match.end() - 1
+        if _is_commented(source, match.start()) or _in_spans(
+            match.start(), protected_spans
+        ):
+            continue
+        replacements.append(
+            (
+                less_than,
+                less_than + 1,
+                r"\(<\)",
+            )
+        )
+
+    if not replacements:
+        return source, 0
+
+    repaired = source
+    for start, end, replacement in reversed(replacements):
+        repaired = repaired[:start] + replacement + repaired[end:]
+    return repaired, len(replacements)
+
+
+def _repair_big_o_expressions(source: str) -> tuple[str, int]:
+    """Wrap prose big-O notation that contains math-only TeX syntax.
+
+    The generated form must contain a command, superscript, or subscript, and
+    must be outside comments, verbatim-style regions, and existing math mode.
+    This keeps ordinary prose such as ``O(n)`` and valid ``$O(n^2)$`` intact.
+    """
+    protected_spans = _protected_spans(source)
+    replacements: list[tuple[int, int, str]] = []
+    for match in _BIG_O_NOTATION.finditer(source):
+        if (
+            not _MATH_ONLY_BIG_O_CONTENT.search(match.group("body"))
+            or _is_commented(source, match.start())
+            or _in_spans(match.start(), protected_spans)
+            or _position_is_in_math(source, match.start(), protected_spans)
+        ):
+            continue
+        replacements.append(
+            (match.start(), match.end(), rf"\({match.group(0)}\)")
+        )
+
+    if not replacements:
+        return source, 0
+
+    repaired = source
+    for start, end, replacement in reversed(replacements):
+        repaired = repaired[:start] + replacement + repaired[end:]
+    return repaired, len(replacements)
+
+
+def _position_is_in_math(
+    source: str,
+    position: int,
+    protected_spans: list[tuple[int, int]],
+) -> bool:
+    """Return whether ``position`` is inside common inline/display math."""
+    display_stack: list[str] = []
+    for token in _DISPLAY_MATH_ENV_TOKEN.finditer(source, 0, position):
+        if _is_commented(source, token.start()) or _in_spans(
+            token.start(), protected_spans
+        ):
+            continue
+        environment = token.group("environment")
+        if token.group("action") == "begin":
+            display_stack.append(environment)
+        elif display_stack and display_stack[-1] == environment:
+            display_stack.pop()
+    if display_stack:
+        return True
+
+    line_start = source.rfind("\n", 0, position) + 1
+    prefix = source[line_start:position]
+    dollar_math = False
+    delimiter_math = False
+    cursor = 0
+    while cursor < len(prefix):
+        if prefix[cursor] == "\\":
+            delimiter = prefix[cursor : cursor + 2]
+            if delimiter in {r"\(", r"\["}:
+                delimiter_math = True
+                cursor += 2
+                continue
+            if delimiter in {r"\)", r"\]"}:
+                delimiter_math = False
+                cursor += 2
+                continue
+            cursor += 2
+            continue
+        if prefix[cursor] == "$":
+            dollar_math = not dollar_math
+        cursor += 1
+    return dollar_math or delimiter_math
+
+
+def _escape_prose_ampersands(source: str) -> tuple[str, int]:
+    """Escape literal ``&`` characters that LaTeX would parse as alignment tabs.
+
+    Alignment environments, verbatim-style regions, comments, and URL-like
+    command arguments retain their original ampersands. Restricting the pass to
+    the document body also avoids rewriting macro definitions in the preamble.
+    """
+    document_start = _document_begin_index(source)
+    if document_start is None:
+        return source, 0
+
+    preserved_spans = _protected_spans(source)
+    preserved_spans.extend(_ampersand_structural_spans(source))
+    preserved_spans.extend(_literal_text_command_spans(source))
+    replacements: list[int] = []
+    for position in range(document_start, len(source)):
+        if source[position] != "&":
+            continue
+        if (
+            _character_is_escaped(source, position)
+            or _is_commented(source, position)
+            or _in_spans(position, preserved_spans)
+        ):
+            continue
+        replacements.append(position)
+
+    if not replacements:
+        return source, 0
+
+    repaired = source
+    for position in reversed(replacements):
+        repaired = repaired[:position] + "\\" + repaired[position:]
+    return repaired, len(replacements)
+
+
+def _ampersand_structural_spans(source: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    stack: list[tuple[str, int]] = []
+    for match in _AMPERSAND_STRUCTURAL_ENV_TOKEN.finditer(source):
+        if _is_commented(source, match.start()):
+            continue
+        environment = match.group("environment")
+        if match.group("action") == "begin":
+            stack.append((environment, match.start()))
+            continue
+        if not stack or stack[-1][0] != environment:
+            spans.extend(
+                (start, len(source)) for _environment, start in stack
+            )
+            return spans
+        _, start = stack.pop()
+        spans.append((start, match.end()))
+    spans.extend((start, len(source)) for _environment, start in stack)
+    return spans
+
+
+def _literal_text_command_spans(source: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for match in _LITERAL_TEXT_COMMAND.finditer(source):
+        if _is_commented(source, match.start()):
+            continue
+        opening_brace = match.end() - 1
+        closing_brace = _matching_group_end(source, opening_brace)
+        if closing_brace is not None:
+            spans.append((opening_brace, closing_brace + 1))
+    return spans
 
 
 def _ensure_color_definitions(source: str) -> tuple[str, tuple[str, ...]]:

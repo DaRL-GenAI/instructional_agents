@@ -3128,6 +3128,23 @@ def finalize_chapter(
             f"{preflight.repaired_equation_commands} malformed "
             "\\equation{...} command(s)."
         )
+    if preflight.escaped_prose_ampersands:
+        print(
+            "[preflight] Repaired slides.tex by escaping "
+            f"{preflight.escaped_prose_ampersands} prose ampersand(s)."
+        )
+    if preflight.repaired_item_comparisons:
+        print(
+            "[preflight] Repaired slides.tex by protecting "
+            f"{preflight.repaired_item_comparisons} item-leading "
+            "comparison(s)."
+        )
+    if preflight.repaired_big_o_expressions:
+        print(
+            "[preflight] Repaired slides.tex by wrapping "
+            f"{preflight.repaired_big_o_expressions} big-O expression(s) "
+            "in math mode."
+        )
     style = load_course_slide_style(course_path)
     image_config_warnings: list[str] = []
     if image_config is None:
