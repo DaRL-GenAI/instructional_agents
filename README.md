@@ -453,6 +453,9 @@ python run.py "Educational Psychology" --copilot --catalog edu_psy
 
 # Enable images with no numeric per-chapter cap
 python run.py "Systems Thinking" --enable-image-generation --ai-decides-image-count
+
+# Opt in to Carbon-rendered code images
+python run.py "Programming Languages" --enable-code-images
 ```
 
 **Minimal Working Example** (generates a small 3-week course in ~5 min):
@@ -483,6 +486,8 @@ Options:
   --ai-decides-image-count
                            Remove the numeric chapter cap and let the placement AI
                            choose all strong eligible image opportunities
+  --enable-code-images     Persist opt-in to Carbon code images
+  --disable-code-images    Persist styled HTML code blocks instead
   --optimize STORAGE_ID    Optimize mode: provide storage_id of uploaded PDFs
   --requirements TEXT      User requirements for optimization (with --optimize)
   --chapter NAME           Specific chapter to optimize (with --optimize)
@@ -497,6 +502,20 @@ Generated images appear only in the HTML, HTML-derived PDF, and HTML-derived
 PPTX; the Beamer source and PDF are unchanged. See
 [`docs/image-generation-implementation-spec.html`](docs/image-generation-implementation-spec.html)
 for cache, replacement, and local-course CLI behavior.
+
+Carbon code images are also off by default. `--enable-code-images` persists the
+choice in `course_code_images.json` and applies it to every chapter. The first
+enabled chapter that actually contains a `lstlisting` or `verbatim` block uses
+an existing `carbon-now` executable or runs
+`npm install --global carbon-now-cli@2.1.0`. This is an explicit global npm
+installation; Node.js and npm must already be installed and are never installed
+automatically. Missing prerequisites, installation failures, network failures,
+timeouts, or invalid Carbon output produce warnings and retain the styled
+editable `<pre>` block. Successful PNGs are cached by content, language, theme,
+pipeline, and Carbon version, then embedded directly in the self-contained
+HTML. They therefore appear in the HTML-derived PDF and PPTX, while
+`slides.tex` and the Beamer PDF remain unchanged. Use
+`--disable-code-images` to persistently return the course to `<pre>` rendering.
 
 ### Method 3: Direct API Calls
 

@@ -21,6 +21,13 @@ from pylatexenc.latex2text import LatexNodes2Text
 
 from src.beamer_preflight import normalize_beamer_file
 from src.compile import LaTeXCompiler
+from src.html_slides_code import (
+    CodeImageConfig,
+    attach_code_images,
+    code_image_request_fingerprint,
+    detect_carbon_version,
+    load_code_image_config,
+)
 from src.html_slides_img import (
     IMAGE_PIPELINE_VERSION,
     ChapterImageResult,
@@ -53,6 +60,7 @@ from src.html_slides_style import (
 
 __all__ = [
     "ChapterFrontendResult",
+    "CodeImageConfig",
     "CourseSlideStyle",
     "FrontendSlidesError",
     "ensure_course_slide_style",
@@ -2514,6 +2522,24 @@ def theme_for_candidate(candidate: StyleCandidate) -> dict[str, str]:
     return base
 
 
+def carbon_theme_for_course_style(style: CourseSlideStyle) -> dict[str, str]:
+    """Return the final course theme with Carbon settings from its selected style."""
+    selected = style.selected_style
+    reference = theme_for_candidate(
+        StyleCandidate(
+            id=selected.key,
+            name=selected.name,
+            source=selected.source,
+            preset_name=selected.key if selected.source == "preset" else None,
+            slug=selected.key if selected.source == "bold_template" else None,
+        )
+    )
+    theme = renderer_theme(style)
+    theme["carbon_theme"] = reference["carbon_theme"]
+    theme["carbon_background"] = reference["carbon_background"]
+    return theme
+
+
 def _font_links(theme: dict[str, str]) -> str:
     return (
         '<link rel="preconnect" href="https://fonts.googleapis.com">\n'
@@ -3065,10 +3091,10 @@ _WAIT_FOR_PAINT_JS = """
 MANIFEST_FILENAME = "frontend-slides-manifest.json"
 
 
-MANIFEST_SCHEMA_VERSION = 3
+MANIFEST_SCHEMA_VERSION = 4
 
 
-FRONTEND_RENDERER_VERSION = "frontend-slides-2026-07-23-media-dense-v2"
+FRONTEND_RENDERER_VERSION = "frontend-slides-2026-07-28-carbon-code-images-v1"
 
 
 LEGACY_SPLIT_REPORT_FILENAME = "slide-splits.json"
@@ -3081,6 +3107,7 @@ def finalize_chapter(
     llm: Any | None = None,
     chapter: dict[str, str] | None = None,
     image_config: ImageGenerationConfig | None = None,
+    code_image_config: CodeImageConfig | None = None,
 ) -> ChapterFrontendResult:
     """Compile LaTeX and deterministically create resumable offline frontend artifacts."""
     course_path = Path(course_dir)
@@ -3156,6 +3183,16 @@ def finalize_chapter(
                 f"Invalid image-generation configuration was treated as disabled: {exc}"
             )
     image_config = image_config.validated()
+    code_image_config_warnings: list[str] = []
+    if code_image_config is None:
+        try:
+            code_image_config = load_code_image_config(course_path)
+        except ValueError as exc:
+            code_image_config = CodeImageConfig()
+            code_image_config_warnings.append(
+                f"Invalid code-image configuration was treated as disabled: {exc}"
+            )
+    code_image_config = code_image_config.validated()
     style_path = course_path / STYLE_FILENAME
     source_hash = sha256_file(tex_path)
     initial_script_hash = sha256_file(script_path)
@@ -3176,6 +3213,40 @@ def finalize_chapter(
         and script_matches
         and style_matches
     )
+    code_image_fingerprint = code_image_request_fingerprint(
+        source_sha256=source_hash,
+        style_sha256=style_hash,
+        config=code_image_config,
+    )
+    raw_previous_code_image_state = previous.get("code_images")
+    previous_code_image_state = (
+        raw_previous_code_image_state
+        if isinstance(raw_previous_code_image_state, dict)
+        else {}
+    )
+    if not code_image_config.enabled and raw_previous_code_image_state is None:
+        code_image_state_current = True
+    else:
+        code_image_state_current = (
+            previous_code_image_state.get("request_fingerprint")
+            == code_image_fingerprint
+            and previous_code_image_state.get("enabled")
+            == code_image_config.enabled
+            and previous_code_image_state.get("complete") is True
+        )
+    if (
+        code_image_state_current
+        and code_image_config.enabled
+        and previous_code_image_state.get("code_blocks", 0) > 0
+    ):
+        installed_carbon_version = detect_carbon_version()
+        previous_carbon_version = previous_code_image_state.get("carbon_version")
+        if (
+            installed_carbon_version is not None
+            and previous_carbon_version not in {None, "unknown"}
+            and installed_carbon_version != previous_carbon_version
+        ):
+            code_image_state_current = False
     image_fingerprint = image_request_fingerprint(
         source_sha256=source_hash,
         style_sha256=style_hash,
@@ -3226,7 +3297,13 @@ def finalize_chapter(
             manifest_path,
         )
     )
-    if inputs_match and runtime_ok and complete and image_state_current:
+    if (
+        inputs_match
+        and runtime_ok
+        and complete
+        and image_state_current
+        and code_image_state_current
+    ):
         cached_run = ChapterImageResult(
             generated=int(previous_generated),
             reused_from_cache=bool(wants_images),
@@ -3269,6 +3346,14 @@ def finalize_chapter(
     speaker_notes = correlate_speaker_notes(
         deck, script_path.read_text(encoding="utf-8")
     )
+    code_image_result = attach_code_images(
+        deck,
+        carbon_theme_for_course_style(style),
+        course_path / ".cache" / "carbon-now",
+        config=code_image_config,
+        request_fingerprint=code_image_fingerprint,
+    )
+    code_image_result.warnings[:0] = code_image_config_warnings
     image_result = augment_deck_with_generated_images(
         deck,
         chapter_path=chapter_path,
@@ -3286,6 +3371,7 @@ def finalize_chapter(
         or not _nonempty(html_path)
         or not runtime_ok
         or not image_state_current
+        or not code_image_state_current
         or image_config.replace_images
     )
     staged_html_path: Path | None = None
@@ -3432,6 +3518,7 @@ def finalize_chapter(
             + ", ".join(deck.unsupported_environments)
         )
     warnings.extend(image_result.warnings)
+    warnings.extend(code_image_result.warnings)
     current_images = [record.manifest_dict() for record in image_result.images]
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -3447,6 +3534,7 @@ def finalize_chapter(
         "runtime": "html/assets",
         "warnings": warnings,
         "speaker_notes": notes_manifest(speaker_notes),
+        "code_images": code_image_result.manifest_dict(),
         "images": {
             "pipeline_version": IMAGE_PIPELINE_VERSION,
             "enabled": image_config.enabled,

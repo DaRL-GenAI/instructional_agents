@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from local_course_cli import cli
+from src.html_slides import MANIFEST_SCHEMA_VERSION
 from src.html_slides_style import (
     CourseSlideStyle,
     PresentationMethod,
@@ -180,7 +181,7 @@ class FakeRunner:
                 artifact.write_text(
                     json.dumps(
                         {
-                            "schema_version": 3,
+                            "schema_version": MANIFEST_SCHEMA_VERSION,
                             "source_sha256": sha256_file(target / "slides.tex"),
                             "script_sha256": sha256_file(target / "script.md"),
                             "style_sha256": sha256_file(
@@ -305,6 +306,30 @@ def test_foundation_plumbs_explicit_presentation_reselection(
         foundation_args(reselect_presentation_design=True)
     ) == 0
     assert seen["reselect_presentation_design"] is True
+
+
+def test_foundation_persists_and_plumbs_code_image_opt_in(
+    isolated_paths: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_dir = isolated_paths / "test-course"
+    runner = FakeRunner(output_dir)
+    runner.write_foundation_on_run = True
+    seen: dict[str, object] = {}
+
+    def fake_build_runner(*_args, **kwargs):
+        seen.update(kwargs)
+        return runner
+
+    monkeypatch.setattr(cli, "build_runner", fake_build_runner)
+
+    assert cli.run_foundation(
+        foundation_args(code_images=True)
+    ) == 0
+    assert seen["code_image_config"].enabled is True
+    persisted = json.loads(
+        (output_dir / "course_code_images.json").read_text(encoding="utf-8")
+    )
+    assert persisted["enabled"] is True
 
 
 def test_foundation_manifest_mismatch_is_rejected(isolated_paths: Path) -> None:

@@ -81,6 +81,13 @@ class CourseRequest(BaseModel):
             "every strong eligible image opportunity"
         ),
     )
+    code_images: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Persist Carbon code-image behavior: true enables and may install "
+            "carbon-now-cli globally, false disables, null preserves course state"
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_image_count_mode(self) -> "CourseRequest":
@@ -842,6 +849,7 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
             replace_images=request.replace_images,
             max_images_per_chapter=request.max_images_per_chapter,
             ai_decides_image_count=request.ai_decides_image_count,
+            code_images=request.code_images,
         )
         
         # Generate PPTX if requested

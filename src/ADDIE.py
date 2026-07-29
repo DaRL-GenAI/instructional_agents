@@ -11,6 +11,7 @@ from src.agents import (
 
 from src.slides import SlidesDeliberation
 from src.html_slides import ensure_course_slide_style, finalize_chapter
+from src.html_slides_code import CodeImageConfig, load_code_image_config
 from src.html_slides_img import ImageGenerationConfig, load_image_generation_config
 from src.html_slides_style import PRESENTATION_DESIGN_FILENAME
 from src.html_slides_style import PRESENTATION_DESIGN_NAME
@@ -109,6 +110,7 @@ class ADDIERunner:
         resume: bool = False,
         reselect_presentation_design: bool = False,
         image_generation_config: ImageGenerationConfig | None = None,
+        code_image_config: CodeImageConfig | None = None,
     ):
         """
         Initialize the runner with an ADDIE instance
@@ -134,6 +136,14 @@ class ADDIERunner:
                     f"Invalid persisted image-generation configuration: {exc}"
                 ) from exc
         self.image_generation_config = image_generation_config.validated()
+        if code_image_config is None:
+            try:
+                code_image_config = load_code_image_config(output_dir)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid persisted code-image configuration: {exc}"
+                ) from exc
+        self.code_image_config = code_image_config.validated()
         self.results = []
         self.chapters = []
 
@@ -520,6 +530,7 @@ class ADDIERunner:
             llm=self.addie.llm,
             chapter=chapter,
             image_config=self.image_generation_config,
+            code_image_config=self.code_image_config,
         )
         action = "already current" if result.skipped else "generated"
         print(
@@ -1172,6 +1183,7 @@ class ADDIE:
         self,
         output_dir: str = "./outputs/",
         image_generation_config: ImageGenerationConfig | None = None,
+        code_image_config: CodeImageConfig | None = None,
     ) -> List[str]:
         """Run the ADDIE workflow using the ADDIERunner
         
@@ -1186,5 +1198,6 @@ class ADDIE:
             output_dir=output_dir,
             resume=self.resume,
             image_generation_config=image_generation_config,
+            code_image_config=code_image_config,
         )
         return runner.run()

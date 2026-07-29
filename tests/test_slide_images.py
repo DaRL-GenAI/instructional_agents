@@ -825,6 +825,27 @@ def test_local_cli_parses_image_flags_and_bounds() -> None:
         ]
     )
     assert uncapped.ai_decides_image_count is True
+    code_images = build_parser().parse_args(
+        [
+            "chapter",
+            "--course-id",
+            "course",
+            "--number",
+            "2",
+            "--enable-code-images",
+        ]
+    )
+    assert code_images.code_images is True
+    no_code_images = build_parser().parse_args(
+        [
+            "foundation",
+            "Course",
+            "--course-id",
+            "course",
+            "--disable-code-images",
+        ]
+    )
+    assert no_code_images.code_images is False
     with pytest.raises(SystemExit):
         build_parser().parse_args(
             [
@@ -850,6 +871,18 @@ def test_local_cli_parses_image_flags_and_bounds() -> None:
                 "--ai-decides-image-count",
             ]
         )
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "chapter",
+                "--course-id",
+                "course",
+                "--number",
+                "2",
+                "--enable-code-images",
+                "--disable-code-images",
+            ]
+        )
 
 
 def test_api_request_validates_image_fields() -> None:
@@ -873,6 +906,9 @@ def test_api_request_validates_image_fields() -> None:
     )
     assert uncapped.ai_decides_image_count is True
     assert uncapped.max_images_per_chapter is None
+    code_images = CourseRequest(course_name="Systems", code_images=True)
+    assert code_images.code_images is True
+    assert CourseRequest(course_name="Systems").code_images is None
     with pytest.raises(ValidationError):
         CourseRequest(
             course_name="Systems",

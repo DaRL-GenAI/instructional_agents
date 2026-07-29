@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
@@ -342,6 +343,10 @@ class StyleInventoryEntry:
     name: str
     summary: str
     source_ref: str
+    # "light", "dark", or "mixed" for bold templates; empty for presets, whose
+    # markdown does not declare one. Used to require a comparison set that spans
+    # more than one visual register.
+    scheme: str = ""
 
 
 def style_slug(value: str) -> str:
@@ -377,6 +382,7 @@ def build_style_inventory(
                 name=record.name,
                 summary=summary,
                 source_ref=record.design_md,
+                scheme=record.scheme,
             )
         )
     entries.sort(key=lambda item: (item.source, item.key))
@@ -388,6 +394,26 @@ def build_style_inventory(
         json.dumps([asdict(entry) for entry in entries], sort_keys=True)
     )
     return entries, inventory_hash
+
+
+def presentation_order(
+    entries: list[StyleInventoryEntry], course_name: str
+) -> list[StyleInventoryEntry]:
+    """Return the candidate order shown to the model for one course.
+
+    ``build_style_inventory`` sorts by ``(source, key)``, which puts the same
+    handful of slugs at the top of every prompt and makes them disproportionately
+    likely to be chosen. Shuffling per course removes that anchor while keeping a
+    single course reproducible, because the seed comes from its name.
+
+    Only the prompt-facing copy is reordered. ``inventory_hash`` stays on the
+    canonical sort, so the fingerprint persisted in ``course_slide_style.json``
+    is unaffected.
+    """
+    seed = int(sha256_text(course_name)[:16], 16)
+    shuffled = list(entries)
+    random.Random(seed).shuffle(shuffled)
+    return shuffled
 
 
 def preset_sections(markdown: str) -> dict[str, str]:
@@ -554,6 +580,11 @@ def _validate_selection_evidence(
             }
         )
 
+    _require_comparison_breadth(
+        selected_entry=lookup.get(selected_pair),
+        alternative_entries=[lookup[(item[0], item[1])] for item in seen_pairs],
+    )
+
     avoid_for_assessment = _specific_string(
         raw_evidence, "avoid_for_assessment", 80, 1200
     )
@@ -562,6 +593,34 @@ def _validate_selection_evidence(
         "alternatives": alternatives,
         "avoid_for_assessment": avoid_for_assessment,
     }
+
+
+def _require_comparison_breadth(
+    *,
+    selected_entry: StyleInventoryEntry | None,
+    alternative_entries: list[StyleInventoryEntry],
+) -> None:
+    """Reject a shortlist that only compared one visual register.
+
+    Two or three near-identical light, medium-formality templates is not a
+    comparison, and it is the shape the deliberation falls into when it anchors
+    on the first plausible candidate. At least one rejected alternative has to
+    come from somewhere else: a different scheme, or a preset, which is a
+    structurally different family of asset.
+
+    Presets do not declare a scheme, so they always satisfy the rule. This keeps
+    the check from blocking a run it cannot actually evaluate.
+    """
+    if selected_entry is None or not selected_entry.scheme:
+        return
+    for entry in alternative_entries:
+        if not entry.scheme or entry.scheme != selected_entry.scheme:
+            return
+    raise FrontendSlidesError(
+        "selection_evidence.alternatives must compare more than one visual "
+        f"register: every candidate uses the '{selected_entry.scheme}' scheme. "
+        "Include at least one alternative with a different scheme or a preset."
+    )
 
 
 def canonicalize_selection_payload(
@@ -1120,8 +1179,12 @@ def ensure_course_slide_style(
 
     assets = load_assets()
     inventory, inventory_hash = build_style_inventory(assets)
-    inventory_payload = [asdict(entry) for entry in inventory]
-    selection_constraint = _selection_constraint(inventory)
+    course_name = getattr(addie, "course_name", "") or ""
+    # Prompt-facing order only; validation and the persisted hash keep using the
+    # canonical sort returned by build_style_inventory.
+    prompt_inventory = presentation_order(inventory, course_name)
+    inventory_payload = [asdict(entry) for entry in prompt_inventory]
+    selection_constraint = _selection_constraint(prompt_inventory)
     catalog_dict = getattr(addie, "catalog_dict", {})
     if not isinstance(catalog_dict, dict):
         raise FrontendSlidesError("ADDIE catalog context must be a dictionary.")
@@ -1133,7 +1196,7 @@ def ensure_course_slide_style(
             "Catalog presentation style preferences must be a dictionary."
         )
     course_context = {
-        "course_name": getattr(addie, "course_name", ""),
+        "course_name": course_name,
         "foundation_documents": [
             str(result)[:12000] for result in foundation_results[1:]
         ],
@@ -1149,7 +1212,11 @@ def ensure_course_slide_style(
         llm=addie.llm,
         system_prompt=(
             "Choose visual and presentation approaches that improve explanation, examples, "
-            "student attention, and conceptual continuity across an entire course."
+            "student attention, and conceptual continuity across an entire course. Argue "
+            "for a style that resonates with this subject in particular: what the field "
+            "looks like, what its practitioners' materials look like, what would make a "
+            "student recognize the discipline from the slide alone. A style that would "
+            "suit any course equally is a weak answer, not a safe one."
         ),
     )
     instructional_designer = Agent(
@@ -1172,7 +1239,10 @@ def ensure_course_slide_style(
         llm=addie.llm,
         system_prompt=(
             "Evaluate whether a style can remain coherent across every chapter and respect the "
-            "course audience, institutional context, and delivery constraints."
+            "course audience, institutional context, and delivery constraints. Coherence is "
+            "about holding up across chapters, not about being unobtrusive: do not reject a "
+            "distinctive style for being distinctive, and name the specific chapter or "
+            "delivery context where a candidate would actually break down."
         ),
     )
     summarizer = Agent(
@@ -1180,7 +1250,12 @@ def ensure_course_slide_style(
         role="Course slide-style decision maker",
         llm=addie.llm,
         system_prompt=(
-            "Synthesize the discussion into one course-wide style choice and presentation method. "
+            "Decide one course-wide style choice and presentation method. You receive the "
+            "same course context and style inventory the reviewers had, followed by their "
+            "discussion. Weigh the discussion against the course itself; where the reviewers "
+            "converged without arguing, say so in the reason and check the choice against "
+            "the inventory yourself rather than ratifying it. Write every course-specific "
+            "field from the course context, never from the shape of this contract. "
             'Return strict JSON. selected_style.source must be exactly "preset" or '
             '"bold_template"; a vertical bar is never part of the value. Copy the selected '
             "source/key pair verbatim from the supplied inventory, preserving hyphens."
@@ -1197,11 +1272,13 @@ def ensure_course_slide_style(
             course_coordinator,
         ],
         summary_agent=summarizer,
-        max_rounds=1,
+        max_rounds=2,
+        summary_sees_context=True,
+        independent_first_round=True,
         instruction_prompt=(
             "Discuss and choose exactly one visual style for all chapter presentations. "
             "Also decide the course-wide narrative, pacing, density, emphasis, layout rotation, "
-            "and engagement method. During the same standard deliberation turn, each reviewer "
+            "and engagement method. Each reviewer "
             "must derive concrete visual requirements from the course audience and activities, "
             "compare at least three exact inventory candidates, and explicitly consider each "
             "candidate's Best for and Avoid for guidance. Explain tradeoffs using course-specific "
@@ -1212,8 +1289,16 @@ def ensure_course_slide_style(
             "prioritize accessibility, readability, course suitability, and renderer feasibility "
             "when they conflict with a preference or an inventory asset's guidance. Explicitly "
             "explain honored and unmet preferences in the course requirements and final selection "
-            "rationale. Preserve the normal sequential discussion: respond to earlier "
-            "reviewers while adding your own comparison evidence. Also decide whether "
+            "rationale.\n\n"
+            "This deliberation runs in two rounds. In round one you will not see the other "
+            "reviewers' turns: nominate your own top three candidates and say what each one "
+            "would cost this course, without hedging toward a safe default. In round two you "
+            "will see every nomination; argue for one of them and say plainly where you "
+            "disagree with a colleague. Your shortlist must span more than one visual "
+            "register — do not nominate three near-identical light, medium-formality "
+            "templates. The inventory is presented in no meaningful order, so position in "
+            "the list is not a recommendation.\n\n"
+            "Also decide whether "
             "AI-generated, text-free imagery would materially improve this specific "
             "course and which supported visual types fit. If "
             "operator_ai_decides_image_count is true, use null for "
@@ -1298,7 +1383,7 @@ def ensure_course_slide_style(
                     deliberation=deliberation,
                     rejected_response=summary,
                     error=exc,
-                    inventory=inventory,
+                    inventory=prompt_inventory,
                 ),
             )
             total_time += elapsed
@@ -1462,6 +1547,12 @@ def ensure_course_slide_style(
                     "Summarizer",
                 ],
                 "selected_style": asdict(style.selected_style),
+                # 1-based position of the winner in the order the model actually
+                # saw. A run of low ranks across courses means the shuffle stopped
+                # working and position is driving the choice again.
+                "selected_prompt_rank": _prompt_rank(
+                    prompt_inventory, style.selected_style
+                ),
                 "image_recommendation": asdict(image_recommendation),
                 "catalog_style_preferences": catalog_style_preferences,
                 "reason": reason,
@@ -1736,9 +1827,9 @@ Return one JSON object only, with this shape:
   "presentation_method": {{
     "narrative": "<course-specific narrative of at least 30 characters>",
     "pacing": "<course-specific pacing guidance of at least 20 characters>",
-    "density": "medium",
+    "density": "<low, medium, or high, chosen for this course's slide content>",
     "emphasis": "<course-specific visual emphasis of at least 20 characters>",
-    "layout_rotation": ["hero", "columns"],
+    "layout_rotation": ["<supported layout>", "<another supported layout>"],
     "engagement": "<course-specific engagement method of at least 20 characters>"
   }},
   "image_recommendation": {{
@@ -1788,8 +1879,16 @@ Rules:
 - alternatives must contain 2 to 4 distinct exact inventory pairs, must not contain
   the selected style, and must come from candidates actually compared in the discussion.
   Each rejection must identify a course-specific tradeoff.
+- the compared set must span more than one visual register. At least one alternative
+  must use a different "scheme" value than the selected entry, or be a preset. A
+  shortlist of near-identical light, medium-formality templates is rejected.
 - avoid_for_assessment must accurately state the selected inventory entry's Avoid for
   warning before explaining why it does or does not conflict with this presentation context.
+  It is a disclosure, not a tiebreak: do not choose a style merely because its Avoid for
+  warning is the easiest one to clear. Pick the style that fits the course best and then
+  report its warning honestly.
+- the inventory is presented in no meaningful order. Position in the list carries no
+  recommendation; judge every candidate on its Best for, Avoid for, mood, and scheme.
 - when non-empty catalog_style_preferences are supplied, course_requirements and reason
   must explicitly explain which preferences are honored and which cannot be satisfied;
   preferences do not override accessibility, readability, course suitability, renderer
@@ -1800,6 +1899,15 @@ Rules:
 ALLOWED_STYLE_PAIRS:
 {json.dumps(allowed_pairs, ensure_ascii=False)}
 """
+
+
+def _prompt_rank(
+    prompt_inventory: list[StyleInventoryEntry], selected: SelectedStyle
+) -> int | None:
+    for index, entry in enumerate(prompt_inventory):
+        if (entry.source, entry.key) == (selected.source, selected.key):
+            return index + 1
+    return None
 
 
 def _selection_repair_prompt(

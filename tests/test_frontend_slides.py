@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
@@ -15,11 +16,13 @@ from src.html_slides import load_assets
 from src.html_slides import parse_beamer
 from src.html_slides import FrontendSlidesError
 from src.html_slides import capture_slide_screenshots, export_html_deck
+from src.html_slides import carbon_theme_for_course_style
 from src.html_slides import MANIFEST_SCHEMA_VERSION, finalize_chapter
 from src.html_slides import (
     ContentElement,
     ListItem,
 )
+from src.html_slides_code import CodeImageConfig, write_code_image_config
 from src.html_slides import render_speaker_notes_markdown
 from src.html_slides import (
     _split_columns,
@@ -40,6 +43,7 @@ from src.html_slides_style import (
     build_style_inventory,
     canonicalize_selection_payload,
     canonicalize_materialization_payload,
+    presentation_order,
     selected_asset_text,
     sha256_file,
     sha256_text,
@@ -206,6 +210,114 @@ def test_inventory_contains_all_46_styles() -> None:
     assert sum(item.source == "preset" for item in inventory) == 12
     assert sum(item.source == "bold_template" for item in inventory) == 34
     assert len(digest) == 64
+
+
+def test_presentation_order_varies_by_course_but_repeats_per_course() -> None:
+    inventory, _ = build_style_inventory(load_assets())
+
+    thermo = presentation_order(inventory, "Thermodynamics")
+    thermo_again = presentation_order(inventory, "Thermodynamics")
+    calculus = presentation_order(inventory, "Multivariable Calculus")
+
+    # Same course, same order: a rerun of the foundation stage is reproducible.
+    assert [item.key for item in thermo] == [item.key for item in thermo_again]
+    # Different courses see different orders, so no style is permanently near
+    # the top of the prompt.
+    assert [item.key for item in thermo] != [item.key for item in calculus]
+    assert sorted(item.key for item in thermo) == sorted(
+        item.key for item in inventory
+    )
+    assert len(thermo) == 46
+
+
+def test_presentation_order_moves_the_historically_favored_style() -> None:
+    inventory, _ = build_style_inventory(load_assets())
+
+    # blue-professional sits at rank 4 of 46 under the canonical (source, key)
+    # sort, which is where every run used to find it first.
+    assert inventory[3].key == "blue-professional"
+
+    ranks = set()
+    for course in ("Thermodynamics", "Machine Learning", "Art History"):
+        order = [item.key for item in presentation_order(inventory, course)]
+        ranks.add(order.index("blue-professional"))
+
+    assert len(ranks) > 1
+    assert ranks != {3}
+
+
+def test_prompt_order_does_not_change_the_persisted_inventory_hash() -> None:
+    inventory, digest = build_style_inventory(load_assets())
+    presentation_order(inventory, "Thermodynamics")
+    _, digest_again = build_style_inventory(load_assets())
+
+    # presentation_order must not mutate its input; the hash is the integrity
+    # fingerprint stored in course_slide_style.json.
+    assert digest == digest_again
+    assert inventory[3].key == "blue-professional"
+
+
+def test_selection_constraint_ships_no_copyable_example_values() -> None:
+    inventory, _ = build_style_inventory(load_assets())
+    from src.html_slides_style import _selection_constraint
+
+    contract = _selection_constraint(inventory)
+
+    # Literal values here get returned verbatim: density was "medium" in 8 of 8
+    # historical runs and layout_rotation was ["hero", "columns"] in 7 of 8.
+    assert '"density": "medium"' not in contract
+    assert '"layout_rotation": ["hero", "columns"]' not in contract
+    assert '"density": "<low, medium, or high' in contract
+
+
+def test_shortlist_must_compare_more_than_one_visual_register() -> None:
+    inventory, _ = build_style_inventory(load_assets())
+    # blue-professional, cobalt-grid, and stencil-tablet are all light-scheme
+    # templates: three names, one register.
+    payload = make_selection_payload(
+        key="blue-professional",
+        alternatives=[
+            ("bold_template", "cobalt-grid"),
+            ("bold_template", "stencil-tablet"),
+        ],
+    )
+
+    with pytest.raises(FrontendSlidesError, match="more than one visual register"):
+        validate_selection(payload, inventory)
+
+
+@pytest.mark.parametrize(
+    "alternative", [("bold_template", "vellum"), ("preset", "paper-ink")]
+)
+def test_shortlist_accepts_a_different_scheme_or_a_preset(
+    alternative: tuple[str, str],
+) -> None:
+    inventory, _ = build_style_inventory(load_assets())
+    payload = make_selection_payload(
+        key="blue-professional",
+        alternatives=[("bold_template", "cobalt-grid"), alternative],
+    )
+
+    selected, _, _, evidence = validate_selection(payload, inventory)
+
+    assert selected.key == "blue-professional"
+    assert len(evidence["alternatives"]) == 2
+
+
+def test_inventory_entries_carry_the_scheme_used_for_breadth_checks() -> None:
+    inventory, _ = build_style_inventory(load_assets())
+    by_key = {item.key: item for item in inventory}
+
+    assert by_key["blue-professional"].scheme == "light"
+    assert by_key["vellum"].scheme == "dark"
+    # Presets do not declare a scheme in STYLE_PRESETS.md.
+    assert by_key["paper-ink"].scheme == ""
+
+
+def test_course_style_uses_reference_carbon_theme_mapping() -> None:
+    theme = carbon_theme_for_course_style(make_style())
+    assert theme["carbon_theme"] == "cobalt"
+    assert theme["carbon_background"] == "rgba(255,250,240,1)"
 
 
 def test_slide_resources_use_the_root_asset_package() -> None:
@@ -498,6 +610,8 @@ def test_style_workflow_uses_foundational_roles_and_selected_asset_only(
     def fake_deliberation_run(self):
         seen["deliberation_calls"] = int(seen.get("deliberation_calls", 0)) + 1
         seen["max_rounds"] = self.max_rounds
+        seen["summary_sees_context"] = self.summary_sees_context
+        seen["independent_first_round"] = self.independent_first_round
         seen["instruction_prompt"] = self.instruction_prompt
         seen["selection_constraint"] = self.summary_agent.output_constraint
         seen["roles"] = [agent.name for agent in self.agents] + [self.summary_agent.name]
@@ -549,7 +663,12 @@ def test_style_workflow_uses_foundational_roles_and_selected_asset_only(
         seen["instructional_designer_prompt"]
     )
     assert seen["deliberation_calls"] == 1
-    assert seen["max_rounds"] == 1
+    # Two rounds with an independent first pass, and a summary agent that sees
+    # the course context, are what keep the selection from collapsing onto one
+    # style for every course.
+    assert seen["max_rounds"] == 2
+    assert seen["summary_sees_context"] is True
+    assert seen["independent_first_round"] is True
     assert "compare at least three exact inventory candidates" in str(
         seen["instruction_prompt"]
     )
@@ -945,6 +1064,105 @@ def test_schema_two_layout_migrates_without_recompiling_latex(
         "slide-002",
         "slide-003",
     ]
+
+
+def test_code_image_opt_in_updates_html_exports_manifest_and_resume_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course = tmp_path / "course"
+    chapter = course / "chapter_1"
+    chapter.mkdir(parents=True)
+    write_style(course)
+    write_beamer(chapter / "slides.tex")
+    source = (chapter / "slides.tex").read_text(encoding="utf-8").replace(
+        r"\end{document}",
+        r"""\begin{frame}[fragile]{Code}
+\begin{lstlisting}[language=Python]
+print("hello")
+\end{lstlisting}
+\end{frame}
+\end{document}""",
+    )
+    (chapter / "slides.tex").write_text(source, encoding="utf-8")
+    deck = parse_beamer(chapter / "slides.tex")
+    (chapter / "script.md").write_text(
+        render_speaker_notes_markdown(
+            deck,
+            [
+                "Notes for nested concepts.",
+                "Notes for the equation.",
+                "Notes for the code.",
+            ],
+            document_title="Slides Script: Offline Course",
+        ),
+        encoding="utf-8",
+    )
+    (chapter / "slides.pdf").write_bytes(b"%PDF-latex")
+    write_code_image_config(course, CodeImageConfig(enabled=True))
+
+    compile_calls = 0
+
+    def fake_compile(*_args):
+        nonlocal compile_calls
+        compile_calls += 1
+        return chapter / "slides.pdf"
+
+    monkeypatch.setattr(
+        "src.html_slides.LaTeXCompiler.compile_one",
+        fake_compile,
+    )
+    monkeypatch.setattr(
+        "src.html_slides.validate_with_playwright",
+        lambda *_args: [],
+    )
+    monkeypatch.setattr(
+        "src.html_slides_code.shutil.which",
+        lambda command: "/usr/bin/carbon-now" if command == "carbon-now" else None,
+    )
+
+    def fake_carbon(command, **_kwargs):
+        command = [str(part) for part in command]
+        if "--version" in command:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="2.1.0", stderr=""
+            )
+        output_dir = Path(command[command.index("--save-to") + 1])
+        output_name = command[command.index("--save-as") + 1]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / f"{output_name}.png").write_bytes(
+            b"\x89PNG\r\n\x1a\nfakepng"
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("src.html_slides_code.subprocess.run", fake_carbon)
+
+    def fake_export(_html, *, pdf_path, pptx_path):
+        pdf_path.write_bytes(b"%PDF-html")
+        pptx_path.write_bytes(b"pptx")
+
+    monkeypatch.setattr("src.html_slides.export_html_deck", fake_export)
+
+    result = finalize_chapter(course, chapter)
+    html = result.html_path.read_text(encoding="utf-8")
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    assert "data:image/png;base64," in html
+    assert manifest["code_images"]["enabled"] is True
+    assert manifest["code_images"]["rendered"] == 1
+    assert manifest["code_images"]["fallbacks"] == 0
+    assert manifest["code_images"]["complete"] is True
+    assert finalize_chapter(course, chapter).skipped is True
+
+    write_code_image_config(course, CodeImageConfig(enabled=False))
+    disabled = finalize_chapter(course, chapter)
+    disabled_html = disabled.html_path.read_text(encoding="utf-8")
+    disabled_manifest = json.loads(
+        disabled.manifest_path.read_text(encoding="utf-8")
+    )
+    assert "data:image/png;base64," not in disabled_html
+    assert "<pre" in disabled_html
+    assert disabled_manifest["code_images"]["enabled"] is False
+    assert compile_calls == 1
 
 
 def test_export_failure_preserves_successful_and_previous_artifacts(

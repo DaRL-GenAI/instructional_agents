@@ -298,6 +298,7 @@ def build_runner(
     resume: bool = True,
     reselect_presentation_design: bool = False,
     image_generation_config: Any | None = None,
+    code_image_config: Any | None = None,
 ) -> Any:
     """Construct the existing workflow runner. Kept as a seam for tests."""
     from src.ADDIE import ADDIE, ADDIERunner
@@ -318,6 +319,7 @@ def build_runner(
         resume=resume,
         reselect_presentation_design=reselect_presentation_design,
         image_generation_config=image_generation_config,
+        code_image_config=code_image_config,
     )
 
 
@@ -380,6 +382,11 @@ def run_foundation(args: argparse.Namespace) -> int:
         style_has_explicit_image_guidance,
         write_image_generation_config,
     )
+    from src.html_slides_code import (
+        configured_for_invocation as configured_code_images_for_invocation,
+        load_code_image_config,
+        write_code_image_config,
+    )
 
     enable_images = bool(getattr(args, "enable_image_generation", False))
     replace_images = bool(getattr(args, "replace_images", False))
@@ -415,6 +422,19 @@ def run_foundation(args: argparse.Namespace) -> int:
         write_image_generation_config(output_dir, image_config)
     except ValueError as exc:
         raise CliError(str(exc)) from exc
+    requested_code_images = getattr(args, "code_images", None)
+    try:
+        code_image_config = configured_code_images_for_invocation(
+            load_code_image_config(output_dir),
+            requested_code_images,
+        )
+        if (
+            requested_code_images is not None
+            or not (output_dir / "course_code_images.json").is_file()
+        ):
+            write_code_image_config(output_dir, code_image_config)
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
     if reselect:
         preflight_existing_chapters_for_style_change(output_dir)
 
@@ -424,6 +444,7 @@ def run_foundation(args: argparse.Namespace) -> int:
         resume=True,
         reselect_presentation_design=reselect,
         image_generation_config=image_config,
+        code_image_config=code_image_config,
     )
     runner.setup()
     runner.run_foundation_deliberations()
@@ -434,6 +455,7 @@ def run_foundation(args: argparse.Namespace) -> int:
         or replace_images
         or max_images is not None
         or bool(getattr(args, "ai_decides_image_count", False))
+        or requested_code_images is not None
     ):
         refinalize_existing_chapters(output_dir, runner, force=True)
     assert_course_style_consistency(output_dir)
@@ -631,6 +653,11 @@ def run_chapter(args: argparse.Namespace) -> int:
         style_has_explicit_image_guidance,
         write_image_generation_config,
     )
+    from src.html_slides_code import (
+        configured_for_invocation as configured_code_images_for_invocation,
+        load_code_image_config,
+        write_code_image_config,
+    )
 
     enable_images = bool(getattr(args, "enable_image_generation", False))
     replace_images = bool(getattr(args, "replace_images", False))
@@ -663,6 +690,19 @@ def run_chapter(args: argparse.Namespace) -> int:
             write_image_generation_config(output_dir, image_config)
     except ValueError as exc:
         raise CliError(str(exc)) from exc
+    requested_code_images = getattr(args, "code_images", None)
+    try:
+        code_image_config = configured_code_images_for_invocation(
+            load_code_image_config(output_dir),
+            requested_code_images,
+        )
+        if (
+            requested_code_images is not None
+            or not (output_dir / "course_code_images.json").is_file()
+        ):
+            write_code_image_config(output_dir, code_image_config)
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
 
     if args.number < 1 or args.number > len(disk_chapters):
         raise CliError(
@@ -687,6 +727,7 @@ def run_chapter(args: argparse.Namespace) -> int:
         output_dir,
         resume=True,
         image_generation_config=image_config,
+        code_image_config=code_image_config,
     )
     runner.setup()
     # Validation above guarantees every artifact exists, so this reloads them
@@ -731,7 +772,11 @@ def run_chapter(args: argparse.Namespace) -> int:
             runner.image_generation_config,
             replace_images=False,
         )
-    refinalize_existing_chapters(output_dir, runner)
+    refinalize_existing_chapters(
+        output_dir,
+        runner,
+        force=requested_code_images is not None,
+    )
     assert_course_style_consistency(output_dir)
     print(f"\nChapter {args.number} complete: {chapter['title']}")
     print(f"Chapter directory: {chapter_dir_path}")
@@ -917,6 +962,25 @@ def build_parser() -> argparse.ArgumentParser:
             "every strong eligible image opportunity."
         ),
     )
+    foundation_code_images = foundation.add_mutually_exclusive_group()
+    foundation_code_images.add_argument(
+        "--enable-code-images",
+        dest="code_images",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Persist opt-in to Carbon code images; may install "
+            "carbon-now-cli globally when code is first encountered."
+        ),
+    )
+    foundation_code_images.add_argument(
+        "--disable-code-images",
+        dest="code_images",
+        action="store_const",
+        const=False,
+        help="Persist styled <pre> rendering for frontend slide code blocks.",
+    )
     foundation.set_defaults(handler=run_foundation)
 
     chapters = subparsers.add_parser(
@@ -964,6 +1028,25 @@ def build_parser() -> argparse.ArgumentParser:
             "Remove the numeric cap for this and future chapters and let the "
             "placement AI choose every strong eligible image opportunity."
         ),
+    )
+    chapter_code_images = chapter.add_mutually_exclusive_group()
+    chapter_code_images.add_argument(
+        "--enable-code-images",
+        dest="code_images",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Persist opt-in to Carbon code images; may install "
+            "carbon-now-cli globally when code is first encountered."
+        ),
+    )
+    chapter_code_images.add_argument(
+        "--disable-code-images",
+        dest="code_images",
+        action="store_const",
+        const=False,
+        help="Persist styled <pre> rendering for frontend slide code blocks.",
     )
     chapter.set_defaults(handler=run_chapter)
 

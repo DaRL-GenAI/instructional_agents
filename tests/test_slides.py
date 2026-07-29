@@ -113,6 +113,8 @@ class TestSlideUtils:
         assert "Part X" not in prompt
         assert "Never nest itemize/enumerate environments more than 3 levels" in prompt
         assert "Never nest display-math environments" in prompt
+        assert "at most one lstlisting environment" in prompt
+        assert "separate code block under every numbered step" in prompt
 
     def test_generate_latex_frame_prompt_with_feedback(self):
         prompt = SlideUtils.generate_latex_frame_prompt(

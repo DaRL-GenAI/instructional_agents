@@ -48,6 +48,7 @@ def run_instructional_design(
     replace_images: bool = False,
     max_images_per_chapter: int | None = None,
     ai_decides_image_count: bool = False,
+    code_images: bool | None = None,
 ):
     """
     Main function to run the instructional design workflow by sequentially
@@ -148,11 +149,27 @@ def run_instructional_design(
         replace_images=replace_images,
     )
     write_image_generation_config(output_dir, image_config)
+    from src.html_slides_code import (
+        configured_for_invocation as configured_code_images_for_invocation,
+        load_code_image_config,
+        write_code_image_config,
+    )
+
+    stored_code_image_config = load_code_image_config(output_dir)
+    code_image_config = configured_code_images_for_invocation(
+        stored_code_image_config,
+        code_images,
+    )
+    if code_images is not None or not os.path.isfile(
+        os.path.join(output_dir, "course_code_images.json")
+    ):
+        write_code_image_config(output_dir, code_image_config)
     if resume:
         print(f"[resume] Resuming from existing outputs in {output_dir}")
     addie.run(
         output_dir=output_dir,
         image_generation_config=image_config,
+        code_image_config=code_image_config,
     )
     
     # Calculate execution time
@@ -289,6 +306,25 @@ def main():
         metavar="0-3",
         help="Persist the experiment default image cap (0 to 3).",
     )
+    code_image_group = parser.add_mutually_exclusive_group()
+    code_image_group.add_argument(
+        "--enable-code-images",
+        dest="code_images",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Persist opt-in to Carbon code images; may install "
+            "carbon-now-cli globally when code is first encountered."
+        ),
+    )
+    code_image_group.add_argument(
+        "--disable-code-images",
+        dest="code_images",
+        action="store_const",
+        const=False,
+        help="Persist styled <pre> rendering for frontend slide code blocks.",
+    )
     image_count_group.add_argument(
         "--ai-decides-image-count",
         action="store_true",
@@ -385,6 +421,7 @@ def main():
             replace_images=args.replace_images,
             max_images_per_chapter=args.max_images_per_chapter,
             ai_decides_image_count=args.ai_decides_image_count,
+            code_images=args.code_images,
         )
 
 

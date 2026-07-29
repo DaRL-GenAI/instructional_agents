@@ -199,6 +199,10 @@ Guidelines:
 5. Never nest itemize/enumerate environments more than 3 levels deep; prefer 2 levels for readability
 6. Colors: the preamble is fixed, so you cannot add \\definecolor. Only use standard color names (red, blue, teal, gray, ...), color names already defined in the template or current frame, or inline hex via \\textcolor[HTML]{{RRGGBB}}{{...}}. Never invent named colors such as electricblue
 7. Never nest display-math environments. For multiple aligned lines, use \\begin{{align*}} by itself, or put \\begin{{aligned}} inside \\begin{{equation}}. Never put align, align*, gather, or multline inside equation.
+8. Code-heavy slides may use at most one lstlisting environment. Consolidate a
+   multi-step workflow into one complete, concise snippet (ideally 12 lines or
+   fewer) instead of placing a separate code block under every numbered step.
+   Keep any surrounding explanation to a short lead-in or 3-4 brief steps.
 
 Use LaTeX features like:
 - \\begin{{itemize}} for bullet points
