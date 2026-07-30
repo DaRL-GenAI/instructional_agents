@@ -148,6 +148,16 @@ def test_alignment_environments_record_env_and_strip_labels(tmp_path: Path) -> N
     assert equations[3].text.strip().startswith("u"), "alignat {n} argument should be consumed"
 
 
+def test_flalign_is_parsed_as_math_instead_of_raw_source(tmp_path: Path) -> None:
+    slide = _single_frame_deck(
+        tmp_path,
+        "\\begin{flalign*}\nx &= y + 1\n\\end{flalign*}",
+    )
+
+    assert [element.kind for element in slide.elements] == ["equation"]
+    assert slide.elements[0].env == "flalign*"
+
+
 def test_inline_math_survives_text_cleaning(tmp_path: Path) -> None:
     tex = r"""
 \documentclass{beamer}

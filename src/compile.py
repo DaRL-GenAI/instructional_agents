@@ -5,9 +5,9 @@ from pathlib import Path
 import logging
 
 try:
-    from src.beamer_preflight import normalize_beamer_source
+    from src.beamer_preflight import normalize_beamer_source, repair_messages
 except ImportError:  # pragma: no cover - standalone execution from src/
-    from beamer_preflight import normalize_beamer_source
+    from beamer_preflight import normalize_beamer_source, repair_messages
 
 class LaTeXCompiler:
     def __init__(self, output_dir):
@@ -183,49 +183,7 @@ class LaTeXCompiler:
         if not result.changed:
             return False
         cached_tex_file.write_text(result.source, encoding="utf-8")
-        details = []
-        if result.injected_color_definitions:
-            details.append(
-                "auto-defined missing colors: "
-                + ", ".join(result.injected_color_definitions)
-            )
-        if result.removed_list_wrapper_pairs:
-            details.append(
-                f"flattened {result.removed_list_wrapper_pairs} deep list wrapper(s)"
-            )
-        if result.inserted_list_closures:
-            details.append(
-                f"closed {result.inserted_list_closures} unclosed list environment(s)"
-            )
-        if result.repaired_nested_math_environments:
-            details.append(
-                "repaired "
-                f"{result.repaired_nested_math_environments} nested display-math "
-                "environment(s)"
-            )
-        if result.repaired_equation_commands:
-            details.append(
-                "repaired "
-                f"{result.repaired_equation_commands} malformed "
-                "\\equation{...} command(s)"
-            )
-        if result.escaped_prose_ampersands:
-            details.append(
-                "escaped "
-                f"{result.escaped_prose_ampersands} prose ampersand(s)"
-            )
-        if result.repaired_item_comparisons:
-            details.append(
-                "protected "
-                f"{result.repaired_item_comparisons} item-leading "
-                "comparison(s)"
-            )
-        if result.repaired_big_o_expressions:
-            details.append(
-                "wrapped "
-                f"{result.repaired_big_o_expressions} big-O expression(s) "
-                "in math mode"
-            )
+        details = repair_messages(result)
         summary = "; ".join(details) or "source normalized"
         self.logger.warning(
             f"Repaired {cached_tex_file.name} before retry ({summary})"

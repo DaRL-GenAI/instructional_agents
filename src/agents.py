@@ -11,7 +11,11 @@ class LLM:
         self.temperature = temperature
         self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-    def generate_response(self, messages: List[Dict[str, str]], stream = False) -> str:
+    def generate_response(
+        self,
+        messages: List[Dict[str, str]],
+        stream: bool = False,
+    ) -> tuple[str, float, int]:
         start_time = time.time()
 
         try:
@@ -36,7 +40,7 @@ class LLM:
 
         except Exception as e:
             print(f"Error generating response: {e}")
-            return f"Error: {e}"
+            return f"Error: {e}", time.time() - start_time, 0
 
 class LLM_stream:
     """
@@ -297,4 +301,3 @@ class Deliberation:
         
         print(f"\n{'='*50}\nDeliberation Complete\n{'='*50}\n")
         return summary, elapsed_time, token_usage
-

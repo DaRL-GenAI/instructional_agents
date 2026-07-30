@@ -1,3 +1,4 @@
+import base64
 import json
 import subprocess
 from pathlib import Path
@@ -10,13 +11,17 @@ from src.html_slides_code import (
     CARBON_NOW_PACKAGE,
     CodeImageConfig,
     attach_code_images,
+    carbon_cache_version_is_current,
     configured_for_invocation,
     load_code_image_config,
     write_code_image_config,
 )
 
 
-PNG_BYTES = b"\x89PNG\r\n\x1a\nfakepng"
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
+    "/x8AAusB9Wl2ZQAAAABJRU5ErkJggg=="
+)
 THEME = {
     "carbon_theme": "nord",
     "carbon_background": "rgba(0,0,0,0)",
@@ -230,6 +235,24 @@ def test_cache_hits_skip_render_and_carbon_version_changes_key(
     assert third.cache_hits == 0
     assert len([command for command in calls if "--save-to" in command]) == 2
     assert len(list(tmp_path.glob("*.png"))) == 2
+
+
+@pytest.mark.parametrize(
+    ("previous", "installed", "expected"),
+    [
+        ("2.1.0", "2.1.0", True),
+        ("2.1.0", "2.2.0", False),
+        ("unknown", "2.1.0", False),
+        ("unknown", None, False),
+        (None, "2.1.0", False),
+    ],
+)
+def test_carbon_cache_requires_matching_known_versions(
+    previous: object,
+    installed: str | None,
+    expected: bool,
+) -> None:
+    assert carbon_cache_version_is_current(previous, installed) is expected
 
 
 def test_install_and_malformed_png_failures_are_best_effort(

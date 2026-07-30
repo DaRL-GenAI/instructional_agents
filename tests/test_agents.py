@@ -25,6 +25,18 @@ class TestLLM:
             llm = LLM(model_name="gpt-4o")
         assert llm.model_name == "gpt-4o"
 
+    def test_api_failure_preserves_response_accounting_contract(self):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
+            llm = LLM()
+        llm.client = MagicMock()
+        llm.client.chat.completions.create.side_effect = RuntimeError("rate limit")
+
+        response, elapsed, tokens = llm.generate_response([], stream=False)
+
+        assert response == "Error: rate limit"
+        assert elapsed >= 0
+        assert tokens == 0
+
 
 class TestAgent:
     """Tests for the Agent class."""

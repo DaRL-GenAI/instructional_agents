@@ -44,6 +44,7 @@ def run_instructional_design(
     seed: int = None,
     temperature: float = None,
     resume: bool = False,
+    reselect_presentation_design: bool = False,
     enable_image_generation: bool = False,
     replace_images: bool = False,
     max_images_per_chapter: int | None = None,
@@ -125,6 +126,7 @@ def run_instructional_design(
     stored_image_config = load_image_generation_config(output_dir)
     if (
         (enable_image_generation or replace_images)
+        and not reselect_presentation_design
         and os.path.isfile(os.path.join(output_dir, "course_slide_style.json"))
         and not style_has_explicit_image_guidance(output_dir)
     ):
@@ -168,6 +170,7 @@ def run_instructional_design(
         print(f"[resume] Resuming from existing outputs in {output_dir}")
     addie.run(
         output_dir=output_dir,
+        reselect_presentation_design=reselect_presentation_design,
         image_generation_config=image_config,
         code_image_config=code_image_config,
     )
@@ -286,6 +289,14 @@ def main():
         help="Resume an interrupted run: skip deliberations whose outputs "
              "already exist in exp/<exp_name>/ and pick up chapter generation "
              "from the last incomplete chapter (or mid-chapter checkpoint)."
+    )
+    parser.add_argument(
+        "--reselect-presentation-design",
+        action="store_true",
+        help=(
+            "Replace the frozen course presentation design during foundation. "
+            "Required to add image guidance to a legacy course."
+        ),
     )
     parser.add_argument(
         "--enable-image-generation",
@@ -417,6 +428,7 @@ def main():
             seed=args.seed,
             temperature=args.temperature,
             resume=args.resume,
+            reselect_presentation_design=args.reselect_presentation_design,
             enable_image_generation=args.enable_image_generation,
             replace_images=args.replace_images,
             max_images_per_chapter=args.max_images_per_chapter,

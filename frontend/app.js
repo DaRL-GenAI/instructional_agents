@@ -25,6 +25,19 @@ const translations = {
         expNameLabel: '实验名称',
         expNamePlaceholder: '默认：default',
         copilotLabel: '启用 Copilot 模式（交互式反馈）',
+        slideMediaTitle: '幻灯片媒体',
+        slideMediaIntro: '控制 HTML 幻灯片中的插图与代码渲染。',
+        imageGenerationLabel: '生成教学插图',
+        imageCountLabel: '每章插图数量',
+        imageCountThree: '最多 3 张',
+        imageCountTwo: '最多 2 张',
+        imageCountOne: '最多 1 张',
+        imageCountZero: '不生成',
+        imageCountAi: '由 AI 决定',
+        replaceImagesLabel: '重新生成已有插图',
+        codeImagesLabel: '将代码块渲染为高质量图片',
+        reselectDesignLabel: '刷新课程演示设计',
+        reselectDesignTip: '为旧课程启用插图时使用。',
         catalogModeLabel: 'Catalog 模式',
         catalogOptionNone: '不使用',
         catalogOptionDefault: '使用默认 Catalog',
@@ -170,6 +183,19 @@ const translations = {
         expNameLabel: 'Experiment Name',
         expNamePlaceholder: 'Default: default',
         copilotLabel: 'Enable Copilot Mode (Interactive Feedback)',
+        slideMediaTitle: 'Slide media',
+        slideMediaIntro: 'Control illustrations and code rendering in HTML slides.',
+        imageGenerationLabel: 'Generate instructional illustrations',
+        imageCountLabel: 'Illustrations per chapter',
+        imageCountThree: 'Up to 3',
+        imageCountTwo: 'Up to 2',
+        imageCountOne: 'Up to 1',
+        imageCountZero: 'None',
+        imageCountAi: 'Let AI decide',
+        replaceImagesLabel: 'Regenerate existing illustrations',
+        codeImagesLabel: 'Render code blocks as high-quality images',
+        reselectDesignLabel: 'Refresh course presentation design',
+        reselectDesignTip: 'Use this when enabling illustrations for a legacy course.',
         catalogModeLabel: 'Catalog Mode',
         catalogOptionNone: 'Do not use',
         catalogOptionDefault: 'Use default catalog',
@@ -680,8 +706,18 @@ async function handleFormSubmit(e) {
             model_name: document.getElementById('model-name').value,
             exp_name: document.getElementById('exp-name').value || 'default',
             copilot: document.getElementById('copilot-mode').checked,
-            generate_pptx: document.getElementById('pptx-mode').checked
+            generate_pptx: document.getElementById('pptx-mode').checked,
+            enable_image_generation: document.getElementById('image-generation-mode').checked,
+            replace_images: document.getElementById('replace-images-mode').checked,
+            code_images: document.getElementById('code-images-mode').checked,
+            reselect_presentation_design: document.getElementById('reselect-design-mode').checked
         };
+        const imageCountMode = document.getElementById('image-count-mode').value;
+        if (imageCountMode === 'ai') {
+            formData.ai_decides_image_count = true;
+        } else {
+            formData.max_images_per_chapter = Number(imageCountMode);
+        }
 
         // Handle catalog
         const catalogMode = document.getElementById('catalog-mode').value;

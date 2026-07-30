@@ -93,6 +93,48 @@
                         </label>
                     </div>
 
+                    <fieldset class="generation-options">
+                        <legend data-i18n="slideMediaTitle">幻灯片媒体</legend>
+                        <p class="generation-options-intro" data-i18n="slideMediaIntro">
+                            控制 HTML 幻灯片中的插图与代码渲染。
+                        </p>
+                        <div class="form-group checkbox-group">
+                            <label>
+                                <input type="checkbox" id="image-generation-mode">
+                                <span data-i18n="imageGenerationLabel">生成教学插图</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label for="image-count-mode" data-i18n="imageCountLabel">每章插图数量</label>
+                            <select id="image-count-mode">
+                                <option value="3" data-i18n="imageCountThree">最多 3 张</option>
+                                <option value="2" data-i18n="imageCountTwo">最多 2 张</option>
+                                <option value="1" data-i18n="imageCountOne">最多 1 张</option>
+                                <option value="0" data-i18n="imageCountZero">不生成</option>
+                                <option value="ai" data-i18n="imageCountAi">由 AI 决定</option>
+                            </select>
+                        </div>
+                        <div class="form-group checkbox-group">
+                            <label>
+                                <input type="checkbox" id="replace-images-mode">
+                                <span data-i18n="replaceImagesLabel">重新生成已有插图</span>
+                            </label>
+                        </div>
+                        <div class="form-group checkbox-group">
+                            <label>
+                                <input type="checkbox" id="code-images-mode">
+                                <span data-i18n="codeImagesLabel">将代码块渲染为高质量图片</span>
+                            </label>
+                        </div>
+                        <div class="form-group checkbox-group">
+                            <label>
+                                <input type="checkbox" id="reselect-design-mode">
+                                <span data-i18n="reselectDesignLabel">刷新课程演示设计</span>
+                            </label>
+                            <small data-i18n="reselectDesignTip">为旧课程启用插图时使用。</small>
+                        </div>
+                    </fieldset>
+
                     <div class="form-group">
                         <label for="catalog-mode" data-i18n="catalogModeLabel">Catalog 模式</label>
                         <select id="catalog-mode" name="catalog_mode">

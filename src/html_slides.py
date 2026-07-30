@@ -18,12 +18,19 @@ from pathlib import Path
 from typing import Any
 
 from pylatexenc.latex2text import LatexNodes2Text
+from PyPDF2 import PdfReader
+from pptx import Presentation
 
-from src.beamer_preflight import normalize_beamer_file
+from src.beamer_preflight import (
+    EQUATION_INNER_ENVIRONMENTS,
+    normalize_beamer_file,
+    repair_messages,
+)
 from src.compile import LaTeXCompiler
 from src.html_slides_code import (
     CodeImageConfig,
     attach_code_images,
+    carbon_cache_version_is_current,
     code_image_request_fingerprint,
     detect_carbon_version,
     load_code_image_config,
@@ -57,6 +64,7 @@ from src.html_slides_style import (
     slide_gen_asset_root,
     write_presentation_design_result,
 )
+from src.slide_io import atomic_write as _atomic_write
 
 __all__ = [
     "ChapterFrontendResult",
@@ -183,6 +191,8 @@ MATH_ENVS = {
     "align*",
     "alignat",
     "alignat*",
+    "flalign",
+    "flalign*",
     "gather",
     "gather*",
     "eqnarray",
@@ -190,6 +200,7 @@ MATH_ENVS = {
     "multline",
     "multline*",
 }
+MEDIA_KINDS = frozenset({"generated_image", "user_image"})
 
 
 ENV_REQUIRED_ARG_COUNTS = {
@@ -574,18 +585,11 @@ def _strip_math_labels(source: str) -> str:
 
 
 _DISPLAY_SAFE_ENV_MAP = {
-    "align": "aligned",
-    "align*": "aligned",
-    "alignat": "alignedat",
-    "alignat*": "alignedat",
-    "flalign": "aligned",
-    "flalign*": "aligned",
+    **EQUATION_INNER_ENVIRONMENTS,
+    # These are top-level wrappers in preflight, but the HTML renderer strips
+    # them when normalizing an already-extracted display expression.
     "eqnarray": "aligned",
     "eqnarray*": "aligned",
-    "gather": "gathered",
-    "gather*": "gathered",
-    "multline": "gathered",
-    "multline*": "gathered",
     "equation": "",
     "equation*": "",
 }
@@ -1087,7 +1091,7 @@ def element_weight(element: ContentElement) -> int:
         return 1 + sum(element_weight(child) for child in element.children)
     if element.kind == "table":
         return max(3, len(element.rows))
-    if element.kind in {"generated_image", "user_image"}:
+    if element.kind in MEDIA_KINDS:
         return 4
     if element.kind == "code":
         # Code renders as a carbon-style image card (~480px, the default) or a
@@ -1183,7 +1187,7 @@ def render_deck_html(
     *,
     theme_override: dict[str, str] | None = None,
     font_css: str | None = None,
-    mathjax_src: str = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js",
+    mathjax_src: str = "assets/mathjax/tex-svg.js",
     layout_rotation: list[str] | None = None,
     speaker_notes: Sequence[SpeakerNote] | None = None,
 ) -> str:
@@ -1985,18 +1989,18 @@ def choose_layout(
     - "top": everything in between - full-width header, single column below.
     """
     has_image = any(
-        element.kind in {"generated_image", "user_image"}
+        element.kind in MEDIA_KINDS
         for element in slide.elements
     )
     has_non_image = any(
-        element.kind not in {"generated_image", "user_image"}
+        element.kind not in MEDIA_KINDS
         for element in slide.elements
     )
     if has_image and has_non_image:
         copy_weight = sum(
             element_weight(element)
             for element in slide.elements
-            if element.kind not in {"generated_image", "user_image"}
+            if element.kind not in MEDIA_KINDS
         )
         return "media-dense" if copy_weight > 12 else "media"
     weight = sum(element_weight(element) for element in slide.elements)
@@ -2009,12 +2013,22 @@ def choose_layout(
         natural = "top-cols"
     else:
         natural = "top"
+    column_layout_available = len(
+        [
+            unit
+            for element in slide.elements
+            for unit in _expand_column_units(element)
+        ]
+    ) >= 2
+    if natural == "top-cols" and not column_layout_available:
+        natural = "top"
     if not layout_rotation:
         return natural
     allowed = [
         {"columns": "top-cols"}.get(layout, layout)
         for layout in layout_rotation
         if layout != "hero"
+        and (layout != "top-cols" or column_layout_available)
     ]
     if natural in allowed:
         return natural
@@ -2072,12 +2086,12 @@ def _render_body(slide: BeamerSlide, layout: str) -> str:
         media = [
             element
             for element in elements
-            if element.kind in {"generated_image", "user_image"}
+            if element.kind in MEDIA_KINDS
         ]
         copy = [
             element
             for element in elements
-            if element.kind not in {"generated_image", "user_image"}
+            if element.kind not in MEDIA_KINDS
         ]
         return (
             '<div class="slide-body">'
@@ -2089,12 +2103,12 @@ def _render_body(slide: BeamerSlide, layout: str) -> str:
         media = [
             element
             for element in elements
-            if element.kind in {"generated_image", "user_image"}
+            if element.kind in MEDIA_KINDS
         ]
         copy = [
             element
             for element in elements
-            if element.kind not in {"generated_image", "user_image"}
+            if element.kind not in MEDIA_KINDS
         ]
         left, right = _split_columns(copy)
         left_weight = sum(element_weight(element) for element in left)
@@ -2168,12 +2182,7 @@ def _split_columns(elements: list[ContentElement]) -> tuple[list[ContentElement]
         if len(expanded) > len(elements):
             elements = expanded
     weights = [element_weight(element) for element in elements]
-    total = sum(weights)
-    best_index, best_gap = 1, total
-    for index in range(1, len(elements)):
-        gap = abs(sum(weights[:index]) - sum(weights[index:]))
-        if gap < best_gap:
-            best_index, best_gap = index, gap
+    best_index = _best_balanced_split(weights)
     left, right = elements[:best_index], elements[best_index:]
     if len(left) == 1 and left[0].kind == "list" and len(left[0].items) >= 4 and not right:
         return _split_list(left[0])
@@ -2185,16 +2194,22 @@ def _split_columns(elements: list[ContentElement]) -> tuple[list[ContentElement]
 def _split_list(element: ContentElement) -> tuple[list[ContentElement], list[ContentElement]]:
     items = element.items
     weights = [item_weight(item) for item in items]
-    total = sum(weights)
-    mid, best_gap, running = 1, total, 0
-    for index in range(1, len(items)):
-        running += weights[index - 1]
-        gap = abs(running - (total - running))
-        if gap < best_gap:
-            mid, best_gap = index, gap
+    mid = _best_balanced_split(weights)
     first = replace(element, items=items[:mid])
     second = replace(element, items=items[mid:], start=element.start + mid if element.ordered else 1)
     return [first], [second]
+
+
+def _best_balanced_split(weights: list[int]) -> int:
+    """Return a non-empty split point minimizing the two running totals."""
+    total = sum(weights)
+    best_index, best_gap, running = 1, total, 0
+    for index in range(1, len(weights)):
+        running += weights[index - 1]
+        gap = abs(running - (total - running))
+        if gap < best_gap:
+            best_index, best_gap = index, gap
+    return best_index
 
 
 def _split_columns_fallback(elements: list[ContentElement]) -> tuple[list[ContentElement], list[ContentElement]]:
@@ -2334,7 +2349,7 @@ def render_element(element: ContentElement) -> str:
     if element.kind == "raw":
         label = html.escape(element.title or "LaTeX")
         return f'<div class="raw-card"><h3>{label}</h3><pre data-editable>{html.escape(element.raw)}</pre></div>'
-    if element.kind in {"generated_image", "user_image"}:
+    if element.kind in MEDIA_KINDS:
         if not element.image_data_uri:
             return ""
         fallback = "Generated illustration" if element.kind == "generated_image" else "Provided image"
@@ -2811,19 +2826,24 @@ def validate_with_playwright(html_path: Path, expected_slide_count: int) -> list
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch()
-            page = browser.new_page(viewport={"width": 1280, "height": 720})
-            page.goto(html_path.resolve().as_uri())
-            page.wait_for_load_state("load")
             try:
-                page.wait_for_function("window.__slidesFitted === true", timeout=20000)
-            except Exception:
-                pass  # older decks without the auto-fit hook; probe re-runs fit itself
-            slide_count = page.locator(".slide").count()
-            visible_count = page.locator(".slide.visible").count()
-            stage_box = page.locator(".deck-stage").bounding_box()
-            overflowing = page.evaluate(_OVERFLOW_PROBE_JS)
-            math_errors = page.evaluate(_MATHJAX_ERROR_PROBE_JS)
-            browser.close()
+                page = browser.new_page(viewport={"width": 1280, "height": 720})
+                page.goto(html_path.resolve().as_uri())
+                page.wait_for_load_state("load")
+                try:
+                    page.wait_for_function(
+                        "window.__slidesFitted === true",
+                        timeout=30000,
+                    )
+                except Exception:
+                    pass  # older decks without the auto-fit hook
+                slide_count = page.locator(".slide").count()
+                visible_count = page.locator(".slide.visible").count()
+                stage_box = page.locator(".deck-stage").bounding_box()
+                overflowing = page.evaluate(_OVERFLOW_PROBE_JS)
+                math_errors = page.evaluate(_MATHJAX_ERROR_PROBE_JS)
+            finally:
+                browser.close()
     except PlaywrightError as exc:
         return [f"Playwright browser unavailable: {exc}"]
     except Exception as exc:
@@ -2925,27 +2945,38 @@ def capture_slide_screenshots(html_path: Path, screenshot_dir: Path) -> list[Pat
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
-            page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT})
-            page.goto(html_path.resolve().as_uri(), wait_until="load")
             try:
-                page.wait_for_function("window.__slidesFitted === true", timeout=30000)
-            except Exception:
-                pass
-            page.add_style_tag(content=_EXPORT_MODE_CSS)
-            page.evaluate("document.documentElement.classList.add('static-export')")
-            slide_count = page.locator(".slide").count()
-            if slide_count < 1:
-                raise FrontendSlidesError("No .slide elements were found in slides.html.")
-            stage = page.locator(".deck-stage")
-            if stage.count() != 1:
-                raise FrontendSlidesError("Expected exactly one .deck-stage in slides.html.")
-            for index in range(slide_count):
-                page.evaluate(_SHOW_SLIDE_JS, index)
-                page.evaluate(_WAIT_FOR_PAINT_JS)
-                output = screenshot_dir / f"slide-{index + 1:03d}.png"
-                stage.screenshot(path=str(output))
-                screenshots.append(output)
-            browser.close()
+                page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT})
+                page.goto(html_path.resolve().as_uri(), wait_until="load")
+                try:
+                    page.wait_for_function(
+                        "window.__slidesFitted === true",
+                        timeout=30000,
+                    )
+                except Exception:
+                    pass
+                page.add_style_tag(content=_EXPORT_MODE_CSS)
+                page.evaluate(
+                    "document.documentElement.classList.add('static-export')"
+                )
+                slide_count = page.locator(".slide").count()
+                if slide_count < 1:
+                    raise FrontendSlidesError(
+                        "No .slide elements were found in slides.html."
+                    )
+                stage = page.locator(".deck-stage")
+                if stage.count() != 1:
+                    raise FrontendSlidesError(
+                        "Expected exactly one .deck-stage in slides.html."
+                    )
+                for index in range(slide_count):
+                    page.evaluate(_SHOW_SLIDE_JS, index)
+                    page.evaluate(_WAIT_FOR_PAINT_JS)
+                    output = screenshot_dir / f"slide-{index + 1:03d}.png"
+                    stage.screenshot(path=str(output))
+                    screenshots.append(output)
+            finally:
+                browser.close()
     except FrontendSlidesError:
         raise
     except PlaywrightError as exc:
@@ -2982,16 +3013,23 @@ img {{ display:block; width:100%; height:100%; object-fit:contain; }}
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
-            page = browser.new_page()
-            page.set_content(document, wait_until="load")
-            page.pdf(
-                path=str(output),
-                width=f"{WIDTH}px",
-                height=f"{HEIGHT}px",
-                print_background=True,
-                margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
-            )
-            browser.close()
+            try:
+                page = browser.new_page()
+                page.set_content(document, wait_until="load")
+                page.pdf(
+                    path=str(output),
+                    width=f"{WIDTH}px",
+                    height=f"{HEIGHT}px",
+                    print_background=True,
+                    margin={
+                        "top": "0",
+                        "right": "0",
+                        "bottom": "0",
+                        "left": "0",
+                    },
+                )
+            finally:
+                browser.close()
     except PlaywrightError as exc:
         raise FrontendSlidesError(f"Playwright PDF export failed: {exc}") from exc
     except Exception as exc:
@@ -3126,52 +3164,8 @@ def finalize_chapter(
     if not script_path.is_file() or script_path.stat().st_size == 0:
         raise FrontendSlidesError(f"Chapter speaker notes are missing or empty: {script_path}")
     preflight = normalize_beamer_file(tex_path)
-    if preflight.removed_list_wrapper_pairs:
-        print(
-            "[preflight] Repaired slides.tex by flattening "
-            f"{preflight.removed_list_wrapper_pairs} list wrapper(s) beyond "
-            "Beamer's 3-level nesting limit."
-        )
-    if preflight.inserted_list_closures:
-        print(
-            "[preflight] Repaired slides.tex by closing "
-            f"{preflight.inserted_list_closures} unclosed generated list "
-            "environment(s)."
-        )
-    if preflight.injected_color_definitions:
-        print(
-            "[preflight] Repaired slides.tex by auto-defining missing color(s): "
-            f"{', '.join(preflight.injected_color_definitions)}"
-        )
-    if preflight.repaired_nested_math_environments:
-        print(
-            "[preflight] Repaired slides.tex by normalizing "
-            f"{preflight.repaired_nested_math_environments} nested display-math "
-            "environment(s)."
-        )
-    if preflight.repaired_equation_commands:
-        print(
-            "[preflight] Repaired slides.tex by replacing "
-            f"{preflight.repaired_equation_commands} malformed "
-            "\\equation{...} command(s)."
-        )
-    if preflight.escaped_prose_ampersands:
-        print(
-            "[preflight] Repaired slides.tex by escaping "
-            f"{preflight.escaped_prose_ampersands} prose ampersand(s)."
-        )
-    if preflight.repaired_item_comparisons:
-        print(
-            "[preflight] Repaired slides.tex by protecting "
-            f"{preflight.repaired_item_comparisons} item-leading "
-            "comparison(s)."
-        )
-    if preflight.repaired_big_o_expressions:
-        print(
-            "[preflight] Repaired slides.tex by wrapping "
-            f"{preflight.repaired_big_o_expressions} big-O expression(s) "
-            "in math mode."
-        )
+    for message in repair_messages(preflight):
+        print(f"[preflight] Repaired slides.tex: {message}.")
     style = load_course_slide_style(course_path)
     image_config_warnings: list[str] = []
     if image_config is None:
@@ -3241,10 +3235,9 @@ def finalize_chapter(
     ):
         installed_carbon_version = detect_carbon_version()
         previous_carbon_version = previous_code_image_state.get("carbon_version")
-        if (
-            installed_carbon_version is not None
-            and previous_carbon_version not in {None, "unknown"}
-            and installed_carbon_version != previous_carbon_version
+        if not carbon_cache_version_is_current(
+            previous_carbon_version,
+            installed_carbon_version,
         ):
             code_image_state_current = False
     image_fingerprint = image_request_fingerprint(
@@ -3482,36 +3475,10 @@ def finalize_chapter(
             f"Image manifest commit failed; the next run will retry: {exc}"
         )
 
-    warnings = []
-    if preflight.removed_list_wrapper_pairs:
-        warnings.append(
-            "LaTeX preflight flattened "
-            f"{preflight.removed_list_wrapper_pairs} list wrapper(s) beyond "
-            "Beamer's 3-level nesting limit."
-        )
-    if preflight.inserted_list_closures:
-        warnings.append(
-            "LaTeX preflight closed "
-            f"{preflight.inserted_list_closures} unclosed generated list "
-            "environment(s)."
-        )
-    if preflight.injected_color_definitions:
-        warnings.append(
-            "LaTeX preflight auto-defined missing color(s): "
-            + ", ".join(preflight.injected_color_definitions)
-        )
-    if preflight.repaired_nested_math_environments:
-        warnings.append(
-            "LaTeX preflight normalized "
-            f"{preflight.repaired_nested_math_environments} nested display-math "
-            "environment(s)."
-        )
-    if preflight.repaired_equation_commands:
-        warnings.append(
-            "LaTeX preflight replaced "
-            f"{preflight.repaired_equation_commands} malformed "
-            "\\equation{...} command(s)."
-        )
+    warnings = [
+        f"LaTeX preflight {message}."
+        for message in repair_messages(preflight)
+    ]
     if deck.unsupported_environments:
         warnings.append(
             "Unsupported LaTeX environments were preserved as source cards: "
@@ -3610,8 +3577,6 @@ def _valid_pdf(path: Path) -> bool:
     if not _nonempty(path):
         return False
     try:
-        from PyPDF2 import PdfReader
-
         return len(PdfReader(str(path)).pages) > 0
     except Exception:
         return False
@@ -3621,18 +3586,9 @@ def _valid_pptx(path: Path) -> bool:
     if not _nonempty(path):
         return False
     try:
-        from pptx import Presentation
-
         return len(Presentation(str(path)).slides) > 0
     except Exception:
         return False
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(path)
 
 
 def _remove_legacy_frontend_layout(chapter_path: Path) -> None:

@@ -60,6 +60,10 @@ class CourseRequest(BaseModel):
     catalog: Optional[str] = Field(default=None, description="Catalog name to use")
     catalog_data: Optional[Dict[str, Any]] = Field(default=None, description="Catalog data as JSON object")
     generate_pptx: Optional[bool] = Field(default=False, description="Also generate PPTX slides")
+    reselect_presentation_design: bool = Field(
+        default=False,
+        description="Replace the frozen course-wide presentation design",
+    )
     enable_image_generation: bool = Field(
         default=False,
         description="Persist opt-in to dynamic frontend slide image generation",
@@ -845,6 +849,7 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
             catalog=catalog_source,
             model_name=request.model_name,
             exp_name=request.exp_name,
+            reselect_presentation_design=request.reselect_presentation_design,
             enable_image_generation=request.enable_image_generation,
             replace_images=request.replace_images,
             max_images_per_chapter=request.max_images_per_chapter,

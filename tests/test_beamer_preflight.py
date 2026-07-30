@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from src.beamer_preflight import normalize_beamer_file, normalize_beamer_source
+from src.beamer_preflight import (
+    BeamerPreflightResult,
+    normalize_beamer_file,
+    normalize_beamer_source,
+    repair_messages,
+)
 
 
 def _document(body: str, preamble: str = "") -> str:
@@ -184,6 +189,74 @@ O(n^6)
     assert r"% Commented: O(n^5)" in result.source
     assert "O(n^6)" in result.source
     assert not normalize_beamer_source(result.source).changed
+
+
+def test_wraps_big_o_notation_with_nested_parentheses() -> None:
+    source = _document("The bound is O((n+1)^2), unlike O(n).")
+
+    result = normalize_beamer_source(source)
+
+    assert result.repaired_big_o_expressions == 1
+    assert r"\(O((n+1)^2)\)" in result.source
+    assert "unlike O(n)" in result.source
+
+
+def test_stray_structural_end_does_not_corrupt_a_later_table() -> None:
+    source = _document(
+        "\\end{tabular}\n"
+        "\\begin{tabular}{cc}\n"
+        "A & B \\\\\n"
+        "\\end{tabular}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.escaped_prose_ampersands == 0
+    assert "A & B \\\\" in result.source
+
+
+def test_inline_list_end_does_not_disable_repairs_in_later_frames() -> None:
+    benign = r"""\begin{frame}
+\begin{itemize}
+\item Last point \end{itemize}
+\end{frame}
+"""
+    broken = r"""\begin{frame}
+\begin{itemize}
+  \item Parent
+    \begin{itemize}
+      \item Child
+  \item Sibling
+\end{itemize}
+\end{frame}
+"""
+
+    result = normalize_beamer_source(benign + broken)
+
+    assert result.inserted_list_closures == 1
+    assert "    \\end{itemize}\n  \\item Sibling" in result.source
+
+
+def test_repair_messages_covers_every_repair_counter() -> None:
+    result = BeamerPreflightResult(
+        source="",
+        removed_list_wrapper_pairs=1,
+        original_max_list_depth=4,
+        normalized_max_list_depth=3,
+        injected_color_definitions=("electricblue",),
+        inserted_list_closures=1,
+        repaired_nested_math_environments=1,
+        repaired_equation_commands=1,
+        escaped_prose_ampersands=1,
+        repaired_item_comparisons=1,
+        repaired_big_o_expressions=1,
+    )
+
+    messages = repair_messages(result)
+
+    assert len(messages) == 8
+    assert any("ampersand" in message for message in messages)
+    assert any("big-O" in message for message in messages)
 
 
 def test_normalize_beamer_file_writes_repaired_source_atomically(

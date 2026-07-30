@@ -19,6 +19,9 @@ from src.html_slides_style import (
     IMAGE_VISUAL_TYPES,
     ImageGuidance,
 )
+from src.slide_io import atomic_write as _atomic_write
+from src.slide_io import parse_json_object as _parse_json_object
+from src.slide_io import valid_png_bytes as _structurally_valid_png_bytes
 
 
 IMAGE_CONFIG_FILENAME = "course_image_generation.json"
@@ -27,7 +30,6 @@ IMAGE_STATISTICS_FILENAME = "statistics_slide_images.json"
 IMAGE_CONFIG_SCHEMA_VERSION = 1
 IMAGE_MANIFEST_SCHEMA_VERSION = 2
 IMAGE_PIPELINE_VERSION = "slide-images-2026-07-23-v2"
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 TEXT_FREE_PROMPT_SUFFIX = (
     " The pixels must contain absolutely no text, letters, numbers, labels, "
     "captions, logos, watermarks, UI chrome, or identifiable real people. "
@@ -624,7 +626,7 @@ def _plan_placements(
             valid,
         )
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=len(lenses)) as pool:
         futures = [
             pool.submit(run_scout, name, lens)
             for name, lens in lenses.items()
@@ -779,10 +781,8 @@ def _generate_images(
             if not isinstance(b64, str) or not b64:
                 raise ValueError("response contained no base64 image")
             raw = base64.b64decode(b64, validate=True)
-            if not raw.startswith(PNG_SIGNATURE):
-                raise ValueError("response was not a PNG")
-            if len(raw) < 24 or raw[12:16] != b"IHDR":
-                raise ValueError("response contained a malformed PNG header")
+            if not _structurally_valid_png_bytes(raw):
+                raise ValueError("response contained a malformed or truncated PNG")
             actual_size = (
                 int.from_bytes(raw[16:20], "big"),
                 int.from_bytes(raw[20:24], "big"),
@@ -1112,11 +1112,7 @@ def _manifest_is_current(
 
 
 def _valid_png_bytes(raw: bytes) -> bool:
-    if (
-        len(raw) < 24
-        or not raw.startswith(PNG_SIGNATURE)
-        or raw[12:16] != b"IHDR"
-    ):
+    if not _structurally_valid_png_bytes(raw):
         return False
     width = int.from_bytes(raw[16:20], "big")
     height = int.from_bytes(raw[20:24], "big")
@@ -1194,28 +1190,3 @@ def _with_text_free_prompt(prompt: str) -> str:
     available = 1500 - len(TEXT_FREE_PROMPT_SUFFIX)
     base = prompt.strip()[:available].rstrip()
     return f"{base}{TEXT_FREE_PROMPT_SUFFIX}"
-
-
-def _parse_json_object(text: str) -> dict[str, Any] | None:
-    stripped = text.strip()
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", stripped, flags=re.DOTALL)
-    if fenced:
-        stripped = fenced.group(1).strip()
-    start, end = stripped.find("{"), stripped.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    try:
-        parsed = json.loads(stripped[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    try:
-        temporary.write_text(content, encoding="utf-8")
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)

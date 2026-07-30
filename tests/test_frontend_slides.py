@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 import zipfile
@@ -19,8 +20,10 @@ from src.html_slides import capture_slide_screenshots, export_html_deck
 from src.html_slides import carbon_theme_for_course_style
 from src.html_slides import MANIFEST_SCHEMA_VERSION, finalize_chapter
 from src.html_slides import (
+    BeamerSlide,
     ContentElement,
     ListItem,
+    choose_layout,
 )
 from src.html_slides_code import CodeImageConfig, write_code_image_config
 from src.html_slides import render_speaker_notes_markdown
@@ -387,6 +390,43 @@ def test_materialization_canonicalizes_rgba_and_known_font_aliases() -> None:
     assert result.render_theme.body_font == "dm-sans"
     assert "DM Sans body text" in result.ta_guidance
     assert len(notes) == 3
+
+
+def test_materialization_composites_translucent_background_once() -> None:
+    style = make_style()
+    payload = {
+        "ta_guidance": "Safe guidance",
+        "render_theme": {
+            **asdict(style.render_theme),
+            "colors": {
+                **style.render_theme.colors,
+                "background": "rgba(0, 0, 0, 0.5)",
+                "border": "rgba(255, 255, 255, 0.5)",
+            },
+        },
+    }
+
+    normalized, _ = canonicalize_materialization_payload(payload)
+
+    assert normalized["render_theme"]["colors"]["background"] == "#808080"
+    assert normalized["render_theme"]["colors"]["border"] == "#c0c0c0"
+
+
+def test_single_dense_table_uses_single_column_layout() -> None:
+    slide = BeamerSlide(
+        index=1,
+        title="Wide table",
+        elements=[
+            ContentElement(
+                kind="table",
+                rows=[[f"row {index}", "value"] for index in range(10)],
+            )
+        ],
+        raw_tex="",
+    )
+
+    assert choose_layout(slide) == "top"
+    assert choose_layout(slide, ["top-cols", "top"]) == "top"
 
 
 def test_style_selection_rejects_placeholder_presentation_text() -> None:
@@ -1130,7 +1170,10 @@ print("hello")
         output_name = command[command.index("--save-as") + 1]
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / f"{output_name}.png").write_bytes(
-            b"\x89PNG\r\n\x1a\nfakepng"
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0"
+                "lEQVR42mP8/x8AAusB9Wl2ZQAAAABJRU5ErkJggg=="
+            )
         )
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 

@@ -1182,6 +1182,7 @@ class ADDIE:
     def run(
         self,
         output_dir: str = "./outputs/",
+        reselect_presentation_design: bool = False,
         image_generation_config: ImageGenerationConfig | None = None,
         code_image_config: CodeImageConfig | None = None,
     ) -> List[str]:
@@ -1197,6 +1198,7 @@ class ADDIE:
             self,
             output_dir=output_dir,
             resume=self.resume,
+            reselect_presentation_design=reselect_presentation_design,
             image_generation_config=image_generation_config,
             code_image_config=code_image_config,
         )

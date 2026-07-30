@@ -12,12 +12,14 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from src.slide_io import atomic_write as _atomic_write
+from src.slide_io import valid_png_file as _valid_png
+
 
 CODE_IMAGE_CONFIG_FILENAME = "course_code_images.json"
 CODE_IMAGE_CONFIG_SCHEMA_VERSION = 1
 CODE_IMAGE_PIPELINE_VERSION = "carbon-code-images-2026-07-v1"
 CARBON_NOW_PACKAGE = "carbon-now-cli@2.1.0"
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 _LANGUAGE_EXTENSIONS = {
     "python": ".py",
@@ -187,6 +189,18 @@ def detect_carbon_version(binary: str | None = None) -> str | None:
     return lines[0].strip() if lines else None
 
 
+def carbon_cache_version_is_current(
+    previous_version: object,
+    installed_version: str | None,
+) -> bool:
+    """Require two known, equal versions before reusing Carbon output."""
+    return (
+        installed_version is not None
+        and previous_version not in {None, "unknown"}
+        and installed_version == previous_version
+    )
+
+
 def attach_code_images(
     deck: Any,
     theme: dict[str, str],
@@ -326,6 +340,7 @@ def code_image_data_uri(
                 capture_output=True,
                 timeout=timeout_seconds,
                 check=False,
+                start_new_session=True,
             )
         if completed.returncode != 0 or not _valid_png(image_path):
             image_path.unlink(missing_ok=True)
@@ -364,16 +379,6 @@ def _cache_key(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
 
 
-def _valid_png(path: Path) -> bool:
-    if not path.is_file() or path.stat().st_size <= len(PNG_SIGNATURE):
-        return False
-    try:
-        with path.open("rb") as handle:
-            return handle.read(len(PNG_SIGNATURE)) == PNG_SIGNATURE
-    except OSError:
-        return False
-
-
 def _to_data_uri(image_path: Path) -> str:
     encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
@@ -387,10 +392,3 @@ def _subprocess_detail(completed: subprocess.CompletedProcess[Any]) -> str:
 
 def _brief_error(exc: BaseException) -> str:
     return str(exc).strip().splitlines()[0][:240] or exc.__class__.__name__
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(path)

@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from src.agents import Agent, Deliberation
+from src.slide_io import atomic_write as _atomic_write
+from src.slide_io import parse_json_object
 
 
 # ---------------------------------------------------------------------------
@@ -696,7 +698,16 @@ def canonicalize_materialization_payload(
     if isinstance(colors, dict):
         background = _opaque_color(colors.get("background"), (255, 255, 255))
         backdrop = _hex_to_rgb(background) if background else (255, 255, 255)
+        if background is not None and colors.get("background") != background:
+            original_background = colors.get("background")
+            colors["background"] = background
+            notes.append(
+                "Canonicalized render_theme.colors.background from "
+                f"{original_background!r} to {background!r}."
+            )
         for key, value in list(colors.items()):
+            if key == "background":
+                continue
             canonical = _opaque_color(value, backdrop)
             if canonical is not None and canonical != value:
                 colors[key] = canonical
@@ -1010,13 +1021,6 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(path)
 
 
 def _required_string(data: dict[str, Any], key: str) -> str:
@@ -1492,10 +1496,13 @@ def ensure_course_slide_style(
                         "types or image budget."
                     )
             except FrontendSlidesError as image_exc:
+                if attempt < 2:
+                    raise
                 materialized_image_guidance = DEFAULT_IMAGE_GUIDANCE
                 note = (
-                    "Image guidance materialization was invalid and safely "
-                    f"degraded to disabled guidance ({image_exc})."
+                    "Image guidance materialization remained invalid after "
+                    "retries and safely degraded to disabled guidance "
+                    f"({image_exc})."
                 )
                 if note not in materialization_normalizations:
                     materialization_normalizations.append(note)
@@ -1785,20 +1792,11 @@ def _selection_evidence_markdown(evidence: dict[str, Any] | None) -> str:
 def _parse_json_object(text: str) -> dict[str, Any]:
     if not isinstance(text, str):
         raise FrontendSlidesError("Agent response was not text.")
-    stripped = text.strip()
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", stripped, flags=re.DOTALL)
-    if fenced:
-        stripped = fenced.group(1).strip()
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start < 0 or end <= start:
-        raise FrontendSlidesError("Agent response did not contain a JSON object.")
-    try:
-        value = json.loads(stripped[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise FrontendSlidesError(f"Agent response contained invalid JSON: {exc}") from exc
-    if not isinstance(value, dict):
-        raise FrontendSlidesError("Agent response must be a JSON object.")
+    value = parse_json_object(text)
+    if value is None:
+        raise FrontendSlidesError(
+            "Agent response did not contain a valid JSON object."
+        )
     return value
 
 

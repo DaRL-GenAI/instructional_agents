@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.slide_io import atomic_write
+
 
 _LIST_ENVIRONMENTS = {"itemize", "enumerate"}
 _PROTECTED_ENVIRONMENTS = {"lstlisting", "verbatim", "Verbatim", "minted"}
@@ -29,9 +31,7 @@ _LINE_FRAME_END = re.compile(r"\\end\{frame\}(?:\s|$)")
 _ITEM_LEADING_LESS_THAN = re.compile(
     r"\\item(?P<space>[ \t]+)<(?=[ \t])"
 )
-_BIG_O_NOTATION = re.compile(
-    r"(?<![A-Za-z])O\((?P<body>[^()\r\n]*)\)"
-)
+_BIG_O_PREFIX = re.compile(r"(?<![A-Za-z])O\(")
 _MATH_ONLY_BIG_O_CONTENT = re.compile(
     r"(?<!\\)[_^]|\\[A-Za-z]+"
 )
@@ -45,7 +45,7 @@ _DISPLAY_MATH_ENV_TOKEN = re.compile(
     r"gather\*?|multline\*?)"
     r"\}"
 )
-_EQUATION_INNER_ENVIRONMENTS = {
+EQUATION_INNER_ENVIRONMENTS = {
     "align": "aligned",
     "align*": "aligned",
     "alignat": "alignedat",
@@ -254,6 +254,48 @@ class BeamerPreflightResult:
         )
 
 
+_REPAIR_LABELS: tuple[tuple[str, str], ...] = (
+    (
+        "removed_list_wrapper_pairs",
+        "flattened {value} list wrapper(s) beyond Beamer's 3-level nesting limit",
+    ),
+    (
+        "inserted_list_closures",
+        "closed {value} unclosed generated list environment(s)",
+    ),
+    ("injected_color_definitions", "auto-defined missing color(s): {value}"),
+    (
+        "repaired_nested_math_environments",
+        "normalized {value} nested display-math environment(s)",
+    ),
+    (
+        "repaired_equation_commands",
+        r"replaced {value} malformed \equation{{...}} command(s)",
+    ),
+    ("escaped_prose_ampersands", "escaped {value} prose ampersand(s)"),
+    (
+        "repaired_item_comparisons",
+        "protected {value} item-leading comparison(s)",
+    ),
+    (
+        "repaired_big_o_expressions",
+        "wrapped {value} big-O expression(s) in math mode",
+    ),
+)
+
+
+def repair_messages(result: BeamerPreflightResult) -> list[str]:
+    """Describe every source repair in a stable, shared order."""
+    messages: list[str] = []
+    for field_name, template in _REPAIR_LABELS:
+        value = getattr(result, field_name)
+        if not value:
+            continue
+        display_value = ", ".join(value) if isinstance(value, tuple) else value
+        messages.append(template.format(value=display_value))
+    return messages
+
+
 @dataclass(frozen=True)
 class _ListToken:
     start: int
@@ -354,9 +396,7 @@ def normalize_beamer_file(
         max_list_depth=max_list_depth,
     )
     if result.changed:
-        temporary = source_path.with_suffix(source_path.suffix + ".preflight.tmp")
-        temporary.write_text(result.source, encoding="utf-8")
-        temporary.replace(source_path)
+        atomic_write(source_path, result.source)
     return result
 
 
@@ -429,7 +469,7 @@ def _repair_nested_display_math(source: str) -> tuple[str, int]:
         if action == "begin":
             replacement = None
             if stack and stack[-1][0].rstrip("*") == "equation":
-                replacement = _EQUATION_INNER_ENVIRONMENTS.get(environment)
+                replacement = EQUATION_INNER_ENVIRONMENTS.get(environment)
                 if replacement is not None:
                     replacements.append(
                         (
@@ -505,7 +545,12 @@ def _repair_equation_command_shorthand(source: str) -> tuple[str, int]:
 
 
 def _matching_group_end(source: str, opening_brace: int) -> int | None:
-    """Return the matching ``}`` while respecting escapes and comments."""
+    """Return a matching group delimiter while respecting escapes and comments."""
+    closing_for = {"{": "}", "(": ")", "[": "]"}
+    opening = source[opening_brace] if opening_brace < len(source) else ""
+    closing = closing_for.get(opening)
+    if closing is None:
+        return None
     depth = 0
     cursor = opening_brace
     while cursor < len(source):
@@ -516,8 +561,10 @@ def _matching_group_end(source: str, opening_brace: int) -> int | None:
                 return None
             cursor = newline + 1
             continue
-        if character in "{}" and not _character_is_escaped(source, cursor):
-            depth += 1 if character == "{" else -1
+        if character in {opening, closing} and not _character_is_escaped(
+            source, cursor
+        ):
+            depth += 1 if character == opening else -1
             if depth == 0:
                 return cursor
             if depth < 0:
@@ -554,22 +601,22 @@ def _repair_unclosed_lists_before_items(source: str) -> tuple[str, int]:
         stripped = line.lstrip(" \t")
         indentation = line[: len(line) - len(stripped)]
         indent_width = len(indentation.expandtabs(4))
-        token = _LINE_ENV_TOKEN.match(stripped)
+        tokens = [
+            token
+            for token in _LINE_ENV_TOKEN.finditer(stripped)
+            if not _is_commented(stripped, token.start())
+        ]
 
         if protected_stack:
-            if token:
+            for token in tokens:
                 action = token.group("action")
                 environment = token.group("environment")
                 if action == "begin" and environment in _PROTECTED_ENVIRONMENTS:
                     protected_stack.append(environment)
                 elif action == "end" and environment == protected_stack[-1]:
                     protected_stack.pop()
-            output.append(line)
-            continue
-
-        if token and token.group("environment") in _PROTECTED_ENVIRONMENTS:
-            if token.group("action") == "begin":
-                protected_stack.append(token.group("environment"))
+                if not protected_stack:
+                    break
             output.append(line)
             continue
 
@@ -602,9 +649,17 @@ def _repair_unclosed_lists_before_items(source: str) -> tuple[str, int]:
                     inserted += 1
                 del stack[parent_index + 1 :]
 
-        if token and not stripped.startswith("%"):
+        for token in tokens:
             action = token.group("action")
             environment = token.group("environment")
+            if environment in _PROTECTED_ENVIRONMENTS:
+                if action == "begin":
+                    protected_stack.append(environment)
+                elif protected_stack and protected_stack[-1] == environment:
+                    protected_stack.pop()
+                continue
+            if protected_stack:
+                continue
             if environment in _LIST_ENVIRONMENTS:
                 if action == "begin":
                     stack.append((environment, indent_width, indentation))
@@ -670,16 +725,25 @@ def _repair_big_o_expressions(source: str) -> tuple[str, int]:
     """
     protected_spans = _protected_spans(source)
     replacements: list[tuple[int, int, str]] = []
-    for match in _BIG_O_NOTATION.finditer(source):
+    for match in _BIG_O_PREFIX.finditer(source):
+        opening_parenthesis = match.end() - 1
+        closing_parenthesis = _matching_group_end(source, opening_parenthesis)
+        if closing_parenthesis is None:
+            continue
+        body = source[opening_parenthesis + 1 : closing_parenthesis]
         if (
-            not _MATH_ONLY_BIG_O_CONTENT.search(match.group("body"))
+            not _MATH_ONLY_BIG_O_CONTENT.search(body)
             or _is_commented(source, match.start())
             or _in_spans(match.start(), protected_spans)
             or _position_is_in_math(source, match.start(), protected_spans)
         ):
             continue
         replacements.append(
-            (match.start(), match.end(), rf"\({match.group(0)}\)")
+            (
+                match.start(),
+                closing_parenthesis + 1,
+                rf"\({source[match.start():closing_parenthesis + 1]}\)",
+            )
         )
 
     if not replacements:
@@ -781,10 +845,7 @@ def _ampersand_structural_spans(source: str) -> list[tuple[int, int]]:
             stack.append((environment, match.start()))
             continue
         if not stack or stack[-1][0] != environment:
-            spans.extend(
-                (start, len(source)) for _environment, start in stack
-            )
-            return spans
+            continue
         _, start = stack.pop()
         spans.append((start, match.end()))
     spans.extend((start, len(source)) for _environment, start in stack)
