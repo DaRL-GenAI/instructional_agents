@@ -809,4 +809,12 @@ Configure via model selection in web interface or `--model` flag in CLI.
 
 ## 📜 License
 
-MIT License
+Instructional Agents is released under the [MIT License](LICENSE).
+
+### Third-party attribution
+
+The HTML slide style-selection assets in [`assets/slide_gen/skill`](assets/slide_gen/skill)
+are adapted from [Frontend Slides](https://github.com/zarazhangrui/frontend-slides)
+by Zara Zhang. Frontend Slides is used under the MIT License; its original
+copyright notice and license terms are preserved in
+[`assets/slide_gen/skill/LICENSE`](assets/slide_gen/skill/LICENSE).

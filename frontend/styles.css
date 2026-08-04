@@ -329,41 +329,6 @@ body::before {
     accent-color: var(--ink);
 }
 
-.generation-options {
-    margin: 4px 0 26px;
-    padding: 20px 20px 4px;
-    border: 1px solid var(--border-light);
-    border-left: 3px solid var(--gold);
-    border-radius: 8px;
-    background: linear-gradient(
-        135deg,
-        rgba(201, 168, 76, 0.06),
-        var(--bg-card) 58%
-    );
-}
-
-.generation-options legend {
-    padding: 0 8px;
-    font-family: 'Playfair Display', Georgia, serif;
-    color: var(--ink);
-    font-size: 1.05rem;
-    font-weight: 600;
-}
-
-.generation-options-intro {
-    margin: 0 0 14px;
-    color: var(--text-dim);
-    font-size: 0.86rem;
-}
-
-.generation-options .form-group {
-    margin-bottom: 12px;
-}
-
-.generation-options .checkbox-group label {
-    margin-bottom: 0;
-}
-
 /* ================= BUTTONS ================= */
 .btn {
     padding: 13px 28px;
