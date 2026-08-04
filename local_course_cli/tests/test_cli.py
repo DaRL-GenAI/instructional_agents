@@ -323,7 +323,7 @@ def test_foundation_persists_and_plumbs_code_image_opt_in(
     monkeypatch.setattr(cli, "build_runner", fake_build_runner)
 
     assert cli.run_foundation(
-        foundation_args(code_images=True)
+        foundation_args(code_images="on")
     ) == 0
     assert seen["code_image_config"].enabled is True
     persisted = json.loads(

@@ -240,6 +240,33 @@ def configured_for_invocation(
     return resolved.validated()
 
 
+def configured_from_cli_modes(
+    stored: ImageGenerationConfig,
+    *,
+    image_generation: str | None = None,
+    image_count: str | None = None,
+) -> ImageGenerationConfig:
+    """Resolve the consolidated CLI modes against persisted course settings."""
+    if image_generation not in {None, "on", "off", "replace"}:
+        raise ValueError("image_generation must be one of: on, off, replace")
+    if image_count not in {None, "on", "off"}:
+        raise ValueError("image_count must be one of: on, off")
+
+    resolved = stored.validated()
+    if image_generation == "off":
+        resolved = replace(resolved, enabled=False)
+    if image_count is not None:
+        resolved = replace(
+            resolved,
+            ai_decides_image_count=image_count == "on",
+        )
+    return configured_for_invocation(
+        resolved,
+        enable=image_generation in {"on", "replace"},
+        replace_images=image_generation == "replace",
+    )
+
+
 def style_has_explicit_image_guidance(course_dir: Path | str) -> bool:
     path = Path(course_dir) / "course_slide_style.json"
     if not path.is_file():

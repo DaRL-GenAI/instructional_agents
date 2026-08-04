@@ -452,10 +452,10 @@ python run.py "AI Fundamentals" --catalog ai_catalog
 python run.py "Educational Psychology" --copilot --catalog edu_psy
 
 # Enable images with no numeric per-chapter cap
-python run.py "Systems Thinking" --enable-image-generation --ai-decides-image-count
+python run.py "Systems Thinking" --image-generation on --image-count on
 
 # Opt in to Carbon-rendered code images
-python run.py "Programming Languages" --enable-code-images
+python run.py "Programming Languages" --code-images on
 ```
 
 **Minimal Working Example** (generates a small 3-week course in ~5 min):
@@ -478,32 +478,29 @@ Options:
   --exp EXP_NAME           Experiment name for saving output (default: exp1)
   --seed SEED              Random seed for reproducibility
   --temperature TEMP       Sampling temperature for LLM
-  --enable-image-generation
-                           Persist opt-in to generated frontend slide images
-  --replace-images         Replace images in every processed chapter; implies opt-in
-  --max-images-per-chapter {0,1,2,3}
-                           Persist the experiment's image cap
-  --ai-decides-image-count
-                           Remove the numeric chapter cap and let the placement AI
-                           choose all strong eligible image opportunities
-  --enable-code-images     Persist opt-in to Carbon code images
-  --disable-code-images    Persist styled HTML code blocks instead
+  --image-generation {on,off,replace}
+                           Enable, disable, or replace generated slide images
+  --image-count {on,off}   Turn AI-selected image counts on or off; when on,
+                           the count is always automatic
+  --code-images {on,off}   Use Carbon code images or styled HTML code blocks
   --optimize STORAGE_ID    Optimize mode: provide storage_id of uploaded PDFs
   --requirements TEXT      User requirements for optimization (with --optimize)
   --chapter NAME           Specific chapter to optimize (with --optimize)
 ```
 
 Dynamic slide images are off by default. When enabled, the presentation-design
-deliberation may still veto imagery or choose a lower per-chapter budget. Use
-`--ai-decides-image-count` instead of `--max-images-per-chapter` to remove the
-numeric budget; the placement AI may then choose zero, five, six, or any other
-number up to the chapter's eligible slides.
+deliberation may still veto imagery. Use `--image-count on` to remove the fixed
+numeric budget and always let the placement AI choose the count. Use
+`--image-count off` to restore the experiment's stored fixed cap (3 by default).
+Omitting the flag preserves the current experiment setting. The placement AI
+may choose zero, five, six, or any other number up to the chapter's eligible
+slides while automatic counting is on.
 Generated images appear only in the HTML, HTML-derived PDF, and HTML-derived
 PPTX; the Beamer source and PDF are unchanged. See
 [`docs/image-generation-implementation-spec.html`](docs/image-generation-implementation-spec.html)
 for cache, replacement, and local-course CLI behavior.
 
-Carbon code images are also off by default. `--enable-code-images` persists the
+Carbon code images are also off by default. `--code-images on` persists the
 choice in `course_code_images.json` and applies it to every chapter. The first
 enabled chapter that actually contains a `lstlisting` or `verbatim` block uses
 an existing `carbon-now` executable or runs
@@ -514,8 +511,8 @@ timeouts, or invalid Carbon output produce warnings and retain the styled
 editable `<pre>` block. Successful PNGs are cached by content, language, theme,
 pipeline, and Carbon version, then embedded directly in the self-contained
 HTML. They therefore appear in the HTML-derived PDF and PPTX, while
-`slides.tex` and the Beamer PDF remain unchanged. Use
-`--disable-code-images` to persistently return the course to `<pre>` rendering.
+`slides.tex` and the Beamer PDF remain unchanged. Use `--code-images off` to
+persistently return the course to `<pre>` rendering.
 
 ### Method 3: Direct API Calls
 

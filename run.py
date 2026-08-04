@@ -50,6 +50,8 @@ def run_instructional_design(
     max_images_per_chapter: int | None = None,
     ai_decides_image_count: bool = False,
     code_images: bool | None = None,
+    image_generation: str | None = None,
+    image_count: str | None = None,
 ):
     """
     Main function to run the instructional design workflow by sequentially
@@ -117,22 +119,38 @@ def run_instructional_design(
     output_dir = f"./exp/{exp_name}/"
     os.makedirs(output_dir, exist_ok=True)
     from src.html_slides_img import (
+        configured_from_cli_modes,
         configured_for_invocation,
         load_image_generation_config,
         style_has_explicit_image_guidance,
         write_image_generation_config,
     )
 
+    if image_generation is not None and (
+        enable_image_generation or replace_images
+    ):
+        raise ValueError(
+            "image_generation cannot be combined with legacy image-generation controls"
+        )
+    if image_count is not None and (
+        max_images_per_chapter is not None or ai_decides_image_count
+    ):
+        raise ValueError(
+            "image_count cannot be combined with legacy image-count controls"
+        )
+
     stored_image_config = load_image_generation_config(output_dir)
+    enable_images = enable_image_generation or image_generation in {"on", "replace"}
+    replace_images_for_run = replace_images or image_generation == "replace"
     if (
-        (enable_image_generation or replace_images)
+        (enable_images or replace_images_for_run)
         and not reselect_presentation_design
         and os.path.isfile(os.path.join(output_dir, "course_slide_style.json"))
         and not style_has_explicit_image_guidance(output_dir)
     ):
         raise ValueError(
             "This legacy course has no image guidance. Rerun foundation with "
-            "--reselect-presentation-design --enable-image-generation first."
+            "--reselect-presentation-design --image-generation on first."
         )
     if max_images_per_chapter is not None:
         stored_image_config = replace(
@@ -145,11 +163,18 @@ def run_instructional_design(
             stored_image_config,
             ai_decides_image_count=True,
         ).validated()
-    image_config = configured_for_invocation(
-        stored_image_config,
-        enable=enable_image_generation,
-        replace_images=replace_images,
-    )
+    if image_generation is not None or image_count is not None:
+        image_config = configured_from_cli_modes(
+            stored_image_config,
+            image_generation=image_generation,
+            image_count=image_count,
+        )
+    else:
+        image_config = configured_for_invocation(
+            stored_image_config,
+            enable=enable_images,
+            replace_images=replace_images_for_run,
+        )
     write_image_generation_config(output_dir, image_config)
     from src.html_slides_code import (
         configured_for_invocation as configured_code_images_for_invocation,
@@ -224,16 +249,8 @@ def run_optimization(storage_id: str, user_requirements: str, model_name: str = 
     )
 
 
-def main():
-    """CLI entry point for instructional-agents."""
-    # Load config if available
-    config_path = os.path.join(os.path.dirname(__file__), "config.json")
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            config = json.load(f)
-        os.environ.setdefault("OPENAI_API_KEY", config.get("OPENAI_API_KEY", ""))
-
-    # Set up command line arguments
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser for the instructional workflow."""
     parser = argparse.ArgumentParser(description="Run instructional design workflow")
 
     parser.add_argument("course_name", type=str, nargs='?', default=None,
@@ -299,49 +316,30 @@ def main():
         ),
     )
     parser.add_argument(
-        "--enable-image-generation",
-        action="store_true",
-        help="Persist opt-in to dynamic frontend slide image generation.",
-    )
-    parser.add_argument(
-        "--replace-images",
-        action="store_true",
-        help="Regenerate images for every processed chapter; implies enablement.",
-    )
-    image_count_group = parser.add_mutually_exclusive_group()
-    image_count_group.add_argument(
-        "--max-images-per-chapter",
-        type=int,
-        choices=range(0, 4),
-        default=None,
-        metavar="0-3",
-        help="Persist the experiment default image cap (0 to 3).",
-    )
-    code_image_group = parser.add_mutually_exclusive_group()
-    code_image_group.add_argument(
-        "--enable-code-images",
-        dest="code_images",
-        action="store_const",
-        const=True,
+        "--image-generation",
+        choices=("on", "off", "replace"),
         default=None,
         help=(
-            "Persist opt-in to Carbon code images; may install "
-            "carbon-now-cli globally when code is first encountered."
+            "Persist generated-image behavior: on enables and reuses cached "
+            "images, off disables, and replace regenerates images this run."
         ),
     )
-    code_image_group.add_argument(
-        "--disable-code-images",
-        dest="code_images",
-        action="store_const",
-        const=False,
-        help="Persist styled <pre> rendering for frontend slide code blocks.",
-    )
-    image_count_group.add_argument(
-        "--ai-decides-image-count",
-        action="store_true",
+    parser.add_argument(
+        "--image-count",
+        choices=("on", "off"),
+        default=None,
         help=(
-            "Remove the numeric per-chapter image cap and let the placement AI "
-            "choose every strong eligible image opportunity."
+            "Persist AI-selected image counts: on always lets the AI choose "
+            "the count; off restores the stored fixed cap."
+        ),
+    )
+    parser.add_argument(
+        "--code-images",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "Persist code rendering: on uses Carbon code images and off uses "
+            "styled HTML code blocks."
         ),
     )
 
@@ -384,6 +382,19 @@ def main():
         help="Convert existing .tex files to .pptx. Provide exp directory path (e.g., ./exp/my_course/)"
     )
 
+    return parser
+
+
+def main():
+    """CLI entry point for instructional-agents."""
+    # Load config if available
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        os.environ.setdefault("OPENAI_API_KEY", config.get("OPENAI_API_KEY", ""))
+
+    parser = build_parser()
     args = parser.parse_args()
 
     # PPTX-only conversion mode (no ADDIE workflow, no API key needed)
@@ -429,11 +440,11 @@ def main():
             temperature=args.temperature,
             resume=args.resume,
             reselect_presentation_design=args.reselect_presentation_design,
-            enable_image_generation=args.enable_image_generation,
-            replace_images=args.replace_images,
-            max_images_per_chapter=args.max_images_per_chapter,
-            ai_decides_image_count=args.ai_decides_image_count,
-            code_images=args.code_images,
+            image_generation=args.image_generation,
+            image_count=args.image_count,
+            code_images=(
+                None if args.code_images is None else args.code_images == "on"
+            ),
         )
 
 

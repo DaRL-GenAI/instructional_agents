@@ -95,7 +95,7 @@ Opt in to Carbon-rendered code images for the whole course:
 ```bash
 ./local_course_cli/course foundation "My Course" \
   --course-id my-course \
-  --enable-code-images
+  --code-images on
 ```
 
 The setting is off by default and persists in `course_code_images.json`.
@@ -103,9 +103,22 @@ Enabling it authorizes a lazy global
 `npm install --global carbon-now-cli@2.1.0` only when a chapter actually
 contains code and `carbon-now` is missing. Node.js and npm are prerequisites
 and are not installed automatically. Any install or rendering failure warns
-and falls back to the styled `<pre>` block. Use `--disable-code-images` on a
+and falls back to the styled `<pre>` block. Use `--code-images off` on a
 foundation or chapter command to persistently opt out and refinalize completed
 HTML-derived artifacts.
+
+Generated slide images use the same consolidated controls as `run.py`:
+
+```bash
+./local_course_cli/course foundation "My Course" \
+  --course-id my-course \
+  --image-generation on \
+  --image-count on
+```
+
+`--image-generation` accepts `on`, `off`, or `replace`. `--image-count on`
+always delegates the image count to the AI; `--image-count off` restores the
+stored fixed cap. Omitted media flags preserve the saved course settings.
 
 If a legacy `script.md` cannot be matched safely to its saved Beamer frames,
 repair only the notes before finalization:

@@ -11,6 +11,7 @@ import pytest
 from PIL import Image
 
 from local_course_cli.cli import build_parser
+from run import build_parser as build_run_parser
 from src.html_slides import (
     BeamerDeck,
     BeamerSlide,
@@ -31,6 +32,7 @@ from src.html_slides_img import (
     append_image_statistics,
     augment_deck_with_generated_images,
     commit_image_result,
+    configured_from_cli_modes,
     configured_for_invocation,
     effective_cap,
     load_image_generation_config,
@@ -799,7 +801,7 @@ def test_statistics_are_an_append_only_invocation_ledger(
     assert payload["runs"][1]["current_image_count"] == 1
 
 
-def test_local_cli_parses_image_flags_and_bounds() -> None:
+def test_consolidated_cli_media_flags() -> None:
     args = build_parser().parse_args(
         [
             "chapter",
@@ -807,82 +809,86 @@ def test_local_cli_parses_image_flags_and_bounds() -> None:
             "course",
             "--number",
             "2",
-            "--replace-images",
-            "--max-images-per-chapter",
-            "1",
+            "--image-generation",
+            "replace",
+            "--image-count",
+            "on",
+            "--code-images",
+            "on",
         ]
     )
-    assert args.replace_images is True
-    assert args.max_images_per_chapter == 1
-    uncapped = build_parser().parse_args(
-        [
-            "chapter",
-            "--course-id",
-            "course",
-            "--number",
-            "2",
-            "--ai-decides-image-count",
-        ]
-    )
-    assert uncapped.ai_decides_image_count is True
-    code_images = build_parser().parse_args(
-        [
-            "chapter",
-            "--course-id",
-            "course",
-            "--number",
-            "2",
-            "--enable-code-images",
-        ]
-    )
-    assert code_images.code_images is True
-    no_code_images = build_parser().parse_args(
+    assert args.image_generation == "replace"
+    assert args.image_count == "on"
+    assert args.code_images == "on"
+
+    disabled = build_parser().parse_args(
         [
             "foundation",
             "Course",
             "--course-id",
             "course",
-            "--disable-code-images",
+            "--image-generation",
+            "off",
+            "--image-count",
+            "off",
+            "--code-images",
+            "off",
         ]
     )
-    assert no_code_images.code_images is False
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(
-            [
-                "chapter",
-                "--course-id",
-                "course",
-                "--number",
-                "2",
-                "--max-images-per-chapter",
-                "4",
-            ]
-        )
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(
-            [
-                "chapter",
-                "--course-id",
-                "course",
-                "--number",
-                "2",
-                "--max-images-per-chapter",
-                "2",
-                "--ai-decides-image-count",
-            ]
-        )
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(
-            [
-                "chapter",
-                "--course-id",
-                "course",
-                "--number",
-                "2",
-                "--enable-code-images",
-                "--disable-code-images",
-            ]
-        )
+    assert disabled.image_generation == "off"
+    assert disabled.image_count == "off"
+    assert disabled.code_images == "off"
+
+    run_args = build_run_parser().parse_args(
+        [
+            "Systems",
+            "--image-generation",
+            "on",
+            "--image-count",
+            "on",
+            "--code-images",
+            "off",
+        ]
+    )
+    assert run_args.image_generation == "on"
+    assert run_args.image_count == "on"
+    assert run_args.code_images == "off"
+
+    for parser, command in (
+        (build_parser(), ["chapter", "--course-id", "course", "--number", "2"]),
+        (build_run_parser(), ["Systems"]),
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args([*command, "--image-count", "auto"])
+        with pytest.raises(SystemExit):
+            parser.parse_args([*command, "--enable-image-generation"])
+
+
+def test_consolidated_image_modes_preserve_fixed_cap() -> None:
+    stored = ImageGenerationConfig(
+        enabled=True,
+        max_images_per_chapter=2,
+        ai_decides_image_count=False,
+    )
+    automatic = configured_from_cli_modes(
+        stored,
+        image_generation="on",
+        image_count="on",
+    )
+    assert automatic.enabled is True
+    assert automatic.ai_decides_image_count is True
+    assert automatic.effective_operator_cap is None
+
+    fixed = configured_from_cli_modes(automatic, image_count="off")
+    assert fixed.enabled is True
+    assert fixed.ai_decides_image_count is False
+    assert fixed.effective_operator_cap == 2
+
+    disabled = configured_from_cli_modes(fixed, image_generation="off")
+    assert disabled.enabled is False
+    replacement = configured_from_cli_modes(disabled, image_generation="replace")
+    assert replacement.enabled is True
+    assert replacement.replace_images is True
 
 
 def test_api_request_validates_image_fields() -> None:

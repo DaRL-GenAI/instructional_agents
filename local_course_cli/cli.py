@@ -377,7 +377,7 @@ def run_foundation(args: argparse.Namespace) -> int:
     write_manifest(output_dir, config)
     reselect = getattr(args, "reselect_presentation_design", False)
     from src.html_slides_img import (
-        configured_for_invocation,
+        configured_from_cli_modes,
         load_image_generation_config,
         style_has_explicit_image_guidance,
         write_image_generation_config,
@@ -388,8 +388,10 @@ def run_foundation(args: argparse.Namespace) -> int:
         write_code_image_config,
     )
 
-    enable_images = bool(getattr(args, "enable_image_generation", False))
-    replace_images = bool(getattr(args, "replace_images", False))
+    image_generation = getattr(args, "image_generation", None)
+    image_count = getattr(args, "image_count", None)
+    enable_images = image_generation in {"on", "replace"}
+    replace_images = image_generation == "replace"
     if (
         (enable_images or replace_images)
         and (output_dir / "course_slide_style.json").is_file()
@@ -398,31 +400,22 @@ def run_foundation(args: argparse.Namespace) -> int:
     ):
         raise CliError(
             "This legacy course has no image guidance. Rerun foundation using "
-            "--reselect-presentation-design --enable-image-generation."
+            "--reselect-presentation-design --image-generation on."
         )
     try:
         stored_images = load_image_generation_config(output_dir)
-        max_images = getattr(args, "max_images_per_chapter", None)
-        if max_images is not None:
-            stored_images = replace(
-                stored_images,
-                max_images_per_chapter=max_images,
-                ai_decides_image_count=False,
-            ).validated()
-        elif bool(getattr(args, "ai_decides_image_count", False)):
-            stored_images = replace(
-                stored_images,
-                ai_decides_image_count=True,
-            ).validated()
-        image_config = configured_for_invocation(
+        image_config = configured_from_cli_modes(
             stored_images,
-            enable=enable_images,
-            replace_images=replace_images,
+            image_generation=image_generation,
+            image_count=image_count,
         )
         write_image_generation_config(output_dir, image_config)
     except ValueError as exc:
         raise CliError(str(exc)) from exc
-    requested_code_images = getattr(args, "code_images", None)
+    code_images_mode = getattr(args, "code_images", None)
+    requested_code_images = (
+        None if code_images_mode is None else code_images_mode == "on"
+    )
     try:
         code_image_config = configured_code_images_for_invocation(
             load_code_image_config(output_dir),
@@ -451,10 +444,8 @@ def run_foundation(args: argparse.Namespace) -> int:
     chapters = validate_foundation(output_dir)
     if (
         reselect
-        or enable_images
-        or replace_images
-        or max_images is not None
-        or bool(getattr(args, "ai_decides_image_count", False))
+        or image_generation is not None
+        or image_count is not None
         or requested_code_images is not None
     ):
         refinalize_existing_chapters(output_dir, runner, force=True)
@@ -648,7 +639,7 @@ def run_chapter(args: argparse.Namespace) -> int:
     config = load_manifest(output_dir)
     disk_chapters = validate_foundation(output_dir)
     from src.html_slides_img import (
-        configured_for_invocation,
+        configured_from_cli_modes,
         load_image_generation_config,
         style_has_explicit_image_guidance,
         write_image_generation_config,
@@ -659,38 +650,33 @@ def run_chapter(args: argparse.Namespace) -> int:
         write_code_image_config,
     )
 
-    enable_images = bool(getattr(args, "enable_image_generation", False))
-    replace_images = bool(getattr(args, "replace_images", False))
+    image_generation = getattr(args, "image_generation", None)
+    image_count = getattr(args, "image_count", None)
+    enable_images = image_generation in {"on", "replace"}
+    replace_images = image_generation == "replace"
     if (
         (enable_images or replace_images)
         and not style_has_explicit_image_guidance(output_dir)
     ):
         raise CliError(
             "This legacy course has no image guidance. Rerun foundation using "
-            "--reselect-presentation-design --enable-image-generation."
+            "--reselect-presentation-design --image-generation on."
         )
     try:
         stored_images = load_image_generation_config(output_dir)
-        image_config = configured_for_invocation(
+        image_config = configured_from_cli_modes(
             stored_images,
-            enable=enable_images,
-            replace_images=replace_images,
-            max_images_override=getattr(args, "max_images_per_chapter", None),
-            ai_decides_image_count=(
-                True
-                if bool(getattr(args, "ai_decides_image_count", False))
-                else None
-            ),
+            image_generation=image_generation,
+            image_count=image_count,
         )
-        if (
-            enable_images
-            or replace_images
-            or bool(getattr(args, "ai_decides_image_count", False))
-        ):
+        if image_generation is not None or image_count is not None:
             write_image_generation_config(output_dir, image_config)
     except ValueError as exc:
         raise CliError(str(exc)) from exc
-    requested_code_images = getattr(args, "code_images", None)
+    code_images_mode = getattr(args, "code_images", None)
+    requested_code_images = (
+        None if code_images_mode is None else code_images_mode == "on"
+    )
     try:
         code_image_config = configured_code_images_for_invocation(
             load_code_image_config(output_dir),
@@ -936,50 +922,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     foundation.add_argument(
-        "--enable-image-generation",
-        action="store_true",
-        help="Persist opt-in to dynamic frontend slide image generation.",
+        "--image-generation",
+        choices=("on", "off", "replace"),
+        default=None,
+        help=(
+            "Persist generated-image behavior: on enables, off disables, "
+            "and replace regenerates images for completed chapters."
+        ),
     )
     foundation.add_argument(
-        "--replace-images",
-        action="store_true",
-        help="Replace images for all completed chapters; implies enablement.",
-    )
-    foundation_image_count = foundation.add_mutually_exclusive_group()
-    foundation_image_count.add_argument(
-        "--max-images-per-chapter",
-        type=int,
-        choices=range(0, 4),
-        default=None,
-        metavar="0-3",
-        help="Persist the experiment default image cap.",
-    )
-    foundation_image_count.add_argument(
-        "--ai-decides-image-count",
-        action="store_true",
-        help=(
-            "Remove the numeric chapter cap and let the placement AI choose "
-            "every strong eligible image opportunity."
-        ),
-    )
-    foundation_code_images = foundation.add_mutually_exclusive_group()
-    foundation_code_images.add_argument(
-        "--enable-code-images",
-        dest="code_images",
-        action="store_const",
-        const=True,
+        "--image-count",
+        choices=("on", "off"),
         default=None,
         help=(
-            "Persist opt-in to Carbon code images; may install "
-            "carbon-now-cli globally when code is first encountered."
+            "Persist AI-selected image counts: on always lets the AI choose "
+            "the count; off restores the stored fixed cap."
         ),
     )
-    foundation_code_images.add_argument(
-        "--disable-code-images",
-        dest="code_images",
-        action="store_const",
-        const=False,
-        help="Persist styled <pre> rendering for frontend slide code blocks.",
+    foundation.add_argument(
+        "--code-images",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "Persist code rendering: on uses Carbon code images and off uses "
+            "styled HTML code blocks."
+        ),
     )
     foundation.set_defaults(handler=run_foundation)
 
@@ -1003,50 +970,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     chapter.add_argument(
-        "--enable-image-generation",
-        action="store_true",
-        help="Persist image generation and apply it to this chapter.",
+        "--image-generation",
+        choices=("on", "off", "replace"),
+        default=None,
+        help=(
+            "Persist generated-image behavior for the course; replace "
+            "regenerates images for this chapter."
+        ),
     )
     chapter.add_argument(
-        "--replace-images",
-        action="store_true",
-        help="Replace generated images for this chapter only; implies enablement.",
-    )
-    chapter_image_count = chapter.add_mutually_exclusive_group()
-    chapter_image_count.add_argument(
-        "--max-images-per-chapter",
-        type=int,
-        choices=range(0, 4),
-        default=None,
-        metavar="0-3",
-        help="Tighten the image cap for this invocation without persisting it.",
-    )
-    chapter_image_count.add_argument(
-        "--ai-decides-image-count",
-        action="store_true",
-        help=(
-            "Remove the numeric cap for this and future chapters and let the "
-            "placement AI choose every strong eligible image opportunity."
-        ),
-    )
-    chapter_code_images = chapter.add_mutually_exclusive_group()
-    chapter_code_images.add_argument(
-        "--enable-code-images",
-        dest="code_images",
-        action="store_const",
-        const=True,
+        "--image-count",
+        choices=("on", "off"),
         default=None,
         help=(
-            "Persist opt-in to Carbon code images; may install "
-            "carbon-now-cli globally when code is first encountered."
+            "Persist AI-selected image counts: on always lets the AI choose "
+            "the count; off restores the stored fixed cap."
         ),
     )
-    chapter_code_images.add_argument(
-        "--disable-code-images",
-        dest="code_images",
-        action="store_const",
-        const=False,
-        help="Persist styled <pre> rendering for frontend slide code blocks.",
+    chapter.add_argument(
+        "--code-images",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "Persist code rendering: on uses Carbon code images and off uses "
+            "styled HTML code blocks."
+        ),
     )
     chapter.set_defaults(handler=run_chapter)
 
