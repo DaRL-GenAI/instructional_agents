@@ -1621,33 +1621,154 @@ def render_deck_html(
         }}
         .presenter-notes {{
             position: fixed;
-            right: 22px;
-            bottom: 22px;
+            right: 24px;
+            bottom: 24px;
             z-index: 12000;
-            width: min(520px, calc(100vw - 44px));
-            max-height: min(520px, calc(100vh - 44px));
-            overflow: auto;
-            padding: 22px 24px;
-            border: 1px solid rgba(255, 255, 255, 0.24);
-            border-radius: 14px;
-            background: rgba(9, 12, 18, 0.94);
-            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38);
-            color: #f7f8fa;
-            font: 17px/1.55 var(--font-body);
+            isolation: isolate;
+            display: grid;
+            grid-template-rows: auto auto minmax(0, 1fr);
+            width: min(640px, calc(100vw - 48px));
+            max-height: min(760px, calc(100vh - 48px));
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 18px;
+            background: rgba(14, 18, 25, 0.98);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
+            color: #e8edf5;
+            color-scheme: dark;
+            font-family: var(--font-body);
+            text-align: left;
+        }}
+        .presenter-notes[hidden] {{ display: none; }}
+        .presenter-notes__bar {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 18px 22px 10px;
         }}
         .presenter-notes__label {{
-            margin-bottom: 7px;
+            margin: 0;
             color: #aeb8c8;
             font: 12px/1.2 var(--font-mono);
             letter-spacing: 0.14em;
             text-transform: uppercase;
         }}
-        .presenter-notes h2 {{
-            margin-bottom: 12px;
-            color: #fff;
-            font: 700 23px/1.2 var(--font-display);
+        .presenter-notes__close {{
+            flex: 0 0 auto;
+            padding: 6px 9px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.06);
+            color: #d9e1ec;
+            font: 12px/1 var(--font-mono);
+            letter-spacing: 0.04em;
+            cursor: pointer;
         }}
-        .presenter-notes__text {{ white-space: pre-wrap; }}
+        .presenter-notes__close:hover {{ background: rgba(255, 255, 255, 0.12); }}
+        .presenter-notes__close:focus-visible {{
+            outline: 2px solid #8eb8ff;
+            outline-offset: 2px;
+        }}
+        .presenter-notes__title {{
+            margin: 0;
+            padding: 0 22px 16px;
+            color: #fff;
+            font: 700 24px/1.2 var(--font-display);
+            overflow-wrap: anywhere;
+        }}
+        .presenter-notes__content {{
+            min-height: 0;
+            overflow-x: hidden;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            padding: 0 22px 22px;
+            scrollbar-gutter: stable;
+            white-space: normal;
+        }}
+        .presenter-notes__content > :first-child {{ margin-top: 0; }}
+        .presenter-notes__content > :last-child {{ margin-bottom: 0; }}
+        .presenter-notes__content p,
+        .presenter-notes__content li,
+        .presenter-notes__content blockquote {{
+            color: #e8edf5;
+            font-family: var(--font-body);
+            font-size: 16px;
+            line-height: 1.62;
+        }}
+        .presenter-notes__content p,
+        .presenter-notes__content ul,
+        .presenter-notes__content ol,
+        .presenter-notes__content blockquote,
+        .presenter-notes__content pre {{ margin: 0 0 14px; }}
+        .presenter-notes__content ul,
+        .presenter-notes__content ol {{ padding-left: 1.35em; }}
+        .presenter-notes__content li + li {{ margin-top: 6px; }}
+        .presenter-notes__content h1,
+        .presenter-notes__content h2,
+        .presenter-notes__content h3,
+        .presenter-notes__content h4,
+        .presenter-notes__content h5,
+        .presenter-notes__content h6 {{
+            max-width: none;
+            margin: 20px 0 8px;
+            color: #fff;
+            font: 700 18px/1.3 var(--font-display);
+            letter-spacing: 0;
+        }}
+        .presenter-notes__content strong {{ color: #fff; font-weight: 700; }}
+        .presenter-notes__content em {{ color: #dce5f2; }}
+        .presenter-notes__content a {{ color: #9dc1ff; text-underline-offset: 3px; }}
+        .presenter-notes__content code {{
+            border-radius: 5px;
+            background: rgba(255, 255, 255, 0.09);
+            color: #f4f7fb;
+            font: 0.9em/1.5 var(--font-mono);
+            padding: 0.12em 0.32em;
+        }}
+        .presenter-notes__content pre {{
+            overflow-x: auto;
+            padding: 12px 14px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 9px;
+            background: #090c11;
+            color: #eef3fa;
+            font: 13px/1.55 var(--font-mono);
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }}
+        .presenter-notes__content pre code {{
+            padding: 0;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+        }}
+        .presenter-notes__content blockquote {{
+            padding-left: 14px;
+            border-left: 3px solid #7898c9;
+            color: #cbd5e4;
+        }}
+        .presenter-notes__content hr {{
+            margin: 18px 0;
+            border: 0;
+            border-top: 1px solid rgba(255, 255, 255, 0.16);
+        }}
+        .presenter-notes__content ::selection {{
+            background: #8eb8ff;
+            color: #0b111a;
+        }}
+        @media (max-width: 700px), (max-height: 560px) {{
+            .presenter-notes {{
+                right: 12px;
+                bottom: 12px;
+                width: calc(100vw - 24px);
+                max-height: calc(100vh - 24px);
+                border-radius: 14px;
+            }}
+            .presenter-notes__bar {{ padding: 15px 16px 8px; }}
+            .presenter-notes__title {{ padding: 0 16px 13px; font-size: 21px; }}
+            .presenter-notes__content {{ padding: 0 16px 16px; }}
+        }}
         @media print {{
             .presenter-notes,
             .slide-progress,
@@ -1690,10 +1811,13 @@ def render_deck_html(
     <div class="slide-progress" id="slideProgress" aria-live="polite"></div>
     <div class="edit-hotzone" aria-hidden="true"></div>
     <button class="edit-toggle" id="editToggle" type="button" title="Edit mode (E)" aria-label="Toggle edit mode">E</button>
-    <aside class="presenter-notes" id="presenterNotes" aria-live="polite" hidden>
-        <p class="presenter-notes__label">Speaker notes · N to close</p>
-        <h2 id="presenterNotesTitle"></h2>
-        <p class="presenter-notes__text" id="presenterNotesText"></p>
+    <aside class="presenter-notes" id="presenterNotes" aria-live="polite" aria-label="Speaker notes" hidden>
+        <div class="presenter-notes__bar">
+            <p class="presenter-notes__label">Speaker notes</p>
+            <button class="presenter-notes__close" id="presenterNotesClose" type="button" aria-label="Close speaker notes">Close · N</button>
+        </div>
+        <h2 class="presenter-notes__title" id="presenterNotesTitle"></h2>
+        <div class="presenter-notes__content" id="presenterNotesText"></div>
     </aside>
     <script type="application/json" id="deck-manifest">{_json_for_script(manifest_for_page)}</script>
     <script type="application/json" id="speaker-notes-data">{notes_payload}</script>
@@ -1782,11 +1906,175 @@ def render_deck_html(
         }}
 
         /* === OFFLINE PRESENTER NOTES === */
+        function appendSpeakerNotesInline(parent, source) {{
+            let remaining = String(source == null ? '' : source);
+            const rules = [
+                {{ type: 'math', regex: /\\\\\\[[\\s\\S]*?\\\\\\]|\\\\\\([\\s\\S]*?\\\\\\)|\\$\\$[\\s\\S]*?\\$\\$|\\$[^\\$\\n]+?\\$/ }},
+                {{ type: 'code', regex: /`([^`\\n]+)`/ }},
+                {{ type: 'link', regex: /\\[([^\\]\\n]+)\\]\\(([^)\\s]+)\\)/ }},
+                {{ type: 'strong', regex: /\\*\\*([\\s\\S]+?)\\*\\*/ }},
+                {{ type: 'strong', regex: /__([\\s\\S]+?)__/ }},
+                {{ type: 'strike', regex: /~~([\\s\\S]+?)~~/ }},
+                {{ type: 'em', regex: /\\*([^*\\n]+)\\*/ }},
+                {{ type: 'em', regex: /_([^_\\n]+)_/ }},
+            ];
+
+            while (remaining) {{
+                let token = null;
+                rules.forEach((rule, order) => {{
+                    const match = rule.regex.exec(remaining);
+                    if (!match) return;
+                    if (!token || match.index < token.match.index ||
+                        (match.index === token.match.index && order < token.order)) {{
+                        token = {{ rule, match, order }};
+                    }}
+                }});
+                if (!token) {{
+                    parent.append(document.createTextNode(remaining));
+                    break;
+                }}
+                if (token.match.index > 0) {{
+                    parent.append(document.createTextNode(remaining.slice(0, token.match.index)));
+                }}
+
+                const raw = token.match[0];
+                if (token.rule.type === 'math') {{
+                    parent.append(document.createTextNode(raw));
+                }} else if (token.rule.type === 'link') {{
+                    const url = token.match[2];
+                    if (/^(https?:|mailto:)/i.test(url)) {{
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.target = '_blank';
+                        link.rel = 'noopener noreferrer';
+                        appendSpeakerNotesInline(link, token.match[1]);
+                        parent.append(link);
+                    }} else {{
+                        parent.append(document.createTextNode(raw));
+                    }}
+                }} else {{
+                    const tag = {{ code: 'code', strong: 'strong', strike: 's', em: 'em' }}[token.rule.type];
+                    const element = document.createElement(tag);
+                    if (token.rule.type === 'code') {{
+                        element.textContent = token.match[1];
+                    }} else {{
+                        appendSpeakerNotesInline(element, token.match[1]);
+                    }}
+                    parent.append(element);
+                }}
+                remaining = remaining.slice(token.match.index + raw.length);
+            }}
+        }}
+
+        function isSpeakerNotesBlockStart(line) {{
+            return /^ {{0,3}}(```|~~~)/.test(line) ||
+                /^ {{0,3}}#{{1,6}}\\s+/.test(line) ||
+                /^ {{0,3}}([-*_])(?:\\s*\\1){{2,}}\\s*$/.test(line) ||
+                /^\\s*>\\s?/.test(line) ||
+                /^\\s*[-+*]\\s+/.test(line) ||
+                /^\\s*\\d+[.)]\\s+/.test(line);
+        }}
+
+        function renderSpeakerNotesMarkdown(container, markdown) {{
+            const source = String(markdown == null ? '' : markdown);
+            container.replaceChildren();
+            container.dataset.renderMode = 'markdown';
+            try {{
+                const lines = source.replace(/\\r\\n?/g, '\\n').split('\\n');
+                let index = 0;
+                while (index < lines.length) {{
+                    const line = lines[index];
+                    if (!line.trim()) {{ index += 1; continue; }}
+
+                    const fence = /^ {{0,3}}(```|~~~)\\s*([^\\s]*)\\s*$/.exec(line);
+                    if (fence) {{
+                        const fenceToken = fence[1];
+                        const codeLines = [];
+                        index += 1;
+                        while (index < lines.length && !new RegExp('^ {{0,3}}' + fenceToken + '\\s*$').test(lines[index])) {{
+                            codeLines.push(lines[index]);
+                            index += 1;
+                        }}
+                        if (index < lines.length) index += 1;
+                        const pre = document.createElement('pre');
+                        const code = document.createElement('code');
+                        if (fence[2]) code.dataset.language = fence[2];
+                        code.textContent = codeLines.join('\\n');
+                        pre.append(code);
+                        container.append(pre);
+                        continue;
+                    }}
+
+                    const heading = /^ {{0,3}}(#{{1,6}})\\s+(.+?)\\s*#*\\s*$/.exec(line);
+                    if (heading) {{
+                        const element = document.createElement('h' + Math.min(heading[1].length, 6));
+                        appendSpeakerNotesInline(element, heading[2]);
+                        container.append(element);
+                        index += 1;
+                        continue;
+                    }}
+
+                    if (/^ {{0,3}}([-*_])(?:\\s*\\1){{2,}}\\s*$/.test(line)) {{
+                        container.append(document.createElement('hr'));
+                        index += 1;
+                        continue;
+                    }}
+
+                    if (/^\\s*>\\s?/.test(line)) {{
+                        const quoteLines = [];
+                        while (index < lines.length && /^\\s*>\\s?/.test(lines[index])) {{
+                            quoteLines.push(lines[index].replace(/^\\s*>\\s?/, ''));
+                            index += 1;
+                        }}
+                        const quote = document.createElement('blockquote');
+                        appendSpeakerNotesInline(quote, quoteLines.join('\\n'));
+                        container.append(quote);
+                        continue;
+                    }}
+
+                    const unordered = /^\\s*[-+*]\\s+(.+)$/.exec(line);
+                    const ordered = /^\\s*\\d+[.)]\\s+(.+)$/.exec(line);
+                    if (unordered || ordered) {{
+                        const list = document.createElement(unordered ? 'ul' : 'ol');
+                        const pattern = unordered ? /^\\s*[-+*]\\s+(.+)$/ : /^\\s*\\d+[.)]\\s+(.+)$/;
+                        while (index < lines.length) {{
+                            const itemMatch = pattern.exec(lines[index]);
+                            if (!itemMatch) break;
+                            const item = document.createElement('li');
+                            appendSpeakerNotesInline(item, itemMatch[1]);
+                            list.append(item);
+                            index += 1;
+                        }}
+                        container.append(list);
+                        continue;
+                    }}
+
+                    const paragraphLines = [line];
+                    index += 1;
+                    while (index < lines.length && lines[index].trim() && !isSpeakerNotesBlockStart(lines[index])) {{
+                        paragraphLines.push(lines[index]);
+                        index += 1;
+                    }}
+                    const paragraph = document.createElement('p');
+                    appendSpeakerNotesInline(paragraph, paragraphLines.join('\\n'));
+                    container.append(paragraph);
+                }}
+            }} catch (error) {{
+                container.replaceChildren();
+                container.dataset.renderMode = 'plain-text-fallback';
+                const fallback = document.createElement('pre');
+                fallback.className = 'presenter-notes__fallback';
+                fallback.textContent = source;
+                container.append(fallback);
+            }}
+        }}
+
         class PresenterNotes {{
             constructor() {{
                 this.panel = document.getElementById('presenterNotes');
                 this.title = document.getElementById('presenterNotesTitle');
                 this.text = document.getElementById('presenterNotesText');
+                this.closeButton = document.getElementById('presenterNotesClose');
                 this.notes = new Map();
                 try {{
                     const payload = JSON.parse(
@@ -1795,6 +2083,7 @@ def render_deck_html(
                     payload.forEach((note) => this.notes.set(note.id, note));
                 }} catch (error) {{}}
                 this.currentSlideId = null;
+                this.closeButton.addEventListener('click', () => this.close());
                 document.addEventListener('keydown', (event) => {{
                     if (
                         (event.key === 'n' || event.key === 'N') &&
@@ -1810,12 +2099,20 @@ def render_deck_html(
                 this.currentSlideId = slideId;
                 const note = this.notes.get(slideId);
                 this.title.textContent = note ? note.title : 'No speaker notes';
-                this.text.textContent = note ? note.text : 'No correlated note is available for this slide.';
+                const noteText = note ? note.text : 'No correlated note is available for this slide.';
+                renderSpeakerNotesMarkdown(this.text, noteText);
+                this.text.scrollTop = 0;
+                if (window.MathJax && window.MathJax.typesetPromise) {{
+                    if (window.MathJax.typesetClear) window.MathJax.typesetClear([this.text]);
+                    window.MathJax.typesetPromise([this.text]).catch(() => {{}});
+                }}
             }}
             toggle() {{
                 if (!this.notes.size) return;
                 this.panel.hidden = !this.panel.hidden;
+                if (!this.panel.hidden) this.text.scrollTop = 0;
             }}
+            close() {{ this.panel.hidden = true; }}
         }}
 
         /* === INLINE EDITING CONTROLLER === */
@@ -3132,7 +3429,7 @@ MANIFEST_FILENAME = "frontend-slides-manifest.json"
 MANIFEST_SCHEMA_VERSION = 4
 
 
-FRONTEND_RENDERER_VERSION = "frontend-slides-2026-07-28-carbon-code-images-v1"
+FRONTEND_RENDERER_VERSION = "frontend-slides-2026-08-05-speaker-notes-markdown-v1"
 
 
 LEGACY_SPLIT_REPORT_FILENAME = "slide-splits.json"
