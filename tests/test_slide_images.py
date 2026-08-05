@@ -10,8 +10,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from local_course_cli.cli import build_parser
-from run import build_parser as build_run_parser
+from run import build_parser
 from src.html_slides import (
     BeamerDeck,
     BeamerSlide,
@@ -801,14 +800,10 @@ def test_statistics_are_an_append_only_invocation_ledger(
     assert payload["runs"][1]["current_image_count"] == 1
 
 
-def test_consolidated_cli_media_flags() -> None:
+def test_run_cli_media_flags() -> None:
     args = build_parser().parse_args(
         [
-            "chapter",
-            "--course-id",
-            "course",
-            "--number",
-            "2",
+            "Systems",
             "--image-generation",
             "replace",
             "--image-count",
@@ -823,10 +818,7 @@ def test_consolidated_cli_media_flags() -> None:
 
     disabled = build_parser().parse_args(
         [
-            "foundation",
-            "Course",
-            "--course-id",
-            "course",
+            "Systems",
             "--image-generation",
             "off",
             "--image-count",
@@ -839,29 +831,10 @@ def test_consolidated_cli_media_flags() -> None:
     assert disabled.image_count == "off"
     assert disabled.code_images == "off"
 
-    run_args = build_run_parser().parse_args(
-        [
-            "Systems",
-            "--image-generation",
-            "on",
-            "--image-count",
-            "on",
-            "--code-images",
-            "off",
-        ]
-    )
-    assert run_args.image_generation == "on"
-    assert run_args.image_count == "on"
-    assert run_args.code_images == "off"
-
-    for parser, command in (
-        (build_parser(), ["chapter", "--course-id", "course", "--number", "2"]),
-        (build_run_parser(), ["Systems"]),
-    ):
-        with pytest.raises(SystemExit):
-            parser.parse_args([*command, "--image-count", "auto"])
-        with pytest.raises(SystemExit):
-            parser.parse_args([*command, "--enable-image-generation"])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["Systems", "--image-count", "auto"])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["Systems", "--enable-image-generation"])
 
 
 def test_consolidated_image_modes_preserve_fixed_cap() -> None:

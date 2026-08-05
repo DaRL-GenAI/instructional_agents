@@ -411,49 +411,6 @@ Beamer PDF remain unchanged.
 The branch does not install Node.js or npm. Enabling code images authorizes a
 possible global npm installation of the pinned Carbon CLI.
 
-## Local course-phase CLI
-
-`local_course_cli/` is a removable development wrapper for running the
-foundation separately from individual chapters.
-
-### Setup and diagnostics
-
-```bash
-./local_course_cli/setup.sh
-./local_course_cli/course doctor
-./local_course_cli/course doctor --live-openai
-```
-
-### Generate only the foundation
-
-```bash
-./local_course_cli/course foundation "My Course" \
-  --course-id my-course \
-  --catalog default_catalog \
-  --model gpt-4o-mini \
-  --image-generation on \
-  --image-count on \
-  --code-images on
-```
-
-### List and generate chapters
-
-```bash
-./local_course_cli/course chapters --course-id my-course
-
-./local_course_cli/course chapter \
-  --course-id my-course \
-  --number 3
-```
-
-The `foundation` and `chapter` commands use the same consolidated media flags
-as `run.py`. The chapter command can also use `--repair-notes` to rebuild only
-speaker-note correlation from saved sources.
-
-The wrapper stores a `.course_cli.json` manifest, rejects configuration drift,
-validates foundation completeness, resumes missing work, and leaves experiment
-artifacts under `exp/<course-id>/` if the wrapper is removed.
-
 ## API integration
 
 The REST API retains JSON fields rather than adopting CLI string choices. This
@@ -479,8 +436,7 @@ for legacy LaTeX-to-PPTX conversion after course generation.
 
 An earlier branch commit changed the browser frontend, but those changes were
 subsequently reverted. In the final branch state, the files under `frontend/`
-match `main`; the new workflow is exposed through `run.py`, the API model, and
-the isolated local course CLI.
+match `main`; the new workflow is exposed through `run.py` and the API model.
 
 ## Packaging and dependencies
 
@@ -497,7 +453,7 @@ Dependency changes support:
 
 Repository metadata also adds the attributed frontend-design skill used during
 development, worktree inclusion metadata, and ignore/package rules for the new
-asset and CLI layout.
+asset layout.
 
 ## Test coverage
 
@@ -513,15 +469,14 @@ The branch adds or expands tests for:
   statistics.
 - Carbon installation, caching, fallback, versioning, and timeouts.
 - Atomic slide I/O helpers.
-- Local course CLI safety, isolation, and resume behavior.
-- Consolidated `run.py` and local CLI media flags.
+- `run.py` media flags and persistence behavior.
 - API validation for image settings.
 
 At the time this document was created, the complete repository test suite
 reported:
 
 ```text
-187 passed, 2 skipped
+188 passed, 2 skipped
 ```
 
 The skipped tests are environment-dependent integration checks.
@@ -539,10 +494,9 @@ The skipped tests are environment-dependent integration checks.
 | Beamer safety | `src/beamer_preflight.py` |
 | Compilation | `src/compile.py` |
 | Shared safe I/O | `src/slide_io.py` |
-| Local phased execution | `local_course_cli/` |
 | Catalog examples | `catalog/default_catalog.json`, `catalog/mwe_catalog.json` |
 | Packaging | `pyproject.toml`, `MANIFEST.in`, `requirements.txt` |
-| Tests | `tests/`, `local_course_cli/tests/` |
+| Tests | `tests/` |
 
 ## Operational notes
 

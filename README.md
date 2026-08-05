@@ -497,8 +497,8 @@ may choose zero, five, six, or any other number up to the chapter's eligible
 slides while automatic counting is on.
 Generated images appear only in the HTML, HTML-derived PDF, and HTML-derived
 PPTX; the Beamer source and PDF are unchanged. See
-[`docs/image-generation-implementation-spec.html`](docs/image-generation-implementation-spec.html)
-for cache, replacement, and local-course CLI behavior.
+[`docs/BETTER_SLIDES_GENERATION.md`](docs/BETTER_SLIDES_GENERATION.md)
+for cache and replacement behavior.
 
 Carbon code images are also off by default. `--code-images on` persists the
 choice in `course_code_images.json` and applies it to every chapter. The first
@@ -594,7 +594,7 @@ consider every non-empty preference when comparing packaged styles, while
 accessibility, readability, course suitability, and rendering feasibility take
 priority when a preference conflicts with the available designs. The selected
 style remains frozen on resume; use a new experiment or
-`--reselect-presentation-design` in the local course CLI to apply changed
+`--reselect-presentation-design` with `run.py` to apply changed
 preferences.
 
 ### Copilot Mode
