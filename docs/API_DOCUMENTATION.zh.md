@@ -227,15 +227,6 @@ Catalog JSON 文件应包含以下结构：
     "instructor_style_preferences": "...",
     "instructor_focus_for_assessment": "..."
   },
-  "presentation_style_preferences": {
-    "preferred_visual_direction": "...",
-    "color_preferences": "...",
-    "typography_preferences": "...",
-    "layout_and_density_preferences": "...",
-    "accessibility_requirements": "...",
-    "styles_to_avoid": "...",
-    "additional_notes": "..."
-  },
   "course_structure": {
     "course_learning_outcomes": "...",
     "total_number_of_weeks": "...",
@@ -261,11 +252,6 @@ Catalog JSON 文件应包含以下结构：
   }
 }
 ```
-
-`presentation_style_preferences` 是可选部分，其中每个子字段都是可选文本。
-这些偏好会直接参与全课程预置样式的选择；如有冲突，系统优先保证无障碍性、
-可读性、课程适配度、渲染可行性以及模板本身的约束。该部分只影响样式选择，
-不会重写所选模板的配色、字体或渲染参数。
 
 ## 输出结构
 
@@ -365,3 +351,4 @@ API 使用标准 HTTP 状态码：
 ## 许可证
 
 MIT License
+

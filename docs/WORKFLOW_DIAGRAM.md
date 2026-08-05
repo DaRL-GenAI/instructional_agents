@@ -227,7 +227,6 @@ graph TB
         PF[prior_feedback]
         IP[instructor_preferences]
         AD[assessment_design]
-        PSP[presentation_style_preferences]
     end
     
     Input --> Phase1[Foundation Phase]
@@ -319,4 +318,5 @@ SlidesDeliberation使用分阶段模板生成：
 ---
 
 这些流程图展示了系统从课程名称输入到完整教学材料生成的完整工作流程。每个阶段都有明确的输入输出和Agent职责分工。
+
 

@@ -84,11 +84,7 @@ Content-Type: application/json
   "exp_name": "ml_intro_v1",
   "copilot": false,
   "catalog": "default_catalog",
-  "catalog_data": {...},
-  "enable_image_generation": false,
-  "replace_images": false,
-  "max_images_per_chapter": null,
-  "ai_decides_image_count": true
+  "catalog_data": {...}
 }
 ```
 
@@ -207,11 +203,6 @@ GET /api/catalog/list
 | copilot | boolean | No | Enable Copilot mode |
 | catalog | string | No | Catalog filename (without .json) |
 | catalog_data | object | No | Catalog data (JSON object) |
-| generate_pptx | boolean | No | Also run the legacy PPTX conversion |
-| enable_image_generation | boolean | No | Persist opt-in to generated frontend slide images (default: false) |
-| replace_images | boolean | No | Replace images for every processed chapter; implies enablement |
-| max_images_per_chapter | integer or null | No | Persistent image cap from 0 to 3; omit or use null with AI-decides mode |
-| ai_decides_image_count | boolean | No | Remove the numeric chapter cap and let the placement AI choose all strong eligible opportunities; mutually exclusive with `max_images_per_chapter` |
 
 ## Workflow
 
@@ -235,15 +226,6 @@ Catalog JSON file should contain the following structure:
     "instructor_emphasis_intent": "...",
     "instructor_style_preferences": "...",
     "instructor_focus_for_assessment": "..."
-  },
-  "presentation_style_preferences": {
-    "preferred_visual_direction": "...",
-    "color_preferences": "...",
-    "typography_preferences": "...",
-    "layout_and_density_preferences": "...",
-    "accessibility_requirements": "...",
-    "styles_to_avoid": "...",
-    "additional_notes": "..."
   },
   "course_structure": {
     "course_learning_outcomes": "...",
@@ -270,13 +252,6 @@ Catalog JSON file should contain the following structure:
   }
 }
 ```
-
-`presentation_style_preferences` is optional, and each child field is optional
-text. It directly guides the course-wide packaged-style selection. The selector
-honors compatible preferences but gives accessibility, readability, course fit,
-renderer feasibility, and packaged-template constraints higher priority. It does
-not use these values to rewrite the selected template's palette, typography, or
-render tokens.
 
 ## Output Structure
 
@@ -376,3 +351,4 @@ Main logic is in `src/ADDIE.py` and `run.py`, need to restart API service after 
 ## License
 
 MIT License
+

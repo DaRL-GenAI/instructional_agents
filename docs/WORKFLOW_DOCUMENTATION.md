@@ -218,7 +218,7 @@ For each slide, execute the following sub-steps:
   - Slide draft content
   - Current LaTeX frames (for reference)
   - User feedback
-- **Output**: Exactly one LaTeX frame for the outline slide, updates `latex_dict`
+- **Output**: One or more LaTeX frames (can be split into multiple frames if content is too long, maximum 3 frames), updates `latex_dict`
 
 ##### Step 5.3: Generate Slide Script
 - **Agent**: Teaching Assistant
@@ -228,7 +228,7 @@ For each slide, execute the following sub-steps:
   - All LaTeX frames for current slide
   - Adjacent slides' scripts (for smooth transitions)
   - User feedback
-- **Output**: Detailed speaking script including introduction, key point explanations, examples and connections, updates `slides_script`
+- **Output**: Detailed speaking script including introduction, key point explanations, frame transitions (if multiple frames), examples and connections, updates `slides_script`
 
 ##### Step 5.4: Generate Slide Assessment
 - **Agent**: Teaching Assistant
@@ -255,32 +255,7 @@ For each slide, execute the following sub-steps:
 
 ### Final Compilation
 
-After the six curriculum documents and chapter list are complete, the four
-foundation roles—Teaching Faculty, Instructional Designer, Course Coordinator,
-and Summarizer—run `presentation_design` as the seventh foundation deliberation.
-Its readable summary is saved in `result_presentation_design.md`; the selected
-Frontend Slides asset is also materialized into validated design tokens and
-compact guidance for the downstream Teaching Assistant in
-`course_slide_style.json`. Ordinary
-catalogs may provide an optional `presentation_style_preferences` object. The
-selector receives it as distinct instructor-supplied visual guidance while it
-compares exact inventory candidates. Compatible preferences are honored;
-accessibility, readability, course fit, renderer feasibility, and each asset's
-Best for/Avoid for constraints take priority. The preferences affect selection
-only and are recorded in `statistics_slide_style.json`; the materialization pass
-still receives only the selected packaged asset. Ordinary resumes reuse this
-frozen course-wide decision. Only an explicit
-`--reselect-presentation-design` request may replace it.
-
-After each SlidesDeliberation, the system immediately runs the shared chapter
-finalizer. It compiles `slides.tex` into `slides.pdf`, parses the Beamer
-frames one-to-one, renders the offline `html/slides.html` with its runtime in
-`html/assets/`, and exports
-`slides-html.pdf` plus the static image-based `slides-html.pptx`. Input/style
-hashes allow missing exports to resume without new model calls.
-`script.md` uses stable slide IDs and is validated against the parsed frames;
-the same notes are embedded in the HTML deck and can be toggled with `N`.
-Presenter controls are hidden during PDF and PPTX export.
+After completing SlidesDeliberation for all chapters, the system uses **LaTeXCompiler** to compile all LaTeX files.
 
 **Input:**
 - All `slides.tex` files in chapter directories
@@ -294,10 +269,10 @@ Presenter controls are hidden during PDF and PPTX export.
 
 | Agent Name | Main Responsibilities | Participating Deliberations |
 |-----------|---------------------|---------------------------|
-| **Teaching Faculty** | Define instructional goals, assess resources, analyze student needs, design syllabus, plan assessments, create instructional content | All Tasks 1-6 and Presentation Design in Foundation Phase, content generation in SlidesDeliberation |
-| **Instructional Designer** | Review objectives, assess technology resources, organize slide structure, assess presentation rendering feasibility | Tasks 1, 2, 4, 5, 6 and Presentation Design in Foundation Phase, structure design in SlidesDeliberation |
-| **Course Coordinator** | Provide institutional data and student feedback | Task 3 and Presentation Design in Foundation Phase |
-| **Summarizer** | Generate final document summaries | All Tasks 1-6 and Presentation Design in Foundation Phase |
+| **Teaching Faculty** | Define instructional goals, assess resources, analyze student needs, design syllabus, plan assessments, create instructional content | All Tasks 1-6 in Foundation Phase, content generation in SlidesDeliberation |
+| **Instructional Designer** | Review objectives, assess technology resources, organize slide structure | Tasks 1, 2, 4, 5, 6 in Foundation Phase, structure design in SlidesDeliberation |
+| **Course Coordinator** | Provide institutional data and student feedback | Task 3 in Foundation Phase |
+| **Summarizer** | Generate final document summaries | All Tasks 1-6 in Foundation Phase |
 | **SyllabusProcessor** | Process syllabus and extract chapters | Syllabus Processing phase |
 | **Teaching Assistant** | Create LaTeX code, speaking scripts, and assessment content | All steps in SlidesDeliberation |
 | **LaTeXCompiler** | Compile LaTeX files to PDF | Final compilation phase |
@@ -401,13 +376,6 @@ exp/{experiment_name}/
 ├── statistics.json
 ├── chapter_1/
 │   ├── slides.tex
-│   ├── slides.pdf
-│   ├── html/
-│   │   ├── slides.html
-│   │   └── assets/
-│   ├── slides-html.pdf
-│   ├── slides-html.pptx
-│   ├── frontend-slides-manifest.json
 │   ├── script.md
 │   ├── assessment.md
 │   └── statistics_slides_chapter_1.json
