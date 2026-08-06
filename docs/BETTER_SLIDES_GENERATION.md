@@ -476,7 +476,7 @@ At the time this document was created, the complete repository test suite
 reported:
 
 ```text
-188 passed, 2 skipped
+183 passed, 2 skipped
 ```
 
 The skipped tests are environment-dependent integration checks.

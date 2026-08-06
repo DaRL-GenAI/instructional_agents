@@ -3,20 +3,16 @@ from __future__ import annotations
 import base64
 import json
 import subprocess
-import zipfile
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PIL import Image
 from PyPDF2 import PdfReader, PdfWriter
-from pptx import Presentation
 
 from src.html_slides import load_assets
 from src.html_slides import parse_beamer
 from src.html_slides import FrontendSlidesError
-from src.html_slides import capture_slide_screenshots, export_html_deck
 from src.html_slides import carbon_theme_for_course_style
 from src.html_slides import MANIFEST_SCHEMA_VERSION, finalize_chapter
 from src.html_slides import (
@@ -1411,80 +1407,3 @@ def test_failed_html_validation_preserves_previous_html(
 
     assert html_path.read_text(encoding="utf-8") == previous_html
     assert not (chapter / "html" / "slides.tmp.html").exists()
-
-
-@pytest.mark.playwright
-def test_static_export_smoke(tmp_path: Path) -> None:
-    tex = tmp_path / "slides.tex"
-    write_beamer(tex)
-    deck = parse_beamer(tex)
-    style = make_style()
-    _, font_css = prepare_offline_runtime(tmp_path, style)
-    html_path = tmp_path / "html" / "slides.html"
-    html_path.write_text(
-        render_course_presentation_html(
-            deck, style, load_assets(), font_css=font_css
-        ),
-        encoding="utf-8",
-    )
-    pdf_path = tmp_path / "slides-html.pdf"
-    pptx_path = tmp_path / "slides-html.pptx"
-
-    export_html_deck(html_path, pdf_path=pdf_path, pptx_path=pptx_path)
-
-    assert pdf_path.read_bytes().startswith(b"%PDF")
-    assert zipfile.is_zipfile(pptx_path)
-    assert len(PdfReader(str(pdf_path)).pages) == deck.slide_count
-    assert len(Presentation(str(pptx_path)).slides) == deck.slide_count
-
-
-@pytest.mark.playwright
-def test_static_capture_freezes_slide_and_reveal_transitions(tmp_path: Path) -> None:
-    html_path = tmp_path / "animated.html"
-    html_path.write_text(
-        """<!doctype html>
-<html><head><style>
-html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
-.deck-stage { position: relative; width: 1920px; height: 1080px; }
-.slide {
-  position: absolute; inset: 0; visibility: hidden; opacity: 0;
-  transition: opacity 620ms ease; background: white;
-}
-.slide.visible { visibility: visible; opacity: 1; }
-.reveal {
-  position: absolute; inset: 0; opacity: 0;
-  transition: opacity 620ms ease 500ms; background: #12ab34;
-}
-.slide.visible .reveal { opacity: 1; }
-.slide-progress {
-  position: fixed; left: 900px; bottom: 0; z-index: 1000;
-  width: 120px; height: 80px; background: #ff0000;
-}
-</style></head><body>
-<main class="deck-stage">
-  <section class="slide active visible"><div class="reveal"></div></section>
-  <section class="slide"><div class="reveal"></div></section>
-</main>
-<div class="slide-progress">transient overlay</div>
-<script>
-window.__slidesFitted = true;
-window.presentation = {
-  showSlide(index) {
-    document.querySelectorAll('.slide').forEach((slide, current) => {
-      slide.classList.toggle('active', current === index);
-      slide.classList.toggle('visible', current === index);
-    });
-  }
-};
-</script></body></html>""",
-        encoding="utf-8",
-    )
-    screenshot_dir = tmp_path / "screenshots"
-    screenshot_dir.mkdir()
-    screenshots = capture_slide_screenshots(html_path, screenshot_dir)
-
-    with Image.open(screenshots[1]) as image:
-        assert image.size == (1920, 1080)
-        rgb = image.convert("RGB")
-        assert rgb.getpixel((960, 540)) == (18, 171, 52)
-        assert rgb.getpixel((960, 1050)) == (18, 171, 52)

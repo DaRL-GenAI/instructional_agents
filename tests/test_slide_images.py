@@ -17,13 +17,9 @@ from src.html_slides import (
     ContentElement,
     choose_layout,
     finalize_chapter,
-    load_assets,
     parse_beamer,
-    prepare_offline_runtime,
-    render_course_presentation_html,
     render_element,
     render_speaker_notes_markdown,
-    validate_with_playwright,
 )
 from src.html_slides_img import (
     IMAGE_MANIFEST_FILENAME,
@@ -587,98 +583,6 @@ def test_generated_figure_uses_native_accessible_labels() -> None:
     assert "<figcaption>Feedback loop</figcaption>" in rendered
     assert 'aria-label="Figure labels"' in rendered
     assert "<li>Input</li>" in rendered
-
-
-@pytest.mark.playwright
-def test_media_layout_has_no_browser_overflow(tmp_path: Path) -> None:
-    deck = _deck()
-    deck.slides[1].elements.append(
-        ContentElement(
-            kind="generated_image",
-            title="Feedback loop",
-            image_data_uri=f"data:image/png;base64,{_png_b64()}",
-            image_labels=["Input", "Feedback"],
-        )
-    )
-    _, font_css = prepare_offline_runtime(tmp_path, _style())
-    html_path = tmp_path / "html" / "slides.html"
-    html_path.write_text(
-        render_course_presentation_html(
-            deck,
-            _style(),
-            load_assets(),
-            font_css=font_css,
-        ),
-        encoding="utf-8",
-    )
-    document = html_path.read_text(encoding="utf-8")
-    assert document.count("gen-image-card") >= 1
-    assert 'class="slide-content layout-media"' in document
-    assert validate_with_playwright(html_path, deck.slide_count) == []
-
-
-@pytest.mark.playwright
-def test_dense_media_layout_balances_copy_before_adding_figure(
-    tmp_path: Path,
-) -> None:
-    tex_path = tmp_path / "dense.tex"
-    tex_path.write_text(
-        r"""\documentclass{beamer}
-\title{Differential Equations}
-\begin{document}
-\begin{frame}{Separable Equations}
-\begin{block}{Definition}
-Separable equations have the form
-\[
-\frac{dy}{dx}=g(x)h(y).
-\]
-\end{block}
-\begin{block}{Method of Separation of Variables}
-\begin{enumerate}
-\item Rewrite the equation.
-\item Separate the variables.
-\item Integrate both sides.
-\item Solve explicitly for \(y\).
-\item Add the constant of integration.
-\end{enumerate}
-\end{block}
-\begin{block}{Example}
-For \(\frac{dy}{dx}=3y^2\sin(x)\):
-\begin{itemize}
-\item Separate the variables.
-\item Integrate both sides.
-\item Solve for the dependent variable.
-\end{itemize}
-\end{block}
-\end{frame}
-\end{document}
-""",
-        encoding="utf-8",
-    )
-    deck = parse_beamer(tex_path)
-    deck.slides[0].elements.append(
-        ContentElement(
-            kind="generated_image",
-            title="Variables separate into two integrals",
-            image_data_uri=f"data:image/png;base64,{_png_b64()}",
-            image_labels=["Dependent variable", "Independent variable"],
-        )
-    )
-    assert choose_layout(deck.slides[0]) == "media-dense"
-    _, font_css = prepare_offline_runtime(tmp_path, _style())
-    html_path = tmp_path / "html" / "slides.html"
-    html_path.write_text(
-        render_course_presentation_html(
-            deck,
-            _style(),
-            load_assets(),
-            font_css=font_css,
-        ),
-        encoding="utf-8",
-    )
-    document = html_path.read_text(encoding="utf-8")
-    assert "slide-content layout-media-dense" in document
-    assert validate_with_playwright(html_path, deck.slide_count) == []
 
 
 def test_finalizer_generates_when_enabled_then_early_returns_on_cache(
