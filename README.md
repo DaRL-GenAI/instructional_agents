@@ -282,12 +282,22 @@ exp/{experiment_name}/
 ├── result_syllabus_design.md              # Course syllabus (⭐ important)
 ├── result_assessment_planning.md          # Assessment planning
 ├── result_final_exam_project.md           # Final project design
+├── result_presentation_design.md          # Seventh foundation: course-wide presentation design
 ├── processed_chapters.json                # Chapter metadata
+├── course_slide_style.json                # Validated course-wide frontend style
+├── course_slide_style_source.md           # Exact selected style source snapshot
+├── statistics_slide_style.json            # Style deliberation timing/tokens
 ├── statistics.json                        # Generation statistics
 │
 ├── chapter_1/                             # Chapter 1 materials
 │   ├── slides.tex                         # LaTeX source
 │   ├── slides.pdf                         # Compiled PDF slides (⭐ ready to use)
+│   ├── html/                              # Portable offline HTML bundle
+│   │   ├── slides.html                    # Offline interactive HTML slides
+│   │   └── assets/                        # Offline MathJax and selected fonts
+│   ├── slides-html.pdf                    # PDF exported from the HTML deck
+│   ├── slides-html.pptx                   # Static image-based HTML export
+│   ├── frontend-slides-manifest.json      # Hashes, counts, warnings, artifacts
 │   ├── slides.pptx                        # PowerPoint slides (⭐ editable)
 │   ├── script.md                          # Presentation script
 │   ├── assessment.md                      # Assessment materials
@@ -299,6 +309,10 @@ exp/{experiment_name}/
 ```
 
 > **Tip**: Files are generated incrementally. You can download or view them as soon as they appear, without waiting for the entire generation to complete.
+
+Each generated `script.md` is validated one-to-one against the rendered HTML
+slides. Press `N` in `html/slides.html` to toggle the offline presenter-notes
+panel; the panel is excluded from static PDF and PPTX exports.
 
 For detailed file descriptions, see [Generated Files Guide](docs/FILES_GENERATED.md).
 
@@ -436,6 +450,12 @@ python run.py "AI Fundamentals" --catalog ai_catalog
 
 # Combine catalog and copilot
 python run.py "Educational Psychology" --copilot --catalog edu_psy
+
+# Enable images with no numeric per-chapter cap
+python run.py "Systems Thinking" --image-generation on --image-count on
+
+# Opt in to Carbon-rendered code images
+python run.py "Programming Languages" --code-images on
 ```
 
 **Minimal Working Example** (generates a small 3-week course in ~5 min):
@@ -458,10 +478,41 @@ Options:
   --exp EXP_NAME           Experiment name for saving output (default: exp1)
   --seed SEED              Random seed for reproducibility
   --temperature TEMP       Sampling temperature for LLM
+  --image-generation {on,off,replace}
+                           Enable, disable, or replace generated slide images
+  --image-count {on,off}   Turn AI-selected image counts on or off; when on,
+                           the count is always automatic
+  --code-images {on,off}   Use Carbon code images or styled HTML code blocks
   --optimize STORAGE_ID    Optimize mode: provide storage_id of uploaded PDFs
   --requirements TEXT      User requirements for optimization (with --optimize)
   --chapter NAME           Specific chapter to optimize (with --optimize)
 ```
+
+Dynamic slide images are off by default. When enabled, the presentation-design
+deliberation may still veto imagery. Use `--image-count on` to remove the fixed
+numeric budget and always let the placement AI choose the count. Use
+`--image-count off` to restore the experiment's stored fixed cap (3 by default).
+Omitting the flag preserves the current experiment setting. The placement AI
+may choose zero, five, six, or any other number up to the chapter's eligible
+slides while automatic counting is on.
+Generated images appear only in the HTML, HTML-derived PDF, and HTML-derived
+PPTX; the Beamer source and PDF are unchanged. See
+[`docs/BETTER_SLIDES_GENERATION.md`](docs/BETTER_SLIDES_GENERATION.md)
+for cache and replacement behavior.
+
+Carbon code images are also off by default. `--code-images on` persists the
+choice in `course_code_images.json` and applies it to every chapter. The first
+enabled chapter that actually contains a `lstlisting` or `verbatim` block uses
+an existing `carbon-now` executable or runs
+`npm install --global carbon-now-cli@2.1.0`. This is an explicit global npm
+installation; Node.js and npm must already be installed and are never installed
+automatically. Missing prerequisites, installation failures, network failures,
+timeouts, or invalid Carbon output produce warnings and retain the styled
+editable `<pre>` block. Successful PNGs are cached by content, language, theme,
+pipeline, and Carbon version, then embedded directly in the self-contained
+HTML. They therefore appear in the HTML-derived PDF and PPTX, while
+`slides.tex` and the Beamer PDF remain unchanged. Use `--code-images off` to
+persistently return the course to `<pre>` rendering.
 
 ### Method 3: Direct API Calls
 
@@ -515,7 +566,9 @@ For complete API documentation, see [API Documentation](docs/API_DOCUMENTATION.m
 
 Catalog files provide structured input data to guide the course generation process. They include:
 - Student profiles and backgrounds
-- Instructor preferences and style
+- Instructor preferences and teaching style
+- Optional presentation style preferences, including visual direction, colors,
+  typography, layout density, accessibility needs, and styles to avoid
 - Course structure requirements
 - Assessment design preferences
 - Teaching constraints
@@ -535,6 +588,14 @@ python run.py "AI Fundamentals" --catalog ai_catalog
 ```
 
 See [API Documentation](docs/API_DOCUMENTATION.md#catalog-format) for catalog format details.
+
+`presentation_style_preferences` is advisory. The presentation-design agents
+consider every non-empty preference when comparing packaged styles, while
+accessibility, readability, course suitability, and rendering feasibility take
+priority when a preference conflicts with the available designs. The selected
+style remains frozen on resume; use a new experiment or
+`--reselect-presentation-design` with `run.py` to apply changed
+preferences.
 
 ### Copilot Mode
 
@@ -745,4 +806,12 @@ Configure via model selection in web interface or `--model` flag in CLI.
 
 ## 📜 License
 
-MIT License
+Instructional Agents is released under the [MIT License](LICENSE).
+
+### Third-party attribution
+
+The HTML slide style-selection assets in [`assets/slide_gen/skill`](assets/slide_gen/skill)
+are adapted from [Frontend Slides](https://github.com/zarazhangrui/frontend-slides)
+by Zara Zhang. Frontend Slides is used under the MIT License; its original
+copyright notice and license terms are preserved in
+[`assets/slide_gen/skill/LICENSE`](assets/slide_gen/skill/LICENSE).

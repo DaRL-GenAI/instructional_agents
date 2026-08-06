@@ -4,6 +4,11 @@ import shutil
 from pathlib import Path
 import logging
 
+try:
+    from src.beamer_preflight import normalize_beamer_source, repair_messages
+except ImportError:  # pragma: no cover - standalone execution from src/
+    from beamer_preflight import normalize_beamer_source, repair_messages
+
 class LaTeXCompiler:
     def __init__(self, output_dir):
         self.output_dir = Path(output_dir)
@@ -78,7 +83,8 @@ class LaTeXCompiler:
         
         compilation_logs = []
         pdf_file = cache_dir / f"{tex_file.stem}.pdf"
-        
+        preflight_repair_attempted = False
+
         # Run pdflatex multiple times to resolve cross-references and bibliography
         for attempt in range(3):
             try:
@@ -112,7 +118,26 @@ class LaTeXCompiler:
                     self.logger.warning(f"pdflatex completed but PDF is missing or empty for {tex_file.name}")
                 else:
                     self.logger.warning(f"pdflatex failed with return code {result.returncode} for {tex_file.name}")
-                
+                    # Repair the cache copy once (undefined colors, malformed or
+                    # deep lists, and nested display math)
+                    # so the remaining attempts retry a fixed source instead of
+                    # re-running the identical failing input.
+                    repaired = False
+                    if not preflight_repair_attempted and attempt < 2:
+                        preflight_repair_attempted = True
+                        repaired = self._repair_cached_source(
+                            cached_tex_file, compilation_logs
+                        )
+                    if not repaired:
+                        self.logger.error(
+                            f"Stopping retries for {tex_file.name}: deterministic "
+                            "preflight found no repair."
+                        )
+                        compilation_logs.append(
+                            "NO PREFLIGHT REPAIR AVAILABLE; STOPPING RETRIES\n\n"
+                        )
+                        break
+
                 # If this is the last attempt and still no valid PDF, log more details
                 if attempt == 2:
                     if not pdf_file.exists():
@@ -144,6 +169,28 @@ class LaTeXCompiler:
         else:
             return None
     
+    def _repair_cached_source(self, cached_tex_file, compilation_logs):
+        """Run deterministic preflight repairs on the cache copy of a failed compile."""
+        try:
+            result = normalize_beamer_source(
+                cached_tex_file.read_text(encoding="utf-8")
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Preflight repair skipped for {cached_tex_file.name}: {e}"
+            )
+            return False
+        if not result.changed:
+            return False
+        cached_tex_file.write_text(result.source, encoding="utf-8")
+        details = repair_messages(result)
+        summary = "; ".join(details) or "source normalized"
+        self.logger.warning(
+            f"Repaired {cached_tex_file.name} before retry ({summary})"
+        )
+        compilation_logs.append(f"PREFLIGHT REPAIR BEFORE RETRY: {summary}\n\n")
+        return True
+
     def move_pdf_to_source_location(self, pdf_file, tex_file):
         """Move the compiled PDF to the same directory as the source .tex file."""
         if pdf_file and pdf_file.exists():
@@ -235,6 +282,32 @@ class LaTeXCompiler:
         
         if failed_count > 0:
             self.logger.info("Check the compilation logs in the cache directory for details on failed compilations")
+
+    def compile_one(self, tex_file):
+        """Compile one explicit LaTeX file and raise when no valid PDF is produced."""
+        tex_path = Path(tex_file).resolve()
+        self.output_dir = self.output_dir.resolve()
+        self.cache_dir = self.output_dir / ".cache"
+        try:
+            tex_path.relative_to(self.output_dir)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"LaTeX source {tex_path} is outside compiler root {self.output_dir}."
+            ) from exc
+        if not tex_path.is_file() or tex_path.stat().st_size == 0:
+            raise RuntimeError(f"LaTeX source is missing or empty: {tex_path}")
+        if not self.validate_latex_environment():
+            raise RuntimeError("Cannot compile slides.tex because pdflatex is unavailable.")
+
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir = self.create_cache_directory(tex_path)
+        pdf_file = self.compile_latex(tex_path, cache_dir)
+        final_pdf = self.move_pdf_to_source_location(pdf_file, tex_path) if pdf_file else None
+        if final_pdf is None or not final_pdf.is_file() or final_pdf.stat().st_size == 0:
+            raise RuntimeError(
+                f"Failed to compile {tex_path}; inspect logs under {cache_dir}."
+            )
+        return final_pdf
 
     def generate_pptx(self):
         """Convert all .tex files to .pptx (independent of PDF compilation)."""

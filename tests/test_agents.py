@@ -25,6 +25,18 @@ class TestLLM:
             llm = LLM(model_name="gpt-4o")
         assert llm.model_name == "gpt-4o"
 
+    def test_api_failure_preserves_response_accounting_contract(self):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
+            llm = LLM()
+        llm.client = MagicMock()
+        llm.client.chat.completions.create.side_effect = RuntimeError("rate limit")
+
+        response, elapsed, tokens = llm.generate_response([], stream=False)
+
+        assert response == "Error: rate limit"
+        assert elapsed >= 0
+        assert tokens == 0
+
 
 class TestAgent:
     """Tests for the Agent class."""
@@ -200,6 +212,54 @@ class TestDeliberation:
         # 3 calls (2 agents + summarizer) * 1.0s each
         assert elapsed == pytest.approx(3.0)
         assert tokens == 300
+
+    def test_summary_agent_sees_only_the_transcript_by_default(self):
+        delib, mock_llm = self._make_deliberation(num_agents=2, max_rounds=1)
+        delib.run()
+
+        summary_content = mock_llm.generate_response.call_args_list[-1][0][0][-1][
+            "content"
+        ]
+        assert "Discuss this topic." not in summary_content
+
+    def test_summary_agent_can_receive_the_instruction_prompt(self):
+        delib, mock_llm = self._make_deliberation(
+            num_agents=2, max_rounds=1, summary_sees_context=True
+        )
+        delib.run()
+
+        summary_content = mock_llm.generate_response.call_args_list[-1][0][0][-1][
+            "content"
+        ]
+        assert "Discuss this topic." in summary_content
+        assert "Discussion History:" in summary_content
+
+    def test_independent_first_round_withholds_the_transcript(self):
+        delib, mock_llm = self._make_deliberation(
+            num_agents=2, max_rounds=2, independent_first_round=True
+        )
+        delib.run()
+
+        prompts = [
+            call[0][0][-1]["content"]
+            for call in mock_llm.generate_response.call_args_list
+        ]
+        # Round one: neither agent sees the other. Round two: both do.
+        assert "Discussion History:" not in prompts[0]
+        assert "Discussion History:" not in prompts[1]
+        assert "Discussion History:" in prompts[2]
+        assert "Discussion History:" in prompts[3]
+
+    def test_second_agent_sees_the_transcript_without_the_flag(self):
+        delib, mock_llm = self._make_deliberation(num_agents=2, max_rounds=1)
+        delib.run()
+
+        prompts = [
+            call[0][0][-1]["content"]
+            for call in mock_llm.generate_response.call_args_list
+        ]
+        assert "Discussion History:" not in prompts[0]
+        assert "Discussion History:" in prompts[1]
 
     def test_output_format_default(self):
         delib, _ = self._make_deliberation()

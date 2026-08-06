@@ -9,6 +9,15 @@
         "instructor_style_preferences": "Structured instructional scripts, minimal slide clutter, and a professional but supportive tone.",
         "instructor_focus_for_assessment": "Project-driven assessment with open-ended tasks; traditional exams are not emphasized."
     },
+    "presentation_style_preferences": {
+        "preferred_visual_direction": "A modern academic presentation with a professional, supportive tone and clear visual hierarchy.",
+        "color_preferences": "Use an accessible, high-contrast palette suitable for projected classroom instruction.",
+        "typography_preferences": "Favor highly legible typography for technical terminology, formulas, and data labels.",
+        "layout_and_density_preferences": "Keep slides uncluttered while leaving enough room for worked examples and data visualizations.",
+        "accessibility_requirements": "Maintain strong contrast, readable type sizes, and meaning that does not depend on color alone.",
+        "styles_to_avoid": "Avoid overly playful decoration or dense editorial layouts that compete with technical content.",
+        "additional_notes": "The selected style should remain coherent across lectures, live walkthroughs, and project guidance."
+    },
     "course_structure": {
         "course_learning_outcomes": "Ability to apply core ML methods (e.g., classification, clustering, dimensionality reduction) to real datasets with standard evaluation metrics.",
         "total_number_of_weeks": "Semester-length offering",

@@ -180,6 +180,15 @@
                     </div>
 
                     <div class="form-group">
+                        <label for="optimize-mode-select" data-i18n="optimizeModeLabel">优化方式</label>
+                        <select id="optimize-mode-select" name="mode">
+                            <option value="regenerate" selected data-i18n="optimizeModeRegenerate">逐张重新生成（整章重写）</option>
+                            <option value="refine" data-i18n="optimizeModeRefine">局部精修（仅改相关帧）</option>
+                        </select>
+                        <small data-i18n="optimizeModeTip">重新生成：每张幻灯片整体重写。局部精修：只定位并改写与需求相关的帧，其余保持不变。</small>
+                    </div>
+
+                    <div class="form-group">
                         <label for="optimize-exp-name" data-i18n="expNameLabel">实验名称</label>
                         <input type="text" id="optimize-exp-name" name="exp_name"
                                placeholder="默认：default" value="default" data-i18n-placeholder="expNamePlaceholder">

@@ -39,6 +39,9 @@ dependencies = [
     "pdfplumber>=0.10.0",
     "numpy>=1.24.0",
     "markitdown[pptx]>=0.1.0",
+    "pylatexenc>=2.10",
+    "playwright>=1.61.0",
+    "python-pptx>=1.0.2",
 ]
 
 [project.optional-dependencies]
@@ -60,7 +63,7 @@ version = {attr = "src.__version__"}
 py-modules = ["run", "api_server", "evaluate"]
 
 [tool.setuptools.packages.find]
-include = ["src*"]
+include = ["src*", "assets.slide_gen*"]
 
 [tool.setuptools.package-data]
 "*" = [
@@ -71,6 +74,13 @@ include = ["src*"]
     "frontend/*.css",
     "src/*.js",
 ]
+"assets.slide_gen" = [
+    "skill/**/*",
+    "runtime/**/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "latex: end-to-end pdflatex compilation tests (require a local TeX install)",
+]

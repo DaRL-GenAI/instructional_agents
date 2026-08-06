@@ -1,35 +1,44 @@
 {
-    "student_profile": {
-        "student_background": "Undergraduate students with basic programming experience.",
-        "aggregate_academic_performance": "Average academic readiness.",
-        "anticipated_learner_needs_and_barriers": "Familiar with Python basics."
-    },
-    "instructor_preferences": {
-        "instructor_emphasis_intent": "Introductory overview of the topic.",
-        "instructor_style_preferences": "Clear and concise slides.",
-        "instructor_focus_for_assessment": "Simple quizzes and one short project."
-    },
-    "course_structure": {
-        "course_learning_outcomes": "Understand fundamental concepts and apply them to simple examples.",
-        "total_number_of_weeks": "3 weeks (MWE: minimal course for quick testing)",
-        "weekly_schedule_outline": "Week 1: Introduction. Week 2: Core concepts. Week 3: Practice and review."
-    },
-    "assessment_design": {
-        "assessment_format_preferences": "Short quiz and a mini-project.",
-        "assessment_delivery_constraints": "PDF submissions."
-    },
-    "teaching_constraints": {
-        "platform_policy_constraints": "Standard LMS.",
-        "ta_support_availability": "No TA.",
-        "instructional_delivery_context": "Online asynchronous.",
-        "max_slide_count": "10"
-    },
-    "institutional_requirements": {
-        "program_learning_outcomes": "Basic understanding of the subject.",
-        "academic_policies_and_institutional_standards": "Standard policies.",
-        "department_syllabus_requirements": "Standard syllabus format."
-    },
-    "prior_feedback": {
-        "historical_course_evaluation_results": "No prior feedback (new course)."
-    }
+  "student_profile": {
+    "student_background": "Undergraduate students with basic programming experience.",
+    "aggregate_academic_performance": "Average academic readiness.",
+    "anticipated_learner_needs_and_barriers": "Familiar with Python basics."
+  },
+  "instructor_preferences": {
+    "instructor_emphasis_intent": "Introductory overview of the topic.",
+    "instructor_style_preferences": "Clear and concise slides.",
+    "instructor_focus_for_assessment": "Simple quizzes and one short project."
+  },
+  "presentation_style_preferences": {
+    "preferred_visual_direction": "Simple, welcoming, and contemporary academic slides for an introductory course.",
+    "color_preferences": "Use a restrained high-contrast palette.",
+    "typography_preferences": "Use straightforward, highly readable typography.",
+    "layout_and_density_preferences": "Prefer concise layouts with one main teaching idea per slide.",
+    "accessibility_requirements": "Use readable type sizes and do not rely on color alone to communicate meaning.",
+    "styles_to_avoid": "Avoid visually dense, highly decorative, or experimental treatments.",
+    "additional_notes": "Keep the design practical for a short online asynchronous course."
+  },
+  "course_structure": {
+    "course_learning_outcomes": "Understand fundamental concepts and apply them to simple examples.",
+    "total_number_of_weeks": "3 weeks (MWE: minimal course for quick testing)",
+    "weekly_schedule_outline": "Week 1: Introduction. Week 2: Core concepts. Week 3: Practice and review."
+  },
+  "assessment_design": {
+    "assessment_format_preferences": "Short quiz and a mini-project.",
+    "assessment_delivery_constraints": "PDF submissions."
+  },
+  "teaching_constraints": {
+    "platform_policy_constraints": "Standard LMS.",
+    "ta_support_availability": "No TA.",
+    "instructional_delivery_context": "Online asynchronous.",
+    "max_slide_count": "10"
+  },
+  "institutional_requirements": {
+    "program_learning_outcomes": "Basic understanding of the subject.",
+    "academic_policies_and_institutional_standards": "Standard policies.",
+    "department_syllabus_requirements": "Standard syllabus format."
+  },
+  "prior_feedback": {
+    "historical_course_evaluation_results": "No prior feedback (new course)."
+  }
 }
