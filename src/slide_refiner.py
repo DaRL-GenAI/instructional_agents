@@ -661,5 +661,3 @@ Return ONLY the output.
                 1
             )
         return updated_latex
-
-
