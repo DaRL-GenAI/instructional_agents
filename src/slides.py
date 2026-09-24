@@ -8,6 +8,7 @@ from src.agents import (
     LLM,
     Agent,
 )
+from src.beamer_preflight import normalize_beamer_source, repair_messages
 
 
 class SlideUtils:
@@ -190,6 +191,10 @@ Guidelines:
 3. Use bullet points or numbered lists for clarity
 4. Keep each frame focused and not overcrowded
 5. If you create multiple frames [***NO MORE THAN {max_frames} FRAMES***], ensure logical flow between them
+6. Never nest itemize/enumerate environments more than 3 levels deep; prefer 2 levels for readability
+7. Colors: the preamble is fixed, so you cannot add \\definecolor. Only use standard color names (red, blue, teal, gray, ...), color names already defined in the template or current frames, or inline hex via \\textcolor[HTML]{{RRGGBB}}{{...}}. Never invent named colors such as electricblue
+8. Never nest display-math environments. For multiple aligned lines, use \\begin{{align*}} by itself, or put \\begin{{aligned}} inside \\begin{{equation}}. Never put align, align*, gather, or multline inside equation
+9. Code-heavy frames may use at most one lstlisting environment each. Consolidate a multi-step workflow into one complete, concise snippet (ideally 12 lines or fewer) instead of a separate code block under every step
 
 Use LaTeX features like:
 - \\begin{{itemize}} for bullet points
@@ -468,6 +473,11 @@ class SlidesDeliberation:
         
         # Step 6: Compile final LaTeX source
         latex_source = self._compile_latex_source()
+        preflight = normalize_beamer_source(latex_source)
+        latex_source = preflight.source
+        if preflight.changed:
+            for message in repair_messages(preflight):
+                print(f"[preflight] {message}")
         
         # Step 7: Compile final slides script
         slides_script_md = self._compile_slides_script()
@@ -627,6 +637,7 @@ class SlidesDeliberation:
 
         1. Don't use non-English characters directly, e.g. use $\gamma$ instead of γ, $\epsilon$ instead of ε
         2. If any of symbols has a special meaning, add a slash. e.g. use \& instead of &
+        3. Colors: only use standard color names (red, blue, teal, gray, ...), colors defined in the provided template, or inline hex via \\textcolor[HTML]{{RRGGBB}}{{...}}. Never invent named colors such as electricblue, and do not add \\usepackage lines or color definitions beyond the provided template
 
         Your response should be LaTeX code that can be compiled directly.
         """
