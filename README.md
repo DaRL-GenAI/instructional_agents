@@ -74,7 +74,7 @@ An AI-powered instructional design system based on the ADDIE model for automated
 | 📄 **LaTeX/PDF Output** | Generate professional LaTeX slides and compile to PDF format |
 | 🎨 **PowerPoint (PPTX) Export** | Convert LaTeX Beamer slides to visually rich PPTX using pptxgenjs with icons, shadows, and Slide Masters |
 | 🎬 **Lecture Videos** | Render a narrated lecture video per chapter (OpenAI TTS + ffmpeg) with captions, ported from [EduCAST](https://github.com/DaRL-GenAI/EduCAST) — see [docs/VIDEO_GENERATION.md](docs/VIDEO_GENERATION.md) |
-| 🧪 **Studio (browser)** | [Run the pipeline in your browser](https://darl-genai.github.io/instructional_agents_homepage/studio/) with your own API key: syllabus, slides, homework, labs and videos, with every prompt, response and edit auditable |
+| 🧪 **Studio (browser)** | [Run the pipeline in your browser](https://darl-genai.github.io/instructional_agents_studio/) with your own API key: syllabus, slides, homework, labs and videos, with every prompt, response and edit auditable |
 | ✅ **Automatic Evaluation** | Built-in evaluation system for assessing generated course materials |
 
 ### 🎬 How It Works
@@ -120,7 +120,7 @@ API are in [docs/VIDEO_GENERATION.md](docs/VIDEO_GENERATION.md).
 
 ## 🧪 Studio: run it in your browser
 
-[**Instructional Agents Studio**](https://darl-genai.github.io/instructional_agents_homepage/studio/)
+[**Instructional Agents Studio**](https://darl-genai.github.io/instructional_agents_studio/)
 is a static page that runs the same ADDIE deliberations with your own OpenAI-compatible key
 (nothing is sent to our servers): objectives → learner & resource analysis → syllabus →
 assessment plan → final project → chapters → slides (HTML / Beamer / PPTX) → lecture script →
