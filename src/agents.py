@@ -11,7 +11,11 @@ class LLM:
         self.temperature = temperature
         self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-    def generate_response(self, messages: List[Dict[str, str]], stream = False) -> str:
+    def generate_response(
+        self,
+        messages: List[Dict[str, str]],
+        stream: bool = False,
+    ) -> tuple[str, float, int]:
         start_time = time.time()
 
         try:
@@ -36,7 +40,7 @@ class LLM:
 
         except Exception as e:
             print(f"Error generating response: {e}")
-            return f"Error: {e}"
+            return f"Error: {e}", time.time() - start_time, 0
 
 class LLM_stream:
     """
@@ -177,10 +181,12 @@ class Deliberation:
                  max_rounds: int = 1,
                  instruction_prompt: str = "",
                  input_files = None,
-                 output_format: str = "md"):
+                 output_format: str = "md",
+                 summary_sees_context: bool = False,
+                 independent_first_round: bool = False):
         """
         Initialize Deliberation
-        
+
         Args:
             id: Unique identifier for this deliberation
             name: Human-readable name for this deliberation
@@ -190,6 +196,12 @@ class Deliberation:
             summary_agent: Agent responsible for summarizing (optional)
             input_prompt: Default input prompt for this deliberation
             input_files: List of input files to use as additional context
+            summary_sees_context: Give the summary agent the same instruction
+                prompt the reviewers received, not just the transcript. Without
+                it the summary agent decides from the discussion alone.
+            independent_first_round: Withhold the transcript during the first
+                round so every agent forms its position independently, instead
+                of reacting to whoever happened to speak first.
         """
         self.id = id
         self.name = name
@@ -200,6 +212,8 @@ class Deliberation:
         self.instruction_prompt = instruction_prompt
         self.input_files = input_files
         self.output_format = output_format
+        self.summary_sees_context = summary_sees_context
+        self.independent_first_round = independent_first_round
         
     def add_to_discussion(self, agent_name: str, content: str):
         """Add content to discussion history"""
@@ -256,13 +270,17 @@ class Deliberation:
         for round_num in range(self.max_rounds):
             print(f"\n{'-'*50}\nRound {round_num + 1} of {self.max_rounds}\n{'-'*50}\n")
             
+            independent = self.independent_first_round and round_num == 0
+
             for agent in self.agents:
-                # Build current agent's input, including previous discussion
-                if self.discussion_history:
+                # Build current agent's input, including previous discussion.
+                # During an independent round the transcript is withheld so each
+                # agent commits to its own position before seeing the others'.
+                if self.discussion_history and not independent:
                     agent_prompt = f"{current_prompt}\n\n{self.format_discussion_history()}\n\nIt's now your turn to provide your thoughts."
                 else:
                     agent_prompt = current_prompt
-                
+
                 # Get agent's response
                 response, et, tu = agent.generate_response(agent_prompt, save_to_history=False)
                 self.add_to_discussion(agent.name, response)
@@ -270,9 +288,12 @@ class Deliberation:
                 elapsed_time += et
                 token_usage += tu
         
-        # Generate results of this discussion          
+        # Generate results of this discussion
+        summary_input = self.format_discussion_history()
+        if self.summary_sees_context:
+            summary_input = f"{current_prompt}\n\n{summary_input}"
         summary, et, tu = self.summary_agent.generate_response(
-            f"{self.format_discussion_history()}",
+            summary_input,
             save_to_history=False
         )
         elapsed_time += et
@@ -280,4 +301,3 @@ class Deliberation:
         
         print(f"\n{'='*50}\nDeliberation Complete\n{'='*50}\n")
         return summary, elapsed_time, token_usage
-
