@@ -34,7 +34,7 @@ def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catal
     return data_catalog
 
 
-def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, video: bool = False, video_options=None):
+def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, video: bool = False, video_options=None, textbook_path: str = None):
     """
     Main function to run the instructional design workflow by sequentially
     executing the six deliberation processes
@@ -95,7 +95,7 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
 
 
     from src.ADDIE import ADDIE
-    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume)
+    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume, textbook_path=textbook_path, output_dir=f"./exp/{exp_name}/")
 
     # Run the workflow
     output_dir = f"./exp/{exp_name}/"
@@ -294,6 +294,18 @@ def main():
              "from the last incomplete chapter (or mid-chapter checkpoint)."
     )
 
+    parser.add_argument(
+        "--use-textbook",
+        dest="textbook_path",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Ground course generation in a textbook. PATH may be a PDF file, "
+             "a Markdown file, or a directory of either. Requires the optional "
+             "grounding dependencies (pip install .[grounding]). When omitted "
+             "(the default), generation runs exactly as in the vanilla pipeline."
+    )
+
     # Optimize mode arguments
     parser.add_argument(
         "--optimize",
@@ -468,6 +480,7 @@ def main():
             resume=args.resume,
             video=args.video,
             video_options=video_options_from_args(args) if args.video else None,
+            textbook_path=args.textbook_path,
         )
 
     if args.evaluate or args.refine:

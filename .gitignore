@@ -41,6 +41,10 @@ assets/
 catalog/uploaded_*.json
 catalog/textbook_*.json
 
+# Textbook grounding (--use-textbook): per-run IR/embedding caches and API uploads
+.grounding_cache/
+data/textbooks/
+
 # Test & Coverage
 .pytest_cache/
 .coverage

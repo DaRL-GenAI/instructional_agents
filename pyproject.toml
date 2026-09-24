@@ -45,6 +45,14 @@ dependencies = [
 [project.optional-dependencies]
 vector-db = ["chromadb>=0.4.0"]
 video = ["pymupdf>=1.24.0"]
+# Textbook grounding (`python run.py <course> --use-textbook PATH`). The
+# vanilla pipeline never imports these; install with `pip install .[grounding]`.
+grounding = [
+    "pymupdf>=1.24",
+    "pymupdf4llm>=0.0.17",
+    "markdown-it-py>=3",
+    "rank-bm25>=0.2.2",
+]
 
 [project.urls]
 Homepage = "https://darl-genai.github.io/instructional_agents_homepage/"

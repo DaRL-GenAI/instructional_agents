@@ -238,6 +238,65 @@ Separate multiple frames with blank lines.
         return frames
 
 
+# --------------------------------------------------------------------- #
+# Textbook-grounding helpers (module level)                              #
+# --------------------------------------------------------------------- #
+# Only used when a SlidesDeliberation is constructed with a retriever
+# (``--use-textbook``). The vanilla pipeline never calls them.
+
+# Two retrieval hits whose first N words match are treated as the same
+# passage (the chunker overlaps adjacent prose chunks by OVERLAP_TOKENS).
+_DEDUPE_PREFIX_WORDS = 40
+
+# Inline markers carried by figure / equation chunks from the paged PDF
+# ingester. Kept as a module-level constant so the dedupe helper can
+# recognise visual chunks without importing the class.
+_VISUAL_CHUNK_MARKERS = ("[IMAGE_PATH:", "[LATEX:", "[TABLE:", "[ALGORITHM_STEPS:")
+
+
+def _is_visual_chunk_text(text: str) -> bool:
+    return any(m in text for m in _VISUAL_CHUNK_MARKERS)
+
+
+def _dedupe_results(results):
+    """Drop later results whose chunk overlaps a kept earlier chunk.
+
+    Two retrieval results are considered duplicates if EITHER:
+      * their full text matches byte-for-byte, OR
+      * their first :data:`_DEDUPE_PREFIX_WORDS` words match the first
+        ``_DEDUPE_PREFIX_WORDS`` words of an already-kept chunk (catches
+        the common case where chunk N+1 starts with the last ~64 tokens of
+        chunk N due to OVERLAP_TOKENS).
+
+    Visual chunks (figure / equation markers) are exempt from the prefix
+    rule against prose chunks -- their content role is distinct and they
+    are tiny -- but still dedupe on byte-identical text.
+
+    Preserves the retriever's rank order -- first occurrence of each
+    cluster is kept, later occurrences are dropped. Never raises.
+    """
+    if not results:
+        return results
+    kept = []
+    seen_full: set = set()
+    seen_prefix: set = set()
+    for r in results:
+        text = r.chunk.text or ""
+        is_visual = _is_visual_chunk_text(text)
+        prefix = " ".join(text.split()[:_DEDUPE_PREFIX_WORDS])
+        if is_visual:
+            if text in seen_full:
+                continue
+        else:
+            if text in seen_full or (prefix and prefix in seen_prefix):
+                continue
+        kept.append(r)
+        seen_full.add(text)
+        if prefix and not is_visual:
+            seen_prefix.add(prefix)
+    return kept
+
+
 class SlidesDeliberation:
     """
     SlidesDeliberation class for organizing agents to collaboratively create slides
@@ -252,6 +311,9 @@ class SlidesDeliberation:
                  catalog: bool = False,
                  catalog_dict: Dict[str, Any] = None,
                  resume: bool = False,
+                 retriever=None,
+                 section_ids=None,
+                 textbook_id: str = None,
                  ):
         """
         Initialize SlidesDeliberation
@@ -267,6 +329,13 @@ class SlidesDeliberation:
             resume: If True and a checkpoint exists in output_dir, pick up
                 from the last completed step / slide instead of starting
                 from scratch.
+            retriever: Optional textbook retriever (``--use-textbook``).
+                ``None`` (the default) leaves every prompt byte-identical
+                to the vanilla pipeline.
+            section_ids: Textbook section IDs the course contract bound to
+                this chapter; scopes evidence retrieval. ``None`` = whole
+                textbook.
+            textbook_id: Identifier of the loaded textbook (for logging).
         """
         self.id = id
         self.name = name
@@ -278,12 +347,401 @@ class SlidesDeliberation:
         self.catalog_dict = catalog_dict if catalog_dict else {}
         self.resume = resume
 
+        # Optional textbook-grounding handles. When `retriever` is None,
+        # `_build_evidence_block` returns empty strings and every prompt is
+        # constructed exactly as in the vanilla pipeline.
+        self.retriever = retriever
+        self.section_ids = section_ids
+        self.textbook_id = textbook_id
+        # Per-chapter top_k tuned by the density of chunks in the chapter's
+        # bound sections (see _compute_top_k_for_chapter).
+        self._evidence_top_k = self._compute_top_k_for_chapter()
+
         # Initialize containers for results
         self.slides_outline = []
         self.latex_dict = {}  # Now stores list of frames per slide
         self.slides_script = {}
         self.assessment_template = {}  # New: assessment template
         self.assessment_content = {}   # New: assessment content
+
+    # ------------------------------------------------------------------ #
+    # Textbook-grounding helpers                                          #
+    # ------------------------------------------------------------------ #
+    # Word budget for the injected evidence block. Stays well under the
+    # model's context window after the rest of the prompt.
+    _EVIDENCE_WORD_BUDGET = 1800
+    _EVIDENCE_TOP_K = 6            # default; per-chapter tuning may override
+    _EVIDENCE_TOP_K_MIN = 5        # floor for thin chapters
+    _EVIDENCE_TOP_K_MAX = 12       # ceiling -- beyond this hits the word budget
+    _CHUNKS_PER_TOP_K_STEP = 12    # ~12 chunks of density per top_k step
+
+    # Artifact-type vocabulary for `_build_evidence_block`. The strict
+    # rule-set ("slide") applies to slides + assessments -- both are READ
+    # documents. The relaxed rule-set ("script") applies to speaker
+    # scripts -- SPOKEN narration where mandatory direct quotation breaks
+    # narrative flow, so RULE 2 softens to "paraphrase naturally."
+    _ARTIFACT_TYPES = ("slide", "script", "assessment")
+
+    # Abort the run after this many consecutive retrieval failures of the
+    # same error class: writer calls would keep spending money while no
+    # grounded evidence reaches the prompt.
+    _MAX_CONSECUTIVE_RETRIEVAL_FAILURES = 10
+
+    # Horizontal rules used to frame the evidence block.
+    _EVIDENCE_RULE = "═" * 68
+    _EXCERPTS_RULE = "═" * 27 + " EXCERPTS " + "═" * 27
+
+    def _compute_top_k_for_chapter(self) -> int:
+        """Tune the retriever top_k by the density of bound chunks.
+
+        Returns ``_EVIDENCE_TOP_K`` (the default) when the retriever is
+        absent, no sections are bound, or the KB chunks attribute is
+        unavailable. Otherwise counts how many chunks belong to sections in
+        ``self.section_ids`` and scales: roughly
+        ``round(chunks / _CHUNKS_PER_TOP_K_STEP)``, clamped to
+        ``[_EVIDENCE_TOP_K_MIN, _EVIDENCE_TOP_K_MAX]``.
+        """
+        if self.retriever is None or not self.section_ids:
+            return self._EVIDENCE_TOP_K
+        try:
+            kb_chunks = self.retriever.kb.chunks
+        except AttributeError:
+            return self._EVIDENCE_TOP_K
+        bound = sum(1 for c in kb_chunks if c.section_id in self.section_ids)
+        if bound == 0:
+            return self._EVIDENCE_TOP_K
+        scaled = round(bound / self._CHUNKS_PER_TOP_K_STEP)
+        return max(self._EVIDENCE_TOP_K_MIN,
+                   min(self._EVIDENCE_TOP_K_MAX, scaled))
+
+    def _build_evidence_block(
+        self,
+        query: str,
+        artifact: str = "slide",
+        section_ids_override=None,
+        cross_chapter: bool = False,
+    ) -> tuple:
+        """Retrieve textbook evidence for `query` and format it for a prompt.
+
+        Returns ``(evidence_block, "")`` -- the second element is always an
+        empty string (kept so callers need no signature change).
+        ``evidence_block`` is empty when ``self.retriever is None`` (vanilla
+        path) or retrieval yielded nothing in scope; otherwise it is plain
+        text the caller prepends to its prompt.
+
+        ``artifact`` is one of ``"slide" | "script" | "assessment"``; it
+        toggles RULE 2 between the read-document and spoken-script
+        phrasings. RULES 3 / 6 / 7 are universal.
+
+        Section filtering, in priority order: ``cross_chapter=True`` searches
+        the whole textbook; ``section_ids_override`` (a per-slide narrowed
+        pick) replaces the chapter binding; otherwise ``self.section_ids``.
+        """
+        if self.retriever is None:
+            return "", ""
+        if artifact not in self._ARTIFACT_TYPES:
+            # Defensive: an unknown artifact label falls back to the strict
+            # rule-set rather than crashing.
+            artifact = "slide"
+        try:
+            if cross_chapter:
+                effective_section_ids = None
+            elif section_ids_override is not None:
+                effective_section_ids = section_ids_override
+            else:
+                effective_section_ids = self.section_ids
+            results = self.retriever.search(
+                query,
+                top_k=getattr(self, "_evidence_top_k", self._EVIDENCE_TOP_K),
+                section_ids=effective_section_ids,
+            )
+        except Exception as e:
+            # Cost protection: if retrieval keeps failing the same way, the
+            # run is no longer producing grounded output but still paying
+            # for writer calls. Abort cleanly after a generous threshold.
+            cls = type(self)
+            err_type = type(e).__name__
+            if getattr(cls, "_last_retrieval_error_type", None) == err_type:
+                cls._consecutive_retrieval_failures = (
+                    getattr(cls, "_consecutive_retrieval_failures", 0) + 1
+                )
+            else:
+                cls._consecutive_retrieval_failures = 1
+                cls._last_retrieval_error_type = err_type
+            n = cls._consecutive_retrieval_failures
+            print(f"[grounding] retrieval failed ({e}); falling back to vanilla prompt "
+                  f"(consecutive {err_type} failures: {n})")
+            if n >= self._MAX_CONSECUTIVE_RETRIEVAL_FAILURES:
+                raise RuntimeError(
+                    f"Grounding retrieval failed {n} times in a row with the "
+                    f"same error class ({err_type}). Aborting run to prevent "
+                    f"further cost (writer calls keep running even though no "
+                    f"grounded evidence is reaching the prompt). "
+                    f"Last error: {e!r}"
+                )
+            return "", ""
+        # Successful retrieval -- reset the consecutive-failure counter.
+        cls = type(self)
+        cls._consecutive_retrieval_failures = 0
+        cls._last_retrieval_error_type = None
+        if not results:
+            return "", ""
+
+        # Drop near-identical neighbours (chunk overlap) before showing to
+        # the LLM.
+        results = _dedupe_results(results)
+
+        # Coverage diversification for chapter-level retrieval: make sure
+        # the top-k spans at least 3 distinct sections when possible, so
+        # the writer is not locked onto one narrow textbook slice for the
+        # whole chapter. Only for chapter-level calls.
+        if (section_ids_override is None and not cross_chapter
+                and len(results) >= 4):
+            distinct_sections = {r.chunk.section_id for r in results}
+            if len(distinct_sections) < 3:
+                seen_sections = set()
+                diverse, deferred = [], []
+                for r in results:
+                    sid = r.chunk.section_id
+                    if sid not in seen_sections:
+                        diverse.append(r)
+                        seen_sections.add(sid)
+                    else:
+                        deferred.append(r)
+                results = diverse + deferred
+
+        # Build per-excerpt blocks with structured headers under a shared
+        # word budget; truncate the last one if it would overflow.
+        budget = self._EVIDENCE_WORD_BUDGET
+        blocks = []
+        for idx, r in enumerate(results, start=1):
+            words = r.chunk.text.split()
+            if len(words) > budget:
+                if budget < 30:  # skip a useless tail-end fragment
+                    break
+                text = " ".join(words[:budget]) + " …"
+            else:
+                text = " ".join(words)
+            blocks.append(self._excerpt_block(r, idx, len(results), text))
+            budget -= len(text.split())
+            if budget <= 0:
+                break
+
+        evidence_block = (
+            self._evidence_directive(artifact, len(blocks))
+            + "\n\n".join(blocks)
+            + "\n\n" + self._EVIDENCE_RULE + "\n"
+        )
+        return evidence_block, ""
+
+    def _excerpt_block(self, r, idx, total, text):
+        """Format one retrieval result as a structured excerpt block
+        (SOURCE / PAGE / KIND / PASSAGE). ``total`` may be an int (flat
+        block) or a placeholder string (grouped block)."""
+        chunk = r.chunk
+        chapter_title = (getattr(chunk, "chapter_title", "") or "").strip()
+        section_title = (getattr(chunk, "section_title", "") or "").strip()
+        source_line = " / ".join(
+            s for s in (chapter_title, section_title) if s
+        ) or "(untitled)"
+        try:
+            page_label = chunk.page_range_label()
+        except AttributeError:
+            page_label = f"p{getattr(chunk, 'page_start', '?')}"
+        kinds = getattr(chunk, "kinds", None) or ["prose"]
+        kind_label = "+".join(sorted(kinds))
+        bar = "━" * max(0, 50 - len(str(idx)) - len(str(total)))
+        return (
+            f"━━ EXCERPT {idx} of {total} {bar}\n"
+            f"  SOURCE  : {source_line}\n"
+            f"  PAGE    : {page_label}\n"
+            f"  KIND    : {kind_label}\n"
+            f"  PASSAGE :\n"
+            f"  «{text}»"
+        )
+
+    def _evidence_directive(self, artifact, n_excerpts):
+        """The mandatory-rules header (RULE 2/3/6/7) that precedes the
+        excerpts -- shared by the flat and grouped evidence blocks."""
+        rule = self._EVIDENCE_RULE
+        if artifact == "script":
+            rule_2 = (
+                "  RULE 2 (PARAPHRASE NATURALLY). This is spoken narration — "
+                "use plain, conversational language while keeping the textbook's "
+                "underlying meaning faithful. Direct quotation is RESERVED for "
+                "technical definitions where paraphrase would be lossy "
+                "(e.g. precise mathematical statements). Do NOT pepper the "
+                "script with quoted fragments — the speaker should sound like a "
+                "teacher explaining, not someone reading aloud from a book."
+            )
+            header_label = "TEXTBOOK GROUNDING — MANDATORY RULES FOR SPOKEN SCRIPT"
+        else:  # "slide" or "assessment"
+            rule_2 = (
+                "  RULE 2 (TEACH IN YOUR OWN WORDS — no quote-dumping). "
+                "Write each bullet as clear instructional prose, the way a "
+                "lecturer explains a concept — NOT by quoting a sentence from "
+                "the book and tacking on a gloss. Lead with the idea stated "
+                "plainly, in your own phrasing, using the textbook's facts and "
+                "terminology faithfully.\n"
+                "  \n"
+                "  HARD CONSTRAINTS:\n"
+                "    (a) Do NOT open a bullet with a quoted sentence followed "
+                "by a dash and an explanation. That reads like a citation "
+                "dump, not teaching.\n"
+                "    (b) Reserve \"direct quotation\" for a precise definition "
+                "or a formula statement where exact wording matters — at most "
+                "ONE short quote per slide, and only when paraphrase would "
+                "lose precision.\n"
+                "    (c) State only what the excerpts support. Add no new "
+                "facts; if you cannot say something from the evidence, omit it.\n"
+                "    (d) For an algorithm, SHOW its steps as a short numbered "
+                "procedure in your own words rather than quoting a description "
+                "of it."
+            )
+            header_label = "TEXTBOOK GROUNDING — MANDATORY RULES"
+        return (
+            f"{rule}\n"
+            f"{header_label}\n"
+            f"{rule}\n\n"
+            f"You have {n_excerpts} excerpts from the textbook below. They are your "
+            "AUTHORITATIVE source for this topic. Follow these rules without "
+            "exception:\n\n"
+            + rule_2 + "\n\n"
+            "  RULE 3 (ABSTAIN IF UNSUPPORTED). If you cannot ground a claim in "
+            "ANY excerpt below, either drop the claim or restate what the textbook "
+            "DOES cover on that topic. Do NOT make textbook-attributed claims that "
+            "the excerpts do not support.\n\n"
+            "  RULE 6 (PRESERVE WORKED EXAMPLES). If an excerpt's KIND "
+            "header contains \"example\", preserve the concrete trace — "
+            "specific data points, iteration steps, intermediate values. "
+            "Do NOT reduce it to an abstract definition. Author-curated "
+            "decks rely on worked examples to teach algorithm internals; "
+            "stripping the numbers loses the lesson.\n\n"
+            "  RULE 7 (PRESERVE MATH NOTATION). If an excerpt's KIND "
+            "header contains \"equation\", the passage carries math "
+            "symbols extractable from the source PDF. Preserve them in "
+            "the slide using inline LaTeX ``$\\alpha$``, ``$\\sum_i$``, "
+            "``$x_i$`` etc., or as display math ``\\[ ... \\]`` for "
+            "stand-alone formulas. Do NOT paraphrase math symbols into "
+            "prose (\"the sum of squared distances\") when the source "
+            "shows them in notation — preserving the notation is what "
+            "makes the slide pedagogically equivalent to the textbook.\n\n"
+            + self._EXCERPTS_RULE + "\n\n"
+        )
+
+    _GROUPED_PER_SLIDE_K = 3
+
+    def _build_grouped_evidence_block(self, outline, artifact="slide"):
+        """Group evidence BY outline slide: each slide-topic gets its own
+        labeled set of excerpts, so the writer sees focused per-slide
+        context instead of one undifferentiated chapter dump. Retrieves per
+        slide-topic (scoped to the bound sections -- cheap index lookups,
+        no LLM), dedupes chunks globally so none repeats across slides, and
+        shares one rule header + the total word budget. Returns ``("", "")``
+        when there is no retriever (vanilla) or no usable outline -- the
+        caller then falls back to the flat chapter-level block."""
+        if self.retriever is None or not outline:
+            return "", ""
+        groups = []
+        seen_ids = set()
+        idx = 0
+        budget = self._EVIDENCE_WORD_BUDGET
+        for slide in outline:
+            if budget <= 0:
+                break
+            if not isinstance(slide, dict):
+                continue
+            title = (slide.get("title") or "").strip()
+            desc = (slide.get("description") or "").strip()
+            q = f"{title}. {desc}".strip(". ")
+            if not q:
+                continue
+            try:
+                results = self.retriever.search(
+                    q, top_k=self._GROUPED_PER_SLIDE_K,
+                    section_ids=self.section_ids,
+                )
+            except Exception:
+                continue
+            excerpts = []
+            for r in _dedupe_results(results):
+                cid = getattr(r.chunk, "chunk_id", None) or id(r.chunk)
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                words = (r.chunk.text or "").split()
+                if len(words) > budget:
+                    if budget < 30:
+                        break
+                    text = " ".join(words[:budget]) + " …"
+                else:
+                    text = " ".join(words)
+                idx += 1
+                excerpts.append(self._excerpt_block(r, idx, "—", text))
+                budget -= len(text.split())
+                if budget <= 0:
+                    break
+            if excerpts:
+                label = f"▼ EVIDENCE FOR SLIDE: {title or '(topic)'}"
+                groups.append(label + "\n\n" + "\n\n".join(excerpts))
+        if not groups:
+            return "", ""
+        evidence_block = (
+            self._evidence_directive(artifact, idx)
+            + "\n\n".join(groups)
+            + "\n\n" + self._EVIDENCE_RULE + "\n"
+        )
+        return evidence_block, ""
+
+    # Per-slide section binding: narrow the chapter's bound sections to the
+    # best-matched few for one slide before retrieving its evidence.
+    _PER_SLIDE_TOP_SECTIONS = 2
+    _PER_SLIDE_RETRIEVE_K = 8
+    _PER_SLIDE_RRF_K = 60
+
+    def _pick_per_slide_sections(self, slide_query: str):
+        """Narrow the chapter's bound section_ids to the top-K sections for
+        THIS slide's query. Returns None when no retriever or no chapter
+        binding (vanilla path) -- the caller keeps the chapter-wide filter."""
+        from collections import defaultdict
+        if self.retriever is None or not self.section_ids:
+            return None
+        try:
+            results = self.retriever.search(
+                slide_query,
+                top_k=self._PER_SLIDE_RETRIEVE_K,
+                section_ids=self.section_ids,
+            )
+        except Exception as e:
+            print(f"[grounding] per-slide section pick failed ({e}); using chapter-wide filter")
+            return None
+        if not results:
+            return None
+        section_scores = defaultdict(float)
+        for rank, r in enumerate(results):
+            section_scores[r.chunk.section_id] += 1.0 / (self._PER_SLIDE_RRF_K + rank)
+        ranked = sorted(section_scores.items(), key=lambda kv: -kv[1])
+        return [sid for sid, _ in ranked[:self._PER_SLIDE_TOP_SECTIONS]]
+
+    def _build_per_slide_evidence(self, slide_query: str, artifact: str = "slide") -> tuple:
+        """Narrow the section filter to this slide's best-matched sections,
+        then build the evidence block. Falls back to chapter-wide retrieval
+        when no narrowing is possible (vanilla path or thin chapter)."""
+        per_slide = self._pick_per_slide_sections(slide_query)
+        return self._build_evidence_block(
+            slide_query, artifact=artifact, section_ids_override=per_slide,
+        )
+
+    @staticmethod
+    def _with_evidence(evidence_block: str, prompt: str) -> str:
+        """Prepend a non-empty evidence block to ``prompt``.
+
+        Returns ``prompt`` UNCHANGED (same object) when the block is empty,
+        which is what keeps the vanilla pipeline byte-identical.
+        """
+        if not evidence_block:
+            return prompt
+        return evidence_block + "\n" + prompt
 
     # ------------------------------------------------------------------ #
     # Checkpoint helpers (resume support)                                #
@@ -642,6 +1100,20 @@ class SlidesDeliberation:
         Your response should be LaTeX code that can be compiled directly.
         """
         
+
+        # Textbook grounding (no-op when self.retriever is None): group the
+        # evidence BY outline slide so the writer sees focused per-slide
+        # context; fall back to a flat chapter-level block when the outline
+        # yields nothing in scope.
+        evidence_block, _ = self._build_grouped_evidence_block(
+            getattr(self, "slides_outline", None)
+        )
+        if not evidence_block:
+            evidence_block, _ = self._build_evidence_block(
+                f"{chapter['title']}. {chapter.get('description', '')}"
+            )
+        prompt = self._with_evidence(evidence_block, prompt)
+
         # Reset agent history to ensure clean context
         teaching_assistant.reset_history()
         
@@ -769,6 +1241,18 @@ class SlidesDeliberation:
         Your response must be valid JSON that can be parsed programmatically.
         """
         
+
+        # Textbook grounding (no-op when self.retriever is None): use the
+        # outline as the query; scripts get the softer spoken-narration
+        # rule-set.
+        outline_query = " ".join(
+            sl.get("title", "") for sl in self.slides_outline
+        ) if self.slides_outline else ""
+        evidence_block, _ = self._build_evidence_block(
+            outline_query, artifact="script"
+        )
+        prompt = self._with_evidence(evidence_block, prompt)
+
         # Reset agent history to ensure clean context
         teaching_assistant.reset_history()
         
@@ -868,6 +1352,17 @@ class SlidesDeliberation:
         Your response must be valid JSON that can be parsed programmatically.
         """
         
+
+        # Textbook grounding (no-op when self.retriever is None). Assessments
+        # draw on cross-chapter context (review questions span the course),
+        # so search the whole textbook instead of the chapter binding.
+        evidence_block, _ = self._build_evidence_block(
+            f"{chapter['title']}. {chapter.get('description', '')}",
+            artifact="assessment",
+            cross_chapter=True,
+        )
+        prompt = self._with_evidence(evidence_block, prompt)
+
         # Reset agent history to ensure clean context
         teaching_assistant.reset_history()
         
@@ -976,6 +1471,14 @@ class SlidesDeliberation:
         Note: Your output length needs to be kept within a reasonable range so that it can fit on a single PPT slide.
         """
         
+
+        # Textbook grounding (no-op when self.retriever is None): per-slide
+        # retrieval narrowed to the slide's best-matched sections.
+        evidence_block, _ = self._build_per_slide_evidence(
+            f"{slide['title']}. {slide.get('description', '')}"
+        )
+        prompt = self._with_evidence(evidence_block, prompt)
+
         # Reset agent history to ensure clean context
         teaching_faculty.reset_history()
         
@@ -1011,6 +1514,14 @@ class SlidesDeliberation:
             max_frames=3
         )
         
+
+        # Textbook grounding (no-op when self.retriever is None): per-slide
+        # narrowed evidence.
+        evidence_block, _ = self._build_per_slide_evidence(
+            f"{slide['title']}. {slide.get('description', '')}"
+        )
+        prompt = self._with_evidence(evidence_block, prompt)
+
         # Reset agent history to ensure clean context
         teaching_assistant.reset_history()
         
@@ -1119,6 +1630,15 @@ class SlidesDeliberation:
         If there are multiple frames, clearly indicate when to advance to the next frame.
         """
         
+
+        # Textbook grounding (no-op when self.retriever is None): per-slide
+        # narrowed evidence with the spoken-script rule-set.
+        evidence_block, _ = self._build_per_slide_evidence(
+            f"{slide['title']}. {slide.get('description', '')}",
+            artifact="script",
+        )
+        prompt = self._with_evidence(evidence_block, prompt)
+
         # Reset agent history to ensure clean context
         teaching_assistant.reset_history()
         
@@ -1197,6 +1717,17 @@ class SlidesDeliberation:
         Your response must be valid JSON that can be parsed programmatically.
         """
         
+
+        # Textbook grounding (no-op when self.retriever is None): per-slide
+        # assessments use cross-chapter retrieval (review questions span the
+        # course), so skip the per-slide narrowing here.
+        evidence_block, _ = self._build_evidence_block(
+            f"{slide['title']}. {slide.get('description', '')}",
+            artifact="assessment",
+            cross_chapter=True,
+        )
+        prompt = self._with_evidence(evidence_block, prompt)
+
         # Reset agent history to ensure clean context
         teaching_assistant.reset_history()
         

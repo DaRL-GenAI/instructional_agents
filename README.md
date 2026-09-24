@@ -579,6 +579,22 @@ Interactive mode that prompts for feedback after each phase of the ADDIE workflo
 python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 ```
 
+### Textbook grounding (optional)
+
+Ground the generated course in a real textbook so the syllabus follows the book's chapters and every slide, script and assessment is written from retrieved textbook passages. Opt-in: without the flag the pipeline is unchanged.
+
+```bash
+# one-time: optional dependencies (pymupdf, pymupdf4llm, markdown-it-py, rank-bm25)
+pip install ".[grounding]"
+
+# PATH = a PDF, a Markdown file, or a directory of either (one chapter per file)
+python run.py "Data Mining" --use-textbook path/to/textbook.pdf --exp dm_grounded
+```
+
+How it works: the textbook is parsed into a chapter/section/paragraph representation and chunked; a hybrid retriever (BM25 + OpenAI embeddings, model from `INSTRUCTIONAL_AGENTS_EMBED_MODEL`, default `text-embedding-3-small`) indexes the chunks; the textbook table of contents is shown to the foundation deliberations; each syllabus chapter is bound to its best-matching textbook sections (using the `--model` LLM for query expansion); and per-slide evidence excerpts with mandatory grounding rules are prepended to the slide, script and assessment prompts. Parsed textbooks and embeddings are cached under `exp/<exp_name>/.grounding_cache/`.
+
+Via the API: `POST /api/textbooks/upload` (multipart `files`, same `X-OpenAI-API-Key` header as course generation) returns a `path` to pass as `textbook_path` to `/api/course/generate`; `GET /api/textbooks/list` enumerates uploaded textbooks. In the web UI use the "Textbook grounding (optional)" picker (the separate "Textbook Reference File" picker only seeds a catalog from an excerpt and does not ground the slides).
+
 ### Automatic Evaluation
 
 **Entry Point**: `evaluate.py` – Automatic assessment and scoring
