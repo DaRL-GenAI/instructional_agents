@@ -446,10 +446,11 @@ class LectureVideoBuilder:
                 intro = f"Welcome to {self.chapter_title}."
                 if self.course_name:
                     intro = f"Welcome to {self.chapter_title}, part of {self.course_name}."
-                if sections:
-                    first = split_sentences(sections[0]["text"])[:1]
-                    if first:
-                        intro += " " + first[0]
+                titles = [s["title"] for s in sections if s["title"]][:6]
+                if len(titles) > 1:
+                    intro += " In this lecture we will cover " + ", ".join(titles[:-1]) + f", and {titles[-1]}."
+                elif titles:
+                    intro += f" In this lecture we will cover {titles[0]}."
             segments.append(Segment(index=0, page=1, title=self.chapter_title, narration=intro, section=None))
             page_cursor = 2
         for s in sections:
