@@ -1,7 +1,7 @@
 import os
 import json
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from src.agents import (
     LLM,
@@ -140,12 +140,39 @@ class ADDIERunner:
         
         self.results = [self.course_name]
     
+    def _textbook_toc_context(self) -> Optional[str]:
+        """Return the textbook TOC for foundation-deliberation injection.
+
+        Returns the formatted TOC string when ``--use-textbook`` is in play,
+        else ``None`` so the deliberation prompt is byte-identical to the
+        vanilla path. Called once at the start of the foundation loop and
+        reused for every deliberation + retry.
+        """
+        kb = getattr(self.addie, "knowledge_base", None)
+        if kb is None:
+            return None
+        try:
+            return kb.toc()
+        except Exception as e:  # defensive: a malformed textbook must not kill the run
+            print(f"[grounding] TOC formatting failed ({e}); falling back to vanilla foundation prompts")
+            return None
+
     def run_foundation_deliberations(self):
         """Run the first 6 foundational deliberations"""
         print(f"\n{'#'*60}\nStarting ADDIE Workflow: Foundation Phase\n{'#'*60}\n")
         
         # Get the first 6 deliberations
         foundation_deliberations = self.addie.deliberations
+
+        # Textbook TOC block, built once and shared by every foundation
+        # deliberation (and copilot retries). ``None`` without
+        # ``--use-textbook`` -> vanilla prompts stay byte-identical.
+        self._foundation_toc = self._textbook_toc_context()
+        if self._foundation_toc:
+            print(
+                f"[grounding] Injecting textbook TOC ({len(self._foundation_toc.split())} words) "
+                "into foundation deliberations to anchor course structure to the source"
+            )
         
         # Run each deliberation in sequence
         i = 0
@@ -194,8 +221,13 @@ class ADDIERunner:
                 \n\n'''
                 print(f"User suggestions loaded: {user_suggestion}")
             
-            # Run deliberation with current state and user suggestion
-            result, elapsed_time, token_usage = deliberation.run(current_context=str(self.results), user_suggestion=user_suggestion)
+            # Run deliberation with current state and user suggestion (plus
+            # the textbook TOC when grounding is active; None otherwise).
+            result, elapsed_time, token_usage = deliberation.run(
+                current_context=str(self.results),
+                user_suggestion=user_suggestion,
+                textbook_context=self._foundation_toc,
+            )
             statistics.append({"elapsed_time": elapsed_time, "token_usage": token_usage})
 
             with open(os.path.join(self.output_dir, "statistics.json"), "w") as f:
@@ -231,6 +263,10 @@ class ADDIERunner:
             self._load_chapters()
             if self.chapters:
                 print(f"[resume] Loaded {len(self.chapters)} chapters from {chapters_path}")
+                # The contract lives in memory on the ADDIE instance, so a
+                # resumed grounded run must rebuild it against the loaded
+                # chapters.
+                self._maybe_build_contract()
                 return
 
         # Get the syllabus design result
@@ -250,8 +286,40 @@ class ADDIERunner:
             print(f"\nSyllabus processed into {len(self.chapters)} chapters:")
             for i, chapter in enumerate(self.chapters):
                 print(f"{i+1}. {chapter['title']}")
+
+            # Textbook grounding: bind each chapter to a handful of textbook
+            # sections; slide-phase retrieval is scoped to those sections.
+            self._maybe_build_contract()
         else:
             print("Error: Syllabus not found in results. Cannot process chapters.")
+
+    def _maybe_build_contract(self):
+        """Build the course contract iff textbook grounding is active.
+
+        No-op when ``--use-textbook`` wasn't passed (retriever / KB are
+        ``None``). Called from both the fresh syllabus-processing path and
+        the ``--resume`` chapter-loading path. Query expansion (HyDE +
+        subtopics) uses the run's configured LLM (``--model``).
+        """
+        if self.addie.retriever is None or self.addie.knowledge_base is None:
+            return
+        from src.grounding import build_course_contract
+        print(
+            "\n[grounding] Building course contract from chapters "
+            "(with HyDE + subtopic multi-query)..."
+        )
+        self.addie.contract = build_course_contract(
+            course_id=self.addie.course_name or "course",
+            chapters=self.chapters,
+            kb=self.addie.knowledge_base,
+            retriever=self.addie.retriever,
+            llm=self.addie.llm,
+        )
+        for i, m in enumerate(self.addie.contract.topic_to_textbook):
+            print(
+                f"  ch{i+1} {m.topic[:50]!r:55s} -> "
+                f"sections {m.section_ids}"
+            )
     
     def _save_chapters(self):
         """Save the processed chapters to a file"""
@@ -367,8 +435,11 @@ class ADDIERunner:
             slides_context['overall'] += self.addie.copilot_catalog.get("overall", "")
             print(f"User suggestions loaded: {slides_context['slides']}, {slides_context['script']}, {slides_context['assessment']}, {slides_context['overall']}")
 
-        # Create a SlidesDeliberation instance for this chapter
-        slides_deliberation = self._create_slides_deliberation(chapter, f"chapter_{chapter_idx+1}")
+        # Create a SlidesDeliberation instance for this chapter (grounded
+        # runs also receive the retriever + contract-bound section IDs).
+        slides_deliberation = self._create_slides_deliberation(
+            chapter, f"chapter_{chapter_idx+1}", chapter_idx=chapter_idx,
+        )
         
         # Store original context for retries
         original_context = slides_context.copy()
@@ -423,13 +494,15 @@ class ADDIERunner:
                 if satisfaction == "1":
                     retry_loop = False
     
-    def _create_slides_deliberation(self, chapter, chapter_dir_name):
+    def _create_slides_deliberation(self, chapter, chapter_dir_name, chapter_idx: int = 0):
         """
         Create a SlidesDeliberation instance for a chapter
         
         Args:
             chapter: Chapter information
             chapter_dir_name: Name of the chapter directory
+            chapter_idx: 0-based chapter index (used to look up the
+                contract binding when textbook grounding is active)
             
         Returns:
             SlidesDeliberation instance
@@ -456,6 +529,17 @@ class ADDIERunner:
             )
         }
         
+        # Per-chapter grounding scope: the section IDs the contract bound
+        # to this chapter. All None on the vanilla path.
+        grounding_kwargs = {}
+        if getattr(self.addie, "retriever", None) is not None:
+            from src.grounding import sections_for_chapter
+            grounding_kwargs = dict(
+                retriever=self.addie.retriever,
+                section_ids=sections_for_chapter(self.addie.contract, chapter_idx),
+                textbook_id=self.addie.knowledge_base.textbook_id,
+            )
+
         # Create and return the slides deliberation
         return SlidesDeliberation(
             id=f"slides_{chapter_dir_name}",
@@ -466,6 +550,7 @@ class ADDIERunner:
             catalog=self.addie.catalog,
             catalog_dict=self.addie.catalog_dict,
             resume=self.resume,
+            **grounding_kwargs,
         )
     
     def _save_result(self, deliberation, result):
@@ -548,8 +633,14 @@ class ADDIERunner:
                 chapter_dir = os.path.join(self.output_dir, f"chapter_{chapter_idx+1}")
                 self._save_chapter_result(deliberation, result, chapter_idx, chapter_dir)
             else:
-                # Re-run foundation deliberation with combined suggestions but original context
-                result = deliberation.run(current_context=context_str, user_suggestion=combined_suggestions)
+                # Re-run foundation deliberation with combined suggestions but
+                # original context, plus the same textbook TOC the first call
+                # saw (None on the vanilla path).
+                result = deliberation.run(
+                    current_context=context_str,
+                    user_suggestion=combined_suggestions,
+                    textbook_context=getattr(self, "_foundation_toc", None),
+                )
                 self.results[idx] = result
                 self._save_result(deliberation, result)
             
@@ -598,7 +689,7 @@ class ADDIE:
     ADDIE (Analyze, Design, Develop, Implement, Evaluate) class for instructional design
     This class coordinates a series of deliberations to create a complete course design
     """
-    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False):
+    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, output_dir: str = None):
         """
         Initialize ADDIE workflow
 
@@ -610,6 +701,13 @@ class ADDIE:
             resume: If True, skip deliberations whose outputs already exist in
                 output_dir and resume chapter generation from the last
                 incomplete chapter (or a mid-chapter checkpoint).
+            textbook_path: Optional path to a textbook (PDF, Markdown, or a
+                directory of either) used to ground course generation. When
+                ``None`` (the default) generation runs exactly as in the
+                vanilla pipeline and nothing from ``src.grounding`` is imported.
+            output_dir: Experiment output directory. Only used to place the
+                grounding cache (``<output_dir>/.grounding_cache``) next to
+                the run's outputs; defaults to the current directory.
         """
         self.course_name = course_name
         self.model_name = model_name
@@ -619,12 +717,49 @@ class ADDIE:
         self.llm = LLM(model_name=model_name, seed=seed, temperature=temperature)
         self.deliberations = []
         self.results = []
+
+        # Textbook grounding (opt-in). Without a path the knowledge base,
+        # retriever and contract stay ``None`` and every downstream code
+        # path takes the vanilla branch.
+        self.knowledge_base = None
+        self.retriever = None
+        self.contract = None  # populated by ADDIERunner once chapters exist
+        if textbook_path:
+            self._init_grounding(textbook_path, output_dir)
         
         # Create all deliberations in the workflow
         self.set_catalog(data_catalog)
         self.set_copilot(data_copilot)
         self.create_deliberations()
         
+    def _init_grounding(self, textbook_path: str, output_dir: str = None):
+        """Load the textbook and build the hybrid retriever.
+
+        The IR and embedding caches live under
+        ``<output_dir>/.grounding_cache/`` (never the repository root).
+        Embeddings are computed lazily on the first retrieval, with the
+        model taken from ``INSTRUCTIONAL_AGENTS_EMBED_MODEL``.
+        """
+        try:
+            from src.grounding import HybridRetriever, TextbookKnowledgeBase
+        except ImportError as e:
+            raise ImportError(
+                "Textbook grounding needs the optional dependencies "
+                "(pymupdf, pymupdf4llm, markdown-it-py, rank-bm25). "
+                "Install them with: pip install .[grounding]"
+            ) from e
+        cache_dir = os.path.join(output_dir or ".", ".grounding_cache")
+        print(f"[grounding] Loading textbook from: {textbook_path}")
+        self.knowledge_base = TextbookKnowledgeBase.from_path(
+            textbook_path, ir_cache_dir=cache_dir,
+        )
+        print(
+            f"[grounding] Loaded '{self.knowledge_base.textbook.title}': "
+            f"{len(self.knowledge_base.textbook.chapters)} chapters, "
+            f"{len(self.knowledge_base)} chunks."
+        )
+        self.retriever = HybridRetriever(self.knowledge_base, cache_dir=cache_dir)
+
     def set_catalog(self, data_catalog: dict):
         self.catalog_dict = {
             "objectives_definition": "",
