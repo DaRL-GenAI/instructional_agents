@@ -22,7 +22,12 @@ from pydantic import BaseModel, Field
 from typing import Optional as Opt
 import uvicorn
 
-from run import run_instructional_design, run_optimization
+from run import (
+    run_instructional_design,
+    run_optimization,
+    run_evaluation,
+    run_refinement,
+)
 from src import __version__
 from src.pdf_processor import PDFSlideProcessor
 from src.ADDIE_optimize import ADDIEOptimizer
@@ -61,6 +66,12 @@ class CourseRequest(BaseModel):
     catalog: Optional[str] = Field(default=None, description="Catalog name to use")
     catalog_data: Optional[Dict[str, Any]] = Field(default=None, description="Catalog data as JSON object")
     generate_pptx: Optional[bool] = Field(default=False, description="Also generate PPTX slides")
+    run_evaluation: Optional[bool] = Field(default=False, description="Run evaluation after generation")
+    run_refinement: Optional[bool] = Field(default=False, description="Run refinement after evaluation")
+    refinement_threshold: Optional[float] = Field(default=3.0, description="Score threshold for selecting files to refine")
+    refinement_retries: Optional[int] = Field(default=3, description="Maximum refinement retries per selected file")
+    refinement_route: Optional[str] = Field(default="all", description="Refinement route to run")
+
 
 class OptimizeRequest(BaseModel):
     storage_id: str = Field(..., description="ID of the stored PDF files")
@@ -871,6 +882,36 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
                 print(f"✅ Generated {len(pptx_results)} PPTX files")
             except Exception as pptx_err:
                 print(f"⚠️ PPTX generation failed: {pptx_err}")
+                
+        # Post-processing (evaluation / refinement) is best-effort: the course
+        # files already exist, so a failure here must not mark the task failed.
+        if request.run_evaluation or request.run_refinement:
+            print("\n🔍 Running evaluation...")
+            tasks[task_id]["current_stage"] = "Running evaluation"
+            tasks[task_id]["progress"] = 80
+            try:
+                run_evaluation(
+                    model_name=request.model_name,
+                    exp_name=request.exp_name,
+                )
+            except Exception as eval_err:
+                print(f"⚠️ Evaluation failed: {eval_err}")
+                request.run_refinement = False
+
+        if request.run_refinement:
+            print("\n🛠️ Running refinement...")
+            tasks[task_id]["current_stage"] = "Running refinement"
+            tasks[task_id]["progress"] = 90
+            try:
+                run_refinement(
+                    model_name=request.model_name,
+                    exp_name=request.exp_name,
+                    threshold=request.refinement_threshold,
+                    retries=request.refinement_retries,
+                    route=request.refinement_route,
+                )
+            except Exception as refine_err:
+                print(f"⚠️ Refinement failed: {refine_err}")
 
         # Mark as completed
         print("\n" + "=" * 60)
@@ -887,7 +928,7 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
             os.environ["OPENAI_API_KEY"] = original_key
         elif "OPENAI_API_KEY" in os.environ:
             del os.environ["OPENAI_API_KEY"]
-        
+
     except Exception as e:
         # Mark as failed
         error_msg = str(e)

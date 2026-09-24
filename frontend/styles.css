@@ -271,6 +271,7 @@ body::before {
 
 .form-group input[type="text"],
 .form-group input[type="password"],
+.form-group input[type="number"],
 .form-group input[type="file"],
 .form-group select,
 .form-group textarea {
@@ -327,6 +328,32 @@ body::before {
     margin-right: 12px;
     cursor: pointer;
     accent-color: var(--ink);
+}
+
+.refinement-options {
+    margin: 10px 0 24px;
+    padding: 18px;
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-card);
+}
+
+.refinement-options h3 {
+    margin: 0 0 14px;
+    font-size: 1rem;
+    color: var(--text);
+}
+
+.refinement-settings {
+    margin-top: 8px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.form-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
 }
 
 /* ================= BUTTONS ================= */
@@ -743,6 +770,11 @@ footer {
 
     .container {
         padding: 0 16px;
+    }
+
+    .form-row {
+        grid-template-columns: 1fr;
+        gap: 0;
     }
 
     .file-item {

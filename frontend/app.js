@@ -26,6 +26,8 @@ const translations = {
         expNamePlaceholder: '默认：default',
         copilotLabel: '启用 Copilot 模式（交互式反馈）',
         catalogModeLabel: 'Catalog 模式',
+        textbookFileLabel: '上传教材参考文件（可选）',
+        textbookFileTip: '支持 PDF/TXT/MD；系统会先提取前若干页并保存为 textbook catalog JSON 供检查。',
         catalogOptionNone: '不使用',
         catalogOptionDefault: '使用默认 Catalog',
         catalogOptionUpload: '上传 Catalog 文件',
@@ -93,6 +95,8 @@ const translations = {
         catalogListFailed: '无法加载 Catalog 列表',
         catalogSelectDefault: '选择 Catalog...',
         uploadCatalogFailed: '上传 Catalog 文件失败',
+        uploadTextbookFailed: '教材参考文件处理失败',
+        textbookCatalogReady: '教材 catalog 已生成：{filename}',
         modeGenerate: '生成新课程',
         modeOptimize: '优化已有材料',
         pptxLabel: '同时生成 PPTX 幻灯片',
@@ -100,6 +104,20 @@ const translations = {
         optimizeModeRegenerate: '逐张重新生成（整章重写）',
         optimizeModeRefine: '局部精修（仅改相关帧）',
         optimizeModeTip: '重新生成：每张幻灯片整体重写。局部精修：只定位并改写与需求相关的帧，其余保持不变。',
+        postProcessTitle: '评估与优化',
+        evaluationLabel: '生成后运行评估',
+        refinementLabel: '评估后优化低分文件',
+        refinementThresholdLabel: '优化阈值',
+        refinementThresholdTip: '平均分低于该值的文件会被优化',
+        refinementRetriesLabel: '最大重试次数',
+        refinementRetriesTip: '每个文件最多运行的优化重试次数',
+        refinementRouteLabel: '优化文件类型',
+        refinementRouteAll: '全部',
+        refinementRouteAssessment: 'Assessment',
+        refinementRouteSlides: 'Slides',
+        refinementRouteScript: 'Scripts',
+        refinementRouteSyllabus: 'Syllabus',
+        refinementRouteObjectives: 'Learning Objectives',
         optimizeSectionTitle: '优化配置',
         optimizeSubmitButton: '<span>🔧</span><span>开始优化</span>',
         optimizeProgressTitle: '优化进度',
@@ -249,6 +267,20 @@ const translations = {
         optimizeModeRegenerate: 'Regenerate (rewrite every slide)',
         optimizeModeRefine: 'Localized Refine (edit only relevant frames)',
         optimizeModeTip: 'Regenerate: rewrite each slide wholesale. Localized Refine: locate and rewrite only the frames relevant to your requirements, leaving the rest untouched.',
+        postProcessTitle: 'Evaluation & Refinement',
+        evaluationLabel: 'Run evaluation after generation',
+        refinementLabel: 'Refine low-scoring files after evaluation',
+        refinementThresholdLabel: 'Refinement Threshold',
+        refinementThresholdTip: 'Files below this average score are selected for refinement',
+        refinementRetriesLabel: 'Max Retries',
+        refinementRetriesTip: 'Maximum refinement retries per selected file',
+        refinementRouteLabel: 'File Types to Refine',
+        refinementRouteAll: 'All',
+        refinementRouteAssessment: 'Assessment',
+        refinementRouteSlides: 'Slides',
+        refinementRouteScript: 'Scripts',
+        refinementRouteSyllabus: 'Syllabus',
+        refinementRouteObjectives: 'Learning Objectives',
         optimizeSectionTitle: 'Optimization Settings',
         optimizeSubmitButton: '<span>🔧</span><span>Start Optimization</span>',
         optimizeProgressTitle: 'Optimization Progress',
@@ -522,6 +554,12 @@ function setupEventListeners() {
         textbookFile.addEventListener('change', handleTextbookFileChange);
     }
 
+    const refinementMode = document.getElementById('refinement-mode');
+    if (refinementMode) {
+        refinementMode.addEventListener('change', handleRefinementModeChange);
+        handleRefinementModeChange();
+    }
+
     // API Key management
     document.getElementById('save-api-key').addEventListener('click', saveApiKey);
     document.getElementById('toggle-api-key').addEventListener('click', toggleApiKeyVisibility);
@@ -688,6 +726,23 @@ function handleTextbookFileChange() {
     }
 }
 
+function handleRefinementModeChange() {
+    const refinementMode = document.getElementById('refinement-mode');
+    const evaluationMode = document.getElementById('evaluation-mode');
+    const settings = document.getElementById('refinement-settings');
+
+    if (!refinementMode || !settings) {
+        return;
+    }
+
+    const enabled = refinementMode.checked;
+    settings.style.display = enabled ? 'block' : 'none';
+
+    if (enabled && evaluationMode) {
+        evaluationMode.checked = true;
+    }
+}
+
 async function handleFormSubmit(e) {
     e.preventDefault();
     
@@ -712,7 +767,12 @@ async function handleFormSubmit(e) {
             model_name: document.getElementById('model-name').value,
             exp_name: document.getElementById('exp-name').value || 'default',
             copilot: document.getElementById('copilot-mode').checked,
-            generate_pptx: document.getElementById('pptx-mode').checked
+            generate_pptx: document.getElementById('pptx-mode').checked,
+            run_evaluation: document.getElementById('evaluation-mode').checked,
+            run_refinement: document.getElementById('refinement-mode').checked,
+            refinement_threshold: parseFloat(document.getElementById('refinement-threshold').value || '3.0'),
+            refinement_retries: parseInt(document.getElementById('refinement-retries').value || '3', 10),
+            refinement_route: document.getElementById('refinement-route').value
         };
 
         // Handle optional textbook reference upload first.
@@ -1683,4 +1743,3 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
-
