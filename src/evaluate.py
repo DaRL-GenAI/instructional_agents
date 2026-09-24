@@ -1,11 +1,31 @@
 import os
 import json
-from typing import List, Dict, Optional
+from statistics import median
+from typing import List, Dict, Optional, Tuple
 from openai import OpenAI
 from pathlib import Path
 import pandas as pd
 from src.agents import LLM
 import argparse
+
+# Opt-in "rigorous" measurement mode (default OFF -> behaviour unchanged),
+# enabled with `evaluate.py --rigorous`: deterministic judge (fixed seed +
+# temperature 0), median of N samples per metric, anchored rubric bands, a null
+# sentinel on parse failure (excluded from aggregates) instead of a silent 3.0,
+# and a derived "core_quality" headline. None of this touches the default path.
+RIGOROUS_SEED = 42
+RIGOROUS_TEMPERATURE = 0.0
+RIGOROUS_SAMPLES = 3
+# Metrics the grounded generator structurally cannot satisfy on saved artifacts:
+# attribution scores low because citation tokens are stripped by design;
+# availability/accessibility/transparency score LMS/policy properties absent
+# from a slide deck. The core_quality aggregate excludes them.
+CORE_QUALITY_EXCLUDED_METRICS = {
+    "attribution",
+    "availability",
+    "accessibility",
+    "transparency_of_policies",
+}
 
 class ValidationAgent:
     """
@@ -77,8 +97,9 @@ class EvaluationAgent:
     """
     Evaluation agent for scoring course materials based on specific metrics
     """
-    def __init__(self, llm: LLM):
+    def __init__(self, llm: LLM, rigorous: bool = False):
         self.llm = llm
+        self.rigorous = rigorous
         self.metrics = {
             "learning_objectives": {
                 "clarity": "Learning objectives are stated clearly in understandable language.",
@@ -114,9 +135,9 @@ class EvaluationAgent:
         }
 
     
-    def score_single_metric(self, file_type: str, filename: str, content: str, metric: str) -> int:
+    def score_single_metric(self, file_type: str, filename: str, content: str, metric: str) -> Tuple[Optional[float], str]:
         """
-        Score a single metric for a file (returns only a number 1-5)
+        Score a single metric for a file.
         
         Args:
             file_type: Type of file
@@ -125,7 +146,10 @@ class EvaluationAgent:
             metric: Specific metric to score
             
         Returns:
-            Score (1-5)
+            (score, thought). Score is a float in 1.0 ~ 5.0; in the default
+            mode a parse failure yields 3.0, in rigorous mode the median of
+            RIGOROUS_SAMPLES samples, or None when every sample failed to
+            parse (the sentinel is excluded from all aggregates).
         """
         cot_prompt = """Your output should be format as JSON like:
         {"THOUGHT": "Your thought process here", "SCORE": 2.0}
@@ -155,12 +179,60 @@ class EvaluationAgent:
         {content}
         """
         
+        if self.rigorous:
+            # Anchored rubric bands (metric-agnostic, textbook-agnostic) replace
+            # the one-word glosses; the default prompt above is left untouched.
+            prompt = f"""
+        Evaluate the {metric} of the following {file_type} content from file "{filename}".
+
+        Rate this content on the metric "{metric}" using a scale of 1.0 ~ 5.0 (you can use decimal values).
+        - 5.0: Fully satisfies the criterion; no substantive gaps.
+        - 4.0: Satisfies it well; only minor, non-substantive gaps.
+        - 3.0: Partially satisfies it; several noticeable gaps.
+        - 2.0: Largely fails it; satisfied only in places.
+        - 1.0: Does not satisfy the criterion.
+
+        {cot_prompt}
+
+        Content:
+        {content}
+        """
+
         messages = [
             {"role": "system", "content": "You are an educational content evaluator. Provide only numerical scores."},
             {"role": "user", "content": prompt}
         ]
         
-        max_retries = 3  # 最多重试3次
+        if not self.rigorous:
+            sample = self._sample_metric_once(messages, file_type, metric)
+            if sample is not None:
+                return sample
+            # Fall back to 3.0 after the retries are exhausted (unchanged default behaviour)
+            print(f"Max retries reached. Defaulting to 3.0 for {metric} in {file_type}.")
+            return 3.0, ""
+
+        # Rigorous: median of RIGOROUS_SAMPLES samples; a null sentinel
+        # (excluded from every aggregate) only if all samples fail to parse.
+        samples = []
+        for _ in range(RIGOROUS_SAMPLES):
+            sample = self._sample_metric_once(messages, file_type, metric)
+            if sample is not None:
+                samples.append(sample)
+        if samples:
+            med = median(score for score, _ in samples)
+            # Keep the rationale of the sample closest to the median score.
+            thought = min(samples, key=lambda st: abs(st[0] - med))[1]
+            return med, thought
+        print(f"All {RIGOROUS_SAMPLES} samples failed to parse for {metric} in {file_type}. Recording sentinel.")
+        return None, ""
+
+    def _sample_metric_once(self, messages, file_type: str, metric: str) -> Optional[Tuple[float, str]]:
+        """One judge sample with up to 3 parse retries. Returns (score, thought)
+        with score in [1.0, 5.0], or None if every retry failed to parse a
+        valid score. Factored out so rigorous mode can tell a parse failure
+        from a real middling score; the default path wraps None back into the
+        original silent 3.0."""
+        max_retries = 3
         retries = 0
 
         while retries < max_retries:
@@ -179,9 +251,7 @@ class EvaluationAgent:
 
             retries += 1
 
-        # 如果重试后仍然失败，默认返回3.0
-        print(f"Max retries reached. Defaulting to 3.0 for {metric} in {file_type}.")
-        return 3.0, ""
+        return None
 
 
     def evaluate_files(self, file_data: Dict[str, List[Dict]]) -> Dict:
@@ -222,21 +292,30 @@ class EvaluationAgent:
                     }
                     print(f"Scored {filename} - {metric}: {score}")
 
+                # In rigorous mode a metric's score can be a None sentinel (all
+                # samples failed to parse); exclude those from every average.
+                # With no sentinels (the default path) this is unchanged.
+                numeric_scores = [
+                    v["score"] for v in file_scores.values()
+                    if isinstance(v["score"], (int, float))
+                ]
                 type_results.append({
                     'filename': filename,
                     'scores': file_scores,
-                    'average': sum(v["score"] for v in file_scores.values()) / len(file_scores) if file_scores else 0
+                    'average': sum(numeric_scores) / len(numeric_scores) if numeric_scores else 0
                 })
 
                 # Add scores to the overall list for summary
-                for v in file_scores.values():
-                    all_scores.append(v["score"])
+                all_scores.extend(numeric_scores)
 
             # Calculate summary statistics for each file type
             if type_results:
                 type_all_scores = []
                 for result in type_results:
-                    type_all_scores.extend(v["score"] for v in result['scores'].values())
+                    type_all_scores.extend(
+                        v["score"] for v in result['scores'].values()
+                        if isinstance(v["score"], (int, float))
+                    )
 
                 results[file_type] = {
                     'files': type_results,
@@ -266,11 +345,15 @@ class CourseEvaluationSystem:
     """
     Main system for evaluating course materials
     """
-    def __init__(self, model_name: str, exp_name: str):
-        self.llm = LLM(model_name=model_name)
+    def __init__(self, model_name: str, exp_name: str, rigorous: bool = False):
+        self.rigorous = rigorous
+        if rigorous:
+            self.llm = LLM(model_name=model_name, seed=RIGOROUS_SEED, temperature=RIGOROUS_TEMPERATURE)
+        else:
+            self.llm = LLM(model_name=model_name)
         self.program_chair = ValidationAgent("Program Chair", self.llm)
         self.test_student = ValidationAgent("Test Student", self.llm)
-        self.evaluator = EvaluationAgent(self.llm)
+        self.evaluator = EvaluationAgent(self.llm, rigorous=rigorous)
         self.exp_name = exp_name
 
         self.eval_dir = Path(f"eval/{model_name}-Evaluation_{self.exp_name}/evaluation_results")
@@ -315,9 +398,41 @@ class CourseEvaluationSystem:
         
         print(f"Saved validation report: {report_path}")
     
+    def _with_core_quality(self, results: Dict) -> Dict:
+        """Add a derived 'core_quality' aggregate (rigorous mode only) that
+        excludes metrics the grounded generator structurally cannot satisfy on
+        saved artifacts (CORE_QUALITY_EXCLUDED_METRICS). Purely additive — the
+        existing entries are untouched."""
+        core_scores = []
+        for file_type, data in results.items():
+            if not isinstance(data, dict) or 'files' not in data:
+                continue
+            for file_result in data['files']:
+                for metric, metric_data in file_result['scores'].items():
+                    if metric in CORE_QUALITY_EXCLUDED_METRICS:
+                        continue
+                    score = metric_data.get("score") if isinstance(metric_data, dict) else metric_data
+                    if isinstance(score, (int, float)):
+                        core_scores.append(score)
+        if core_scores:
+            total_files = results.get('overall_summary', {}).get('summary', {}).get('total_files', 0)
+            results['core_quality'] = {
+                'summary': {
+                    'total_files': total_files,
+                    'average_score': sum(core_scores) / len(core_scores),
+                    'max_score': max(core_scores),
+                    'min_score': min(core_scores),
+                    'excluded_metrics': sorted(CORE_QUALITY_EXCLUDED_METRICS),
+                }
+            }
+        return results
+
     def save_evaluation_results(self, results: Dict):
         """Save evaluation results to JSON and markdown"""
         output_dir = self.eval_dir
+
+        if self.rigorous:
+            results = self._with_core_quality(results)
 
         # Save JSON results
         json_path = output_dir / "evaluation_scores.json"
@@ -336,7 +451,11 @@ class CourseEvaluationSystem:
             f.write(f"**Evaluation Date:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
             
             for file_type, data in results.items():
-                if file_type == "overall_summary":
+                # `results` also carries aggregate entries (`overall_summary`,
+                # and `core_quality` in rigorous mode) shaped `{'summary': {...}}`
+                # with no 'files' key. Skip those so the per-file loop below
+                # doesn't KeyError.
+                if not isinstance(data, dict) or 'files' not in data:
                     continue
                 f.write(f"## {file_type}\n\n")
                 f.write(f"- **Total Files:** {data['summary']['total_files']}\n")
@@ -356,13 +475,16 @@ class CourseEvaluationSystem:
         
         print(f"Saved evaluation results: {json_path}")
 
-def main(model_name, exp_name):
+def main(model_name, exp_name, rigorous=False):
     """
-    Main function to process course materials
+    Main function to process course materials.
+
+    ``rigorous`` (default False) leaves the evaluation unchanged; True turns on
+    the deterministic, multi-sample, core_quality measurement mode.
     """
     print("Starting Course Material Evaluation System...")
 
-    system = CourseEvaluationSystem(model_name, exp_name)
+    system = CourseEvaluationSystem(model_name, exp_name, rigorous=rigorous)
     root_dir = Path(f"exp/{exp_name}")
 
     # Collect all files to process
@@ -445,6 +567,8 @@ def main(model_name, exp_name):
     for file_type, data in evaluation_results.items():
         if file_type == "overall_summary":
             continue
+        if not isinstance(data, dict) or 'summary' not in data:
+            continue
 
         print(f"\n{file_type}:")
         print(f"  Files: {data['summary']['total_files']}")
@@ -472,5 +596,16 @@ if __name__ == "__main__":
         help="Experiment name for logging"
     )
     
+    parser.add_argument(
+        "--rigorous",
+        action="store_true",
+        help="Opt-in measurement-grade eval (default OFF = unchanged behaviour): "
+             "deterministic judge (seed + temperature 0), median of N samples per metric, "
+             "anchored rubric bands, a null sentinel on parse failure instead of a silent "
+             "3.0, and a derived 'core_quality' headline that excludes metrics the grounded "
+             "generator cannot satisfy on saved artifacts (attribution, availability, "
+             "accessibility, transparency_of_policies).",
+    )
+
     args = parser.parse_args()
-    main(model_name=args.model, exp_name=args.exp)
+    main(model_name=args.model, exp_name=args.exp, rigorous=args.rigorous)
