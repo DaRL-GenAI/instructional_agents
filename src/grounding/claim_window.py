@@ -45,6 +45,27 @@ _ABBREV_NO_BREAK = frozenset(
 )
 
 
+# Look-back window for the abbreviation check. Only the last whitespace-
+# delimited word before a candidate split matters, and no abbreviation in
+# ``_ABBREV_NO_BREAK`` is anywhere near this long, so a bounded window is
+# exact — and O(1) per match instead of re-slicing the whole prefix
+# (which made the split quadratic on long chunks).
+_ABBREV_WINDOW = 64
+
+
+def _last_word_before(text: str, pos: int) -> str:
+    """Lower-cased last whitespace-delimited word ending before ``pos``,
+    or ``""`` when there is none (or it is longer than the window, in
+    which case it cannot be an abbreviation anyway)."""
+    win_start = max(0, pos - _ABBREV_WINDOW)
+    parts = text[win_start:pos].split()
+    if not parts:
+        return ""
+    if len(parts) == 1 and win_start > 0 and not text[win_start - 1].isspace():
+        return ""  # the single token is a truncated tail of a longer word
+    return parts[-1].lower()
+
+
 def split_into_sentences(text: str) -> list:
     """Split ``text`` into sentences on genuine sentence boundaries.
 
@@ -63,9 +84,7 @@ def split_into_sentences(text: str) -> list:
         return []
     split_indices = [0]
     for m in _SENTENCE_END_RE.finditer(text):
-        head = text[: m.start()].rstrip()
-        last_word = head.rsplit(None, 1)[-1].lower() if head.split() else ""
-        if last_word in _ABBREV_NO_BREAK:
+        if _last_word_before(text, m.start()) in _ABBREV_NO_BREAK:
             continue
         split_indices.append(m.end())
     sentences = []
