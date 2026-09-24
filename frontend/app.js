@@ -28,6 +28,11 @@ const translations = {
         catalogModeLabel: 'Catalog 模式',
         textbookFileLabel: '上传教材参考文件（可选）',
         textbookFileTip: '支持 PDF/TXT/MD；系统会先提取前若干页并保存为 textbook catalog JSON 供检查。',
+        textbookGroundingLabel: '教材内容引用（可选）',
+        textbookGroundingTip: '与上方的“教材参考文件”不同：上方仅用教材片段生成 catalog（不调用 LLM）；此处上传的 PDF/Markdown 会被完整解析并检索，幻灯片内容将基于教材证据撰写。多个文件按一本多章节教材处理。留空则不启用。',
+        textbookGroundingUploading: '上传中...',
+        textbookGroundingUploaded: '已上传',
+        textbookGroundingFailed: '上传失败',
         catalogOptionNone: '不使用',
         catalogOptionDefault: '使用默认 Catalog',
         catalogOptionUpload: '上传 Catalog 文件',
@@ -189,6 +194,11 @@ const translations = {
         expNamePlaceholder: 'Default: default',
         textbookFileLabel: 'Textbook Reference File (optional)',
         textbookFileTip: 'Supports PDF/TXT/MD. The system extracts a bounded excerpt and saves a textbook catalog JSON for review.',
+        textbookGroundingLabel: 'Textbook grounding (optional)',
+        textbookGroundingTip: 'Different from the reference file above, which only seeds a catalog from a textbook excerpt (no LLM). Files uploaded here are fully ingested and retrieved from, and every slide is written from textbook evidence. Multiple files are treated as one multi-chapter textbook. Leave empty to generate without grounding.',
+        textbookGroundingUploading: 'Uploading...',
+        textbookGroundingUploaded: 'Uploaded',
+        textbookGroundingFailed: 'Upload failed',
         copilotLabel: 'Enable Copilot Mode (Interactive Feedback)',
         catalogModeLabel: 'Catalog Mode',
         catalogOptionNone: 'Do not use',
@@ -554,6 +564,12 @@ function setupEventListeners() {
         textbookFile.addEventListener('change', handleTextbookFileChange);
     }
 
+    // Textbook grounding picker (distinct from the catalog-seeding upload above).
+    const groundingUpload = document.getElementById('textbook-grounding-upload');
+    if (groundingUpload) {
+        groundingUpload.addEventListener('change', handleTextbookGroundingChange);
+    }
+
     const refinementMode = document.getElementById('refinement-mode');
     if (refinementMode) {
         refinementMode.addEventListener('change', handleRefinementModeChange);
@@ -821,6 +837,14 @@ async function handleFormSubmit(e) {
             }
         }
 
+        // Textbook grounding (opt-in). The hidden #textbook-grounding-path
+        // input is filled by handleTextbookGroundingChange after a successful
+        // POST /api/textbooks/upload. Empty = omit the field (vanilla pipeline).
+        const groundingPath = document.getElementById('textbook-grounding-path');
+        if (groundingPath && groundingPath.value) {
+            formData.textbook_path = groundingPath.value;
+        }
+
         // Submit request
         const response = await fetch(`${API_BASE_URL}/api/course/generate`, {
             method: 'POST',
@@ -926,6 +950,68 @@ async function uploadTextbookCatalog(file, courseName) {
     }
 
     return await response.json();
+}
+
+// Textbook grounding: upload the selected PDF/Markdown file(s) to
+// /api/textbooks/upload as soon as they are picked and keep the returned
+// server path in the hidden #textbook-grounding-path input. The endpoint
+// requires the API key header like /api/course/generate does.
+async function handleTextbookGroundingChange(e) {
+    const pathInput = document.getElementById('textbook-grounding-path');
+    const status = document.getElementById('textbook-grounding-status');
+    const fileList = Array.from(e.target.files || []);
+    pathInput.value = '';
+    if (fileList.length === 0) {
+        if (status) status.textContent = '';
+        return;
+    }
+
+    const key = apiKey || document.getElementById('api-key').value.trim();
+    if (!key) {
+        alert(t('alertProvideApiKey'));
+        e.target.value = '';
+        return;
+    }
+
+    const totalMb = (fileList.reduce((sum, f) => sum + f.size, 0) / (1024 * 1024)).toFixed(1);
+    if (status) {
+        const label = fileList.length === 1 ? fileList[0].name : `${fileList.length} files`;
+        status.textContent = `${t('textbookGroundingUploading')} (${label}, ${totalMb} MB)`;
+        status.style.color = '#555';
+    }
+
+    try {
+        const fd = new FormData();
+        fileList.forEach(f => fd.append('files', f));
+        const response = await fetch(`${API_BASE_URL}/api/textbooks/upload`, {
+            method: 'POST',
+            headers: { 'X-OpenAI-API-Key': key },  // no Content-Type: the browser sets the multipart boundary
+            body: fd
+        });
+        if (!response.ok) {
+            let detail;
+            try { detail = (await response.json()).detail || response.statusText; }
+            catch (_) { detail = response.statusText; }
+            throw new Error(`HTTP ${response.status}: ${detail}`);
+        }
+        const data = await response.json();
+        pathInput.value = data.path;
+        if (status) {
+            const summary = data.kind === 'directory'
+                ? `${data.n_files} files as one textbook (${data.size_mb} MB)`
+                : `${data.title} (${data.size_mb} MB)`;
+            status.textContent = `${t('textbookGroundingUploaded')}: ${summary}`;
+            status.style.color = '#2a7';
+        }
+    } catch (error) {
+        console.error('[textbook grounding] upload failed:', error);
+        pathInput.value = '';
+        if (status) {
+            status.textContent = `${t('textbookGroundingFailed')}: ${error.message || error}`;
+            status.style.color = '#c33';
+        }
+        e.target.value = '';  // allow retrying the same selection
+    }
 }
 
 function startStatusPolling() {

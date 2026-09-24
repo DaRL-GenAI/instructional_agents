@@ -84,6 +84,19 @@
                         <input type="file" id="textbook-file" accept=".pdf,.txt,.md">
                         <small data-i18n="textbookFileTip">支持 PDF/TXT/MD；系统会先提取前若干页并保存为 textbook catalog JSON 供检查。</small>
                     </div>
+
+                    <!-- Textbook grounding (opt-in; distinct from the catalog
+                         seeding above). Files are POSTed to /api/textbooks/upload
+                         and the returned server path is kept in the hidden
+                         #textbook-grounding-path input, which the submit handler
+                         forwards as textbook_path. Empty = vanilla pipeline. -->
+                    <div class="form-group">
+                        <label for="textbook-grounding-upload" data-i18n="textbookGroundingLabel">教材内容引用（可选）</label>
+                        <input type="file" id="textbook-grounding-upload" accept=".pdf,.md,.markdown" multiple>
+                        <input type="hidden" id="textbook-grounding-path" name="textbook_path" value="">
+                        <small id="textbook-grounding-status" style="display: block; margin-top: 4px;"></small>
+                        <small data-i18n="textbookGroundingTip">与上方的“教材参考文件”不同：上方仅用教材片段生成 catalog（不调用 LLM）；此处上传的 PDF/Markdown 会被完整解析并检索，幻灯片内容将基于教材证据撰写。多个文件按一本多章节教材处理。留空则不启用。</small>
+                    </div>
                     
 
                     <div class="form-group checkbox-group">

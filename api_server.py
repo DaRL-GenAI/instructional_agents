@@ -71,6 +71,16 @@ class CourseRequest(BaseModel):
     refinement_threshold: Optional[float] = Field(default=3.0, description="Score threshold for selecting files to refine")
     refinement_retries: Optional[int] = Field(default=3, description="Maximum refinement retries per selected file")
     refinement_route: Optional[str] = Field(default="all", description="Refinement route to run")
+    textbook_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to a textbook for grounded course generation (a PDF file, a "
+            "Markdown file, or a directory of either) — normally the `path` "
+            "returned by POST /api/textbooks/upload. Must resolve to a path under "
+            "data/textbooks/. When omitted, generation runs exactly as in the "
+            "vanilla pipeline."
+        ),
+    )
 
 
 class OptimizeRequest(BaseModel):
@@ -126,6 +136,238 @@ def get_api_key(x_openai_api_key: Opt[str] = Header(None, alias="X-OpenAI-API-Ke
         )
     return env_key
 
+# ---------------------------------------------------------------------------
+# Textbook grounding (opt-in): upload + list textbooks used by
+# ``CourseRequest.textbook_path``. Distinct from /api/textbook/catalog, which
+# seeds a *catalog* from a textbook excerpt (no LLM, no grounding).
+# ---------------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parent
+# Uploaded textbooks live here (gitignored). All paths are resolved against
+# the repository root, not the process cwd, and confined to this directory so
+# the API surface cannot be used for path traversal.
+UPLOADED_TEXTBOOK_DIR = REPO_ROOT / "data" / "textbooks"
+ALLOWED_TEXTBOOK_EXTENSIONS = {".pdf", ".md", ".markdown"}
+MAX_TEXTBOOK_UPLOAD_MB = 100
+
+
+def _validate_textbook_path(textbook_path: Optional[str]) -> Optional[str]:
+    """Validate that `textbook_path` exists and is under data/textbooks/.
+
+    Returns the canonical absolute path on success; ``None`` passes through
+    unchanged (vanilla pipeline). Raises HTTPException(400) otherwise.
+    Relative paths are resolved against the repository root.
+    """
+    if not textbook_path:
+        return None
+    p = Path(textbook_path).expanduser()
+    if not p.is_absolute():
+        p = REPO_ROOT / p
+    p = p.resolve()
+    root = UPLOADED_TEXTBOOK_DIR.resolve()
+    if not p.exists():
+        raise HTTPException(status_code=400, detail=f"textbook_path does not exist: {textbook_path}")
+    if p != root and root not in p.parents:
+        raise HTTPException(
+            status_code=400,
+            detail=f"textbook_path must resolve to a path under data/textbooks/; got: {textbook_path}",
+        )
+    return str(p)
+
+
+def _sanitise_stem(name: str) -> str:
+    """Strip everything outside [A-Za-z0-9._-] from a filename stem."""
+    import re as _re
+    return _re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name).stem).strip("._-")
+
+
+def _list_available_textbooks() -> List[Dict[str, Any]]:
+    """Enumerate ingestable textbook sources under data/textbooks/.
+
+    A textbook is a top-level .pdf/.md file, or a sub-directory holding
+    .pdf/.md files (each file = one chapter). A sub-directory with exactly
+    one PDF is reported as that file so single-book chapter detection runs.
+    """
+    out: List[Dict[str, Any]] = []
+    root = UPLOADED_TEXTBOOK_DIR
+    if not root.exists():
+        return out
+    for entry in sorted(root.iterdir()):
+        if entry.is_file() and entry.suffix.lower() in ALLOWED_TEXTBOOK_EXTENSIONS:
+            out.append({
+                "id": entry.stem,
+                "title": entry.stem.replace("_", " ").replace("-", " ").title(),
+                "path": str(entry.resolve()),
+                "kind": "file",
+            })
+        elif entry.is_dir():
+            pdfs = sorted(entry.glob("*.pdf"))
+            mds = sorted(entry.glob("*.md")) + sorted(entry.glob("*.markdown"))
+            if not pdfs and not mds:
+                continue
+            if len(pdfs) == 1 and not mds:
+                target = pdfs[0]
+                out.append({
+                    "id": target.stem,
+                    "title": target.stem.replace("_", " ").replace("-", " ").title(),
+                    "path": str(target.resolve()),
+                    "kind": "file",
+                })
+            else:
+                out.append({
+                    "id": entry.name,
+                    "title": entry.name.replace("_", " ").replace("-", " ").title(),
+                    "path": str(entry.resolve()),
+                    "kind": "directory",
+                    "n_pdfs": len(pdfs),
+                    "n_mds": len(mds),
+                })
+    return out
+
+
+async def _stream_to_disk(upload: UploadFile, target: Path, bytes_remaining: int) -> int:
+    """Stream an UploadFile to `target` within a shared byte budget.
+
+    Returns bytes written; raises HTTPException(413) when the budget is
+    exceeded. The caller unlinks `target` on failure.
+    """
+    written = 0
+    with open(target, "wb") as out:
+        while True:
+            chunk = await upload.read(1024 * 1024)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > bytes_remaining:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Combined upload exceeds {MAX_TEXTBOOK_UPLOAD_MB} MB limit.",
+                )
+            out.write(chunk)
+    return written
+
+
+@app.get("/api/textbooks/list")
+async def list_textbooks():
+    """List textbooks available for grounded course generation."""
+    return {"textbooks": _list_available_textbooks()}
+
+
+@app.post("/api/textbooks/upload")
+async def upload_textbook(
+    files: List[UploadFile] = File(...),
+    x_openai_api_key: Opt[str] = Header(None, alias="X-OpenAI-API-Key"),
+):
+    """Upload one or more PDF / Markdown files for grounded generation.
+
+    Requires the same ``X-OpenAI-API-Key`` header (or env key) as
+    ``/api/course/generate``. A single file lands at
+    ``data/textbooks/uploaded_<token>_<name>.<ext>`` (``kind=file``); several
+    files land in ``data/textbooks/uploaded_<token>/`` (``kind=directory``,
+    one chapter per file). All files in one batch must be the same kind
+    (all PDF or all Markdown); the combined size is capped at 100 MB; PDFs
+    are sniffed for the ``%PDF`` header. The returned ``path`` is what to
+    pass as ``textbook_path`` to ``/api/course/generate``.
+    """
+    get_api_key(x_openai_api_key)
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded.")
+
+    classified: list = []  # (file, ext, safe_stem)
+    pdf_count = md_count = 0
+    for f in files:
+        if not f.filename or not f.filename.strip():
+            raise HTTPException(status_code=400, detail="Empty filename in upload batch.")
+        ext = Path(f.filename).suffix.lower()
+        if ext not in ALLOWED_TEXTBOOK_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported extension {ext!r} in file {f.filename!r}. "
+                       "Allowed: " + ", ".join(sorted(ALLOWED_TEXTBOOK_EXTENSIONS)),
+            )
+        safe_stem = _sanitise_stem(f.filename)
+        if not safe_stem:
+            raise HTTPException(status_code=400, detail=f"Filename {f.filename!r} has no usable characters.")
+        if ext == ".pdf":
+            pdf_count += 1
+        else:
+            md_count += 1
+        classified.append((f, ext, safe_stem))
+    if pdf_count and md_count:
+        raise HTTPException(
+            status_code=400,
+            detail="Mixed PDF + Markdown upload is not supported: the textbook ingester "
+                   f"requires one kind per directory ({pdf_count} PDF / {md_count} Markdown received).",
+        )
+
+    UPLOADED_TEXTBOOK_DIR.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex[:8]
+    max_bytes = MAX_TEXTBOOK_UPLOAD_MB * 1024 * 1024
+
+    def _check_pdf_magic(target: Path, name: str) -> None:
+        with open(target, "rb") as fh:
+            if not fh.read(8).startswith(b"%PDF"):
+                raise HTTPException(status_code=400, detail=f"File {name!r} does not start with the %PDF header.")
+
+    if len(classified) == 1:
+        f, ext, safe_stem = classified[0]
+        target = UPLOADED_TEXTBOOK_DIR / f"uploaded_{token}_{safe_stem}{ext}"
+        try:
+            total = await _stream_to_disk(f, target, max_bytes)
+            if ext == ".pdf":
+                _check_pdf_magic(target, f.filename)
+        except HTTPException:
+            target.unlink(missing_ok=True)
+            raise
+        except Exception as e:
+            target.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}")
+        return {
+            "id": target.stem,
+            "title": safe_stem.replace("_", " ").replace("-", " ").title(),
+            "path": _validate_textbook_path(str(target)),
+            "kind": "file",
+            "n_files": 1,
+            "size_bytes": total,
+            "size_mb": round(total / (1024 * 1024), 2),
+        }
+
+    upload_dir = UPLOADED_TEXTBOOK_DIR / f"uploaded_{token}"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    total = 0
+    written: list = []
+    seen: set = set()
+    try:
+        for f, ext, safe_stem in classified:
+            stem, dup = safe_stem, 2
+            while stem in seen:  # foo.pdf + foo.pdf -> foo.pdf + foo_2.pdf
+                stem = f"{safe_stem}_{dup}"; dup += 1
+            seen.add(stem)
+            target = upload_dir / f"{stem}{ext}"
+            total += await _stream_to_disk(f, target, max_bytes - total)
+            written.append(target)
+            if ext == ".pdf":
+                _check_pdf_magic(target, f.filename)
+    except Exception as e:
+        for w in written:
+            w.unlink(missing_ok=True)
+        if upload_dir.exists() and not any(upload_dir.iterdir()):
+            upload_dir.rmdir()
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}")
+    return {
+        "id": upload_dir.name,
+        "title": f"Uploaded {len(classified)} files ({token})",
+        "path": _validate_textbook_path(str(upload_dir)),
+        "kind": "directory",
+        "n_files": len(classified),
+        "n_pdfs": pdf_count,
+        "n_mds": md_count,
+        "size_bytes": total,
+        "size_mb": round(total / (1024 * 1024), 2),
+    }
+
+
 # API endpoints
 @app.post("/api/course/generate")
 async def generate_course(
@@ -138,6 +380,11 @@ async def generate_course(
     """
     # Get API key from header or environment
     api_key = get_api_key(x_openai_api_key)
+
+    # Validate the optional textbook path up front so a bad path returns 400
+    # before a task is created; the canonical path is written back so the
+    # background task uses the validated value (None = vanilla pipeline).
+    request.textbook_path = _validate_textbook_path(request.textbook_path)
     
     task_id = str(uuid.uuid4())
     
@@ -861,6 +1108,10 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
         tasks[task_id]["current_stage"] = "Starting workflow"
         tasks[task_id]["updated_at"] = datetime.now().isoformat()
         
+        if request.textbook_path:
+            print(f"Textbook grounding enabled: {request.textbook_path}")
+            sys.stdout.flush()
+
         # Run the generation (this is synchronous, but we're in a background task)
         # Note: For better progress tracking, you might want to modify ADDIE to accept callbacks
         run_instructional_design(
@@ -868,7 +1119,8 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
             copilot="default_copilot" if request.copilot else None,
             catalog=catalog_source,
             model_name=request.model_name,
-            exp_name=request.exp_name
+            exp_name=request.exp_name,
+            textbook_path=request.textbook_path,
         )
         
         # Generate PPTX if requested
