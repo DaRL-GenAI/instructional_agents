@@ -12,7 +12,7 @@ import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
-#处理PDF
+# PDF handling
 try:
     import pdfplumber
 except ImportError:  
@@ -28,28 +28,31 @@ try:
 except ImportError:  
     pypdf = None
 
-#提取时过滤无意义词
+# stop words filtered out of key-topic extraction
 STOPWORDS = {
     "about", "after", "again", "also", "because", "before", "being", "between",
     "chapter", "course", "could", "during", "example", "first", "from", "have",
     "into", "learn", "learning", "more", "most", "other", "page", "section",
     "should", "students", "that", "their", "these", "this", "through", "using",
-    "with", "would", "your", "或者", "以及", "学习", "学生", "课程", "章节",
+    "with", "would", "your", "或者", "以及", "学习", "学生", "课程", "章节",  # common Chinese stop words
 }
 
 
 class TextbookReferenceBuilder:
     """Build catalog-compatible reference data from a small textbook excerpt."""
 
-    def __init__(self, max_pages: int = 20, max_chars: int = 40000):#限制最大处理页数、最大提取字符数，轻量
+    def __init__(self, max_pages: int = 20, max_chars: int = 40000, max_slide_count: int = 50):
+        # Bounded on purpose: only the first pages/characters are analysed so the
+        # catalog can be built quickly and without an LLM call.
         self.max_pages = max_pages
         self.max_chars = max_chars
+        self.max_slide_count = max_slide_count
 
     def build_catalog(self, source_path: Path, course_name: str = "") -> Dict[str, Any]:
         text_by_page = self.extract_text(source_path)
         full_text = "\n".join(page["text"] for page in text_by_page).strip()
-        bounded_text = full_text[: self.max_chars]#提取文本
-        #提取章节
+        bounded_text = full_text[: self.max_chars]
+        # chapter detection
         chapters = self.extract_chapters_from_toc(text_by_page)
         if not chapters:
             chapters = self.extract_chapters(bounded_text)
@@ -57,7 +60,7 @@ class TextbookReferenceBuilder:
         summary = self.summarize_excerpt(bounded_text, key_topics)
         weekly_outline = self.build_weekly_outline(chapters, key_topics)
         source_name = source_path.name
-        #返回适配catalog
+        # return a catalog-compatible dict
         return {
             "student_profile": {
                 "student_background": "Students are assumed to be new to the course topic and will benefit from textbook-aligned explanations.",
@@ -87,7 +90,7 @@ class TextbookReferenceBuilder:
                 "platform_policy_constraints": "Generated content should avoid quoting long textbook passages verbatim.",
                 "ta_support_availability": "No additional teaching assistant support is assumed for this prototype.",
                 "instructional_delivery_context": "Textbook-guided course generation prototype.",
-                "max_slide_count": "10",
+                "max_slide_count": str(self.max_slide_count),
             },
             "institutional_requirements": {
                 "program_learning_outcomes": "Materials should align textbook concepts with practical learning outcomes.",
@@ -154,13 +157,13 @@ class TextbookReferenceBuilder:
             raise ValueError("Could not extract readable text from the textbook file.")
 
         return pages
-    #优先扫描前6页找目录，提取效率更高
+    # Scan the first pages for a table of contents first; it is the most reliable source.
     def extract_chapters_from_toc(self, text_by_page: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Scan each page for TOC-like patterns before falling back to full-text extraction."""
         toc_chapter_pattern = re.compile(
             r"(?:Chapter\s*\d+|第\s*[一二三四五六七八九十\d]+\s*章|\d+\.\d+(?:\.\d+)?)\s*.{3,80}",
             flags=re.IGNORECASE,
-        )#正则覆盖常见的目录标题模式
+        )  # covers the common TOC heading patterns (English and Chinese)
         seen = set()
         chapters: List[Dict[str, str]] = []
 
@@ -185,7 +188,7 @@ class TextbookReferenceBuilder:
                 break  # Found a good TOC page, stop scanning
 
         return chapters[:12]
-    #如果没找到目录页就从全文中提取章节标题，兜底方案
+    # Fallback when no TOC page is found: detect chapter headings in the full text.
     def extract_chapters(self, text: str) -> List[Dict[str, str]]:
         seen = set()
         chapters: List[Dict[str, str]] = []
@@ -195,12 +198,12 @@ class TextbookReferenceBuilder:
             title = None
 
             if line.upper() == "CHAPTER" and index > 0 and index + 1 < len(lines):
-                previous_line = lines[index - 1] #单独的CHAPTER行+ 前后行
+                previous_line = lines[index - 1]  # a lone CHAPTER line followed by the title
                 next_line = lines[index + 1]
                 if re.fullmatch(r"\d{1,3}", previous_line) and self._looks_like_heading(next_line):
                     title = f"Chapter {previous_line}: {next_line}"
 
-            if title is None:#数字层级标题
+            if title is None:  # numbered headings (1.2 Title)
                 section_match = re.fullmatch(r"(\d+\.\d+(?:\.\d+)?)\s+(.{3,80})", line)
                 section_title = section_match.group(2) if section_match else ""
                 if (
@@ -210,7 +213,7 @@ class TextbookReferenceBuilder:
                 ):
                     title = line
 
-            if title is None:#英文章节标题
+            if title is None:  # English chapter headings
                 chapter_match = re.fullmatch(r"(Chapter\s*\d+)\s*[:.\-\s]\s*(.{3,80})", line, flags=re.IGNORECASE)
                 chapter_title = chapter_match.group(2) if chapter_match else ""
                 if (
@@ -220,7 +223,7 @@ class TextbookReferenceBuilder:
                 ):
                     title = f"{chapter_match.group(1)}: {chapter_title}"
 
-            if title is None:#中文章节标题
+            if title is None:  # Chinese chapter headings
                 chinese_match = re.fullmatch(r"(第\s*[一二三四五六七八九十\d]+\s*章)\s*(.{0,80})", line)
                 if chinese_match:
                     suffix = chinese_match.group(2).strip()
@@ -236,14 +239,15 @@ class TextbookReferenceBuilder:
 
         return chapters
 
-    def _looks_like_heading(self, text: str) -> bool:#通过文本特征过滤掉非标题行，提升章节提取的准确性
+    def _looks_like_heading(self, text: str) -> bool:
+        """Heuristic filter that rejects prose lines so only real headings survive."""
         text = text.strip()
         if not 3 <= len(text) <= 100:
             return False
         if text.endswith((".", ",", ";", ":")):
             return False
         words = text.split()
-        if len(words) > 12:     #单词数限制最多12个词，标题简洁
+        if len(words) > 12:  # headings are short
             return False
         alpha_chars = re.findall(r"[A-Za-z\u4e00-\u9fff]", text)
         if len(alpha_chars) < 3:
@@ -253,13 +257,13 @@ class TextbookReferenceBuilder:
     def _looks_like_chapter_title(self, text: str) -> bool:
         first_word = text.split()[0] if text.split() else ""
         if first_word and first_word[0].islower():
-            return False    #首单词首字母不能小写，标题通常首字母大写
+            return False  # headings normally start with a capital letter
         if re.search(r"\b(discussed|are|is|was|were|will|can|cannot|should|examples?)\b", text, flags=re.IGNORECASE):
-            return False   #排除包含无意义动词的行
+            return False  # reject lines that read like sentences
         if re.search(r"\s\d{2,4}$", text):
             return False
         return True
-    #基于于词频提取关键词，出现次数越多，越可能是核心主题
+    # Frequency-based key topics: the most repeated content words are the likely themes.
     def extract_key_topics(self, text: str, limit: int = 12) -> List[str]:
         words = re.findall(r"[A-Za-z][A-Za-z\-]{3,}|[\u4e00-\u9fff]{2,}", text.lower())
         candidates = [
@@ -294,7 +298,7 @@ class TextbookReferenceBuilder:
                 f"Module {index}: {chapter['title']}"
                 for index, chapter in enumerate(chapters[:12], start=1)
             ]
-        else: #无章节按关键词生成
+        else:  # no chapters detected: fall back to key topics
             topics = key_topics[:8] or ["Textbook overview", "Core concepts", "Applications"]
             outline_items = [
                 f"Module {index}: {topic.title()}"
