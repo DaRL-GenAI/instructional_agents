@@ -34,7 +34,7 @@ def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catal
     return data_catalog
 
 
-def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False):
+def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, video: bool = False, video_options=None):
     """
     Main function to run the instructional design workflow by sequentially
     executing the six deliberation processes
@@ -113,6 +113,33 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
     print("\n" + "="*80)
     print(f"WORKFLOW COMPLETED IN: {int(hours):02d}:{int(minutes):02d}:{seconds:.2f}")
     print("="*80 + "\n")
+
+    if video:
+        run_video_rendering(output_dir, course_name=course_name, options=video_options)
+
+
+def run_video_rendering(exp_dir: str, course_name: str = "", options=None, chapters=None):
+    """Render narrated lecture videos (TTS + ffmpeg) for every chapter of an experiment directory."""
+    from src.video import render_course_videos
+    from src.video_media import ffmpeg_available
+    if not ffmpeg_available():
+        print("⚠️  ffmpeg/ffprobe not found; skipping lecture video rendering (install ffmpeg to enable it).")
+        return []
+    print("\n🎬 Rendering lecture videos...")
+    results = render_course_videos(exp_dir, options=options, course_name=course_name, chapters=chapters)
+    ok = [r for r in results if "video" in r]
+    for r in results:
+        if "video" in r:
+            print(f"  ✅ {r['video']} ({r['duration_seconds']:.0f}s, {r['slides']} slides)")
+        else:
+            print(f"  ❌ {r['chapter_dir']}: {r['error']}")
+    print(f"🎬 {len(ok)}/{len(results)} chapter videos rendered")
+    return results
+
+
+def video_options_from_args(args):
+    from src.video import VideoOptions
+    return VideoOptions(tts_model=args.tts_model, voice=args.voice, burn_subtitles=args.burn_subtitles)
 
 
 def run_optimization(storage_id: str, user_requirements: str, model_name: str = "gpt-4o-mini",
@@ -298,6 +325,24 @@ def main():
         help="Also generate PPTX slides alongside PDF during course generation"
     )
 
+    # Lecture video arguments (see docs/VIDEO_GENERATION.md)
+    parser.add_argument(
+        "--video",
+        action="store_true",
+        help="After generation, render a narrated lecture video (TTS + ffmpeg) for every chapter"
+    )
+    parser.add_argument(
+        "--render-video",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Render lecture videos for an existing exp directory (e.g. ./exp/my_course/) and exit"
+    )
+    parser.add_argument("--voice", type=str, default="alloy", help="TTS voice for lecture videos (default: alloy)")
+    parser.add_argument("--tts-model", type=str, default="gpt-4o-mini-tts", help="TTS model for lecture videos (default: gpt-4o-mini-tts)")
+    parser.add_argument("--burn-subtitles", action="store_true", help="Burn captions into the video frames instead of a soft subtitle track")
+    parser.add_argument("--video-chapters", type=str, default=None, help="Comma-separated chapter numbers to render with --render-video (default: all)")
+
     parser.add_argument(
         "--convert-pptx",
         type=str,
@@ -354,6 +399,18 @@ def main():
 
     args = parser.parse_args()
 
+    # Video-only rendering mode (no ADDIE workflow; needs the API key for TTS)
+    if args.render_video is not None:
+        if not os.environ.get("OPENAI_API_KEY"):
+            api_key = input("Please enter your OpenAI API key (needed for narration): ").strip()
+            if not api_key:
+                print("Error: OpenAI API key is required for text-to-speech.")
+                exit(1)
+            os.environ["OPENAI_API_KEY"] = api_key
+        chapters = [int(c) for c in args.video_chapters.split(",") if c.strip()] if args.video_chapters else None
+        run_video_rendering(args.render_video, course_name=args.course_name or "", options=video_options_from_args(args), chapters=chapters)
+        return
+
     # PPTX-only conversion mode (no ADDIE workflow, no API key needed)
     if args.convert_pptx is not None:
         from src.latex_to_pptx import LaTeXToPPTXConverter
@@ -409,6 +466,8 @@ def main():
             seed=args.seed,
             temperature=args.temperature,
             resume=args.resume,
+            video=args.video,
+            video_options=video_options_from_args(args) if args.video else None,
         )
 
     if args.evaluate or args.refine:

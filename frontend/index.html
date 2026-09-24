@@ -100,6 +100,14 @@
                         </label>
                     </div>
 
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="video-mode" name="generate_video">
+                            <span data-i18n="videoLabel">同时渲染带旁白的讲课视频（TTS + ffmpeg）</span>
+                        </label>
+                        <small data-i18n="videoTip">每页幻灯片一段旁白，生成 lecture.mp4 与字幕；需要服务器安装 ffmpeg。</small>
+                    </div>
+
                     <div class="refinement-options">
                         <h3 data-i18n="postProcessTitle">评估与优化</h3>
 
@@ -309,6 +317,10 @@
             <!-- Results Section -->
             <section id="results-section" class="card" style="display: none;">
                 <h2 data-i18n="resultsSectionTitle">生成结果</h2>
+                <div class="form-group" id="video-actions" style="display: none;">
+                    <button type="button" id="render-video-btn" class="btn btn-secondary" data-i18n="renderVideoButton">🎬 渲染讲课视频</button>
+                    <span id="render-video-status" style="margin-left: 10px;"></span>
+                </div>
                 <div id="results-content">
                     <p data-i18n="resultsLoading">加载文件列表...</p>
                 </div>

@@ -73,6 +73,8 @@ An AI-powered instructional design system based on the ADDIE model for automated
 | 📁 **Multiple Usage Methods** | Support for web interface, command-line, and RESTful API |
 | 📄 **LaTeX/PDF Output** | Generate professional LaTeX slides and compile to PDF format |
 | 🎨 **PowerPoint (PPTX) Export** | Convert LaTeX Beamer slides to visually rich PPTX using pptxgenjs with icons, shadows, and Slide Masters |
+| 🎬 **Lecture Videos** | Render a narrated lecture video per chapter (OpenAI TTS + ffmpeg) with captions, ported from [EduCAST](https://github.com/DaRL-GenAI/EduCAST) — see [docs/VIDEO_GENERATION.md](docs/VIDEO_GENERATION.md) |
+| 🧪 **Studio (browser)** | [Run the pipeline in your browser](https://darl-genai.github.io/instructional_agents_homepage/studio/) with your own API key: syllabus, slides, homework, labs and videos, with every prompt, response and edit auditable |
 | ✅ **Automatic Evaluation** | Built-in evaluation system for assessing generated course materials |
 
 ### 🎬 How It Works
@@ -95,6 +97,36 @@ pip install instructional-agents
 ```
 
 Then ask Claude in natural language: *"Generate a course on Reinforcement Learning"*, *"Convert this Beamer .tex to an editable .pptx"*, *"Evaluate these slides as a Program Chair"*. See the [skills repo](https://github.com/DaRL-GenAI/instructional_agents-skills) for all available commands.
+
+---
+
+## 🎬 Lecture Videos
+
+Every chapter can be turned into a narrated lecture video: one still per slide (from `slides.pdf`,
+or drawn from `slides.tex` when LaTeX is unavailable), narration from the OpenAI speech API,
+soft or burned-in captions, and a `timeline.json` audit of every segment.
+Only `ffmpeg` is required on the system (already in the Docker image).
+
+```bash
+python run.py "LLM-based Agents" --catalog default_catalog --video      # generate + render
+python run.py --render-video ./exp/my_course/ --voice nova              # render an existing run
+```
+
+The web UI has an *"Also render lecture videos"* checkbox and a *"Render lecture videos"* button
+on finished tasks (`POST /api/course/render-video/{task_id}`). Details, outputs and the Python
+API are in [docs/VIDEO_GENERATION.md](docs/VIDEO_GENERATION.md).
+
+---
+
+## 🧪 Studio: run it in your browser
+
+[**Instructional Agents Studio**](https://darl-genai.github.io/instructional_agents_homepage/studio/)
+is a static page that runs the same ADDIE deliberations with your own OpenAI-compatible key
+(nothing is sent to our servers): objectives → learner & resource analysis → syllabus →
+assessment plan → final project → chapters → slides (HTML / Beamer / PPTX) → lecture script →
+homework → lab → narrated video. Every prompt is editable before a run, every agent response is
+streamed into a transcript, every deliverable is editable with history and provenance hashes, and
+all calls and edits are exported in an audit log together with the materials.
 
 ---
 

@@ -71,6 +71,17 @@ class CourseRequest(BaseModel):
     refinement_threshold: Optional[float] = Field(default=3.0, description="Score threshold for selecting files to refine")
     refinement_retries: Optional[int] = Field(default=3, description="Maximum refinement retries per selected file")
     refinement_route: Optional[str] = Field(default="all", description="Refinement route to run")
+    generate_video: Optional[bool] = Field(default=False, description="Also render narrated lecture videos (TTS + ffmpeg)")
+    video_voice: Optional[str] = Field(default="alloy", description="TTS voice for lecture videos")
+    video_tts_model: Optional[str] = Field(default="gpt-4o-mini-tts", description="TTS model for lecture videos")
+    video_burn_subtitles: Optional[bool] = Field(default=False, description="Burn captions into the video instead of a soft track")
+
+
+class VideoRequest(BaseModel):
+    voice: Optional[str] = Field(default="alloy", description="TTS voice")
+    tts_model: Optional[str] = Field(default="gpt-4o-mini-tts", description="TTS model")
+    burn_subtitles: Optional[bool] = Field(default=False, description="Burn captions into the frames")
+    chapters: Optional[List[int]] = Field(default=None, description="Chapter numbers to render (default: all)")
 
 
 class OptimizeRequest(BaseModel):
@@ -173,6 +184,93 @@ async def generate_course(
         "status": "started",
         "message": "Course generation started"
     }
+
+@app.post("/api/course/render-video/{task_id}")
+async def render_lecture_videos(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    request: VideoRequest = None,
+    x_openai_api_key: Opt[str] = Header(None, alias="X-OpenAI-API-Key")
+):
+    """Render narrated lecture videos for a completed generation task (runs in the background).
+
+    Returns a new task id whose status/files can be polled with the usual
+    /api/course/status and /api/course/results endpoints.
+    """
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
+    api_key = get_api_key(x_openai_api_key)
+    request = request or VideoRequest()
+    exp_name = tasks[task_id].get("exp_name", "default")
+    exp_dir = f"./exp/{exp_name}/"
+    if not os.path.exists(exp_dir):
+        raise HTTPException(status_code=404, detail=f"Experiment directory not found: {exp_dir}")
+    from src.video_media import ffmpeg_available
+    if not ffmpeg_available():
+        raise HTTPException(status_code=503, detail="ffmpeg/ffprobe not installed on the server")
+
+    video_task_id = str(uuid.uuid4())
+    tasks[video_task_id] = {
+        "task_id": video_task_id,
+        "status": "pending",
+        "progress": 0,
+        "current_stage": "Queued: lecture video rendering",
+        "error": None,
+        "created_at": datetime.now().isoformat(),
+        "exp_name": exp_name,
+        "course_name": tasks[task_id].get("course_name", ""),
+        "parent_task_id": task_id,
+        "kind": "video",
+    }
+    task_logs[video_task_id] = Queue()
+    background_tasks.add_task(run_video_task, video_task_id, request, api_key)
+    return {"task_id": video_task_id, "parent_task_id": task_id, "status": "started", "message": "Lecture video rendering started"}
+
+
+async def run_video_task(task_id: str, request: VideoRequest, api_key: str):
+    """Background job: render lecture videos for tasks[task_id]['exp_name']."""
+    from src.video import VideoOptions, render_course_videos
+    task = tasks[task_id]
+    original_key = os.environ.get("OPENAI_API_KEY")
+    try:
+        os.environ["OPENAI_API_KEY"] = api_key
+        task["status"] = "running"
+        task["current_stage"] = "Rendering lecture videos"
+        task["progress"] = 5
+        log_queue = task_logs.get(task_id)
+
+        def log(msg: str):
+            print(msg)
+            if log_queue is not None:
+                log_queue.put(msg)
+
+        options = VideoOptions(tts_model=request.tts_model, voice=request.voice, burn_subtitles=bool(request.burn_subtitles))
+        results = await asyncio.to_thread(
+            render_course_videos, f"./exp/{task['exp_name']}/",
+            options=options, course_name=task.get("course_name", ""), chapters=request.chapters, log=log,
+        )
+        failed = [r for r in results if "error" in r]
+        task["videos"] = results
+        task["progress"] = 100
+        if results and len(failed) == len(results):
+            task["status"] = "failed"
+            task["error"] = failed[0]["error"]
+            task["current_stage"] = "Failed"
+        else:
+            task["status"] = "completed"
+            task["current_stage"] = f"Completed ({len(results) - len(failed)}/{len(results)} chapter videos)"
+    except Exception as exc:
+        task["status"] = "failed"
+        task["error"] = str(exc)
+        task["current_stage"] = "Failed"
+    finally:
+        if original_key is not None:
+            os.environ["OPENAI_API_KEY"] = original_key
+        elif "OPENAI_API_KEY" in os.environ:
+            del os.environ["OPENAI_API_KEY"]
+        if task_id in task_logs:
+            task_logs[task_id].put(None)
+
 
 @app.post("/api/course/convert-pptx/{task_id}")
 async def convert_to_pptx(task_id: str):
@@ -882,7 +980,24 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
                 print(f"✅ Generated {len(pptx_results)} PPTX files")
             except Exception as pptx_err:
                 print(f"⚠️ PPTX generation failed: {pptx_err}")
-                
+
+        # Render lecture videos if requested (best-effort, like PPTX)
+        if request.generate_video:
+            print("\n🎬 Rendering lecture videos...")
+            tasks[task_id]["current_stage"] = "Rendering lecture videos"
+            tasks[task_id]["progress"] = 75
+            try:
+                from src.video import VideoOptions, render_course_videos
+                video_results = render_course_videos(
+                    f"./exp/{request.exp_name}/",
+                    options=VideoOptions(tts_model=request.video_tts_model, voice=request.video_voice, burn_subtitles=bool(request.video_burn_subtitles)),
+                    course_name=request.course_name,
+                )
+                tasks[task_id]["videos"] = video_results
+                print(f"✅ Rendered {sum(1 for r in video_results if 'video' in r)} lecture videos")
+            except Exception as video_err:
+                print(f"⚠️ Lecture video rendering failed: {video_err}")
+
         # Post-processing (evaluation / refinement) is best-effort: the course
         # files already exist, so a failure here must not mark the task failed.
         if request.run_evaluation or request.run_refinement:

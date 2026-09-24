@@ -100,6 +100,12 @@ const translations = {
         modeGenerate: '生成新课程',
         modeOptimize: '优化已有材料',
         pptxLabel: '同时生成 PPTX 幻灯片',
+        videoLabel: '同时渲染带旁白的讲课视频（TTS + ffmpeg）',
+        videoTip: '每页幻灯片一段旁白，生成 lecture.mp4 与字幕；需要服务器安装 ffmpeg。',
+        renderVideoButton: '🎬 渲染讲课视频',
+        renderVideoStarted: '视频渲染已开始（任务 {taskId}），完成后文件列表会出现 video/lecture.mp4。',
+        renderVideoDone: '讲课视频渲染完成。',
+        renderVideoFailed: '视频渲染失败：{message}',
         optimizeModeLabel: '优化方式',
         optimizeModeRegenerate: '逐张重新生成（整章重写）',
         optimizeModeRefine: '局部精修（仅改相关帧）',
@@ -263,6 +269,12 @@ const translations = {
         modeGenerate: 'Generate Course',
         modeOptimize: 'Optimize Materials',
         pptxLabel: 'Also generate PPTX slides',
+        videoLabel: 'Also render narrated lecture videos (TTS + ffmpeg)',
+        videoTip: 'One narration per slide, producing lecture.mp4 with captions; the server needs ffmpeg.',
+        renderVideoButton: '🎬 Render lecture videos',
+        renderVideoStarted: 'Video rendering started (task {taskId}); video/lecture.mp4 will appear in the file list when done.',
+        renderVideoDone: 'Lecture videos rendered.',
+        renderVideoFailed: 'Video rendering failed: {message}',
         optimizeModeLabel: 'Optimization Method',
         optimizeModeRegenerate: 'Regenerate (rewrite every slide)',
         optimizeModeRefine: 'Localized Refine (edit only relevant frames)',
@@ -529,6 +541,52 @@ function toggleApiKeyVisibility() {
     updateApiKeyToggleLabel();
 }
 
+// Lecture video rendering for a finished task (POST /api/course/render-video/{task_id})
+function showVideoActions() {
+    const box = document.getElementById('video-actions');
+    const btn = document.getElementById('render-video-btn');
+    if (!box || !btn) return;
+    box.style.display = 'block';
+    btn.onclick = renderLectureVideos;
+}
+
+async function renderLectureVideos() {
+    const btn = document.getElementById('render-video-btn');
+    const status = document.getElementById('render-video-status');
+    if (!currentTaskId) return;
+    btn.disabled = true;
+    status.textContent = '…';
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/course/render-video/${currentTaskId}`, {
+            method: 'POST',
+            headers: getApiHeaders(),
+            body: JSON.stringify({ voice: 'alloy', burn_subtitles: false })
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || response.statusText);
+        }
+        const data = await response.json();
+        status.textContent = t('renderVideoStarted', { taskId: data.task_id.slice(0, 8) });
+        const poll = setInterval(async () => {
+            try {
+                const r = await fetch(`${API_BASE_URL}/api/course/status/${data.task_id}`, { headers: getApiHeaders() });
+                const s = await r.json();
+                status.textContent = s.current_stage || s.status;
+                if (s.status === 'completed' || s.status === 'failed') {
+                    clearInterval(poll);
+                    btn.disabled = false;
+                    status.textContent = s.status === 'completed' ? t('renderVideoDone') : t('renderVideoFailed', { message: s.error || '' });
+                    if (typeof loadResults === 'function') await loadResults();
+                }
+            } catch (e) { console.error(e); }
+        }, 4000);
+    } catch (error) {
+        btn.disabled = false;
+        status.textContent = t('renderVideoFailed', { message: error.message });
+    }
+}
+
 // Get API headers with API Key
 function getApiHeaders() {
     const headers = {
@@ -768,6 +826,7 @@ async function handleFormSubmit(e) {
             exp_name: document.getElementById('exp-name').value || 'default',
             copilot: document.getElementById('copilot-mode').checked,
             generate_pptx: document.getElementById('pptx-mode').checked,
+            generate_video: document.getElementById('video-mode').checked,
             run_evaluation: document.getElementById('evaluation-mode').checked,
             run_refinement: document.getElementById('refinement-mode').checked,
             refinement_threshold: parseFloat(document.getElementById('refinement-threshold').value || '3.0'),
@@ -953,6 +1012,7 @@ function startStatusPolling() {
                 
                 if (status.status === 'completed') {
                     await loadResults();
+                    showVideoActions();
                 } else {
                     showError(status.error || t('taskFailedFallback'));
                 }

@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y \
     texlive-fonts-recommended \
     texlive-latex-recommended \
     texlive-fonts-extra \
+    ffmpeg \
+    poppler-utils \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
