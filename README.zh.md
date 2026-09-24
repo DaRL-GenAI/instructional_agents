@@ -74,6 +74,8 @@
 | 📁 **多种使用方式** | 支持 Web 界面、命令行和 RESTful API |
 | 📄 **LaTeX/PDF 输出** | 生成专业的 LaTeX 幻灯片并编译为 PDF 格式 |
 | 🎨 **PowerPoint (PPTX) 导出** | 通过 pptxgenjs 将 LaTeX Beamer 幻灯片转换为精美的 PPTX，支持图标、阴影和 Slide Masters |
+| 🎬 **讲课视频** | 为每一章生成带旁白的讲课视频（OpenAI TTS + ffmpeg，含字幕），移植自 [EduCAST](https://github.com/DaRL-GenAI/EduCAST)，见 [docs/VIDEO_GENERATION.md](docs/VIDEO_GENERATION.md) |
+| 🧪 **Studio（浏览器版）** | [在浏览器中运行整个流程](https://darl-genai.github.io/instructional_agents_homepage/studio/)：用自己的 API Key 生成大纲、幻灯片、作业、实验和视频，每一步的提示词、回复与修改都可查看、编辑和审计 |
 | ✅ **自动评估** | 内置评估系统，用于评估生成的课程材料 |
 
 ### 🎬 工作流程
@@ -96,6 +98,31 @@ pip install instructional-agents
 ```
 
 然后用自然语言让 Claude 帮你做事：*"帮我生成一门强化学习课程"*、*"把这个 Beamer .tex 转成可编辑的 .pptx"*、*"以系主任的视角评估这套课件"*。完整 skill 列表见 [skills repo](https://github.com/DaRL-GenAI/instructional_agents-skills)。
+
+---
+
+## 🎬 讲课视频
+
+每一章都可以渲染成带旁白的讲课视频：每页幻灯片一张静帧（来自 `slides.pdf`，没有 LaTeX 时用 `slides.tex` 绘制），
+旁白由 OpenAI 语音接口合成，字幕可内嵌或软字幕轨，`timeline.json` 记录每个片段的审计信息。系统只需要安装 `ffmpeg`（Docker 镜像已包含）。
+
+```bash
+python run.py "LLM-based Agents" --catalog default_catalog --video      # 生成课程并渲染视频
+python run.py --render-video ./exp/my_course/ --voice nova              # 为已有结果渲染视频
+```
+
+网页界面提供“同时渲染带旁白的讲课视频”选项，以及已完成任务上的“渲染讲课视频”按钮
+（`POST /api/course/render-video/{task_id}`）。详细说明见 [docs/VIDEO_GENERATION.md](docs/VIDEO_GENERATION.md)。
+
+---
+
+## 🧪 Studio：在浏览器中运行
+
+[**Instructional Agents Studio**](https://darl-genai.github.io/instructional_agents_homepage/studio/)
+是一个静态页面，使用你自己的 OpenAI 兼容 API Key 在浏览器中运行同样的 ADDIE 流程（数据不会发送到我们的服务器）：
+教学目标 → 学习者与资源分析 → 大纲 → 评估方案 → 期末项目 → 章节 → 幻灯片（HTML / Beamer / PPTX）→ 讲稿 → 作业 → 实验 → 带旁白的视频。
+每个提示词在运行前都可以编辑，每个智能体的回复都会流式记录到对话记录中，每份产出都可以修改并保留历史与来源哈希，
+所有调用与修改都会随材料一起导出为审计日志。
 
 ---
 
