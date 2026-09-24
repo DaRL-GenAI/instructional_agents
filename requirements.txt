@@ -23,6 +23,16 @@ numpy>=1.24.0
 # PPTX generation (pptxgenjs via Node.js) + content QA
 markitdown[pptx]>=0.1.0
 
+# --- OPTIONAL: textbook grounding (`--use-textbook PATH`) --------------------
+# Not required for the standard pipeline, which never imports these. To enable
+# grounding install the extras group instead of uncommenting:
+#     pip install .[grounding]
+# (mirrors [project.optional-dependencies].grounding in pyproject.toml)
+# pymupdf>=1.24
+# pymupdf4llm>=0.0.17
+# markdown-it-py>=3
+# rank-bm25>=0.2.2
+
 # Note: pdflatex is installed via system package manager in Docker
 #
 # Node.js dependencies (install via npm, not pip):
