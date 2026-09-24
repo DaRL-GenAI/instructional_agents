@@ -22,7 +22,7 @@ _BUILD_SCRIPT = Path(__file__).resolve().parent / "build_pptx.js"
 
 @dataclass
 class SlideElement:
-    type: str  # 'text', 'itemize', 'enumerate', 'block', 'alertblock', 'code', 'math', 'tikz', 'columns'
+    type: str  # 'text', 'itemize', 'enumerate', 'block', 'alertblock', 'code', 'math', 'tikz', 'columns', 'image', 'caption'
     content: Any = None
     title: str = ''
     language: str = ''
@@ -44,11 +44,235 @@ def unescape_latex(text: str) -> str:
     text = re.sub(r'\\#', '#', text)
     text = re.sub(r'\\\\', '\n', text)
     text = re.sub(r'\\textbackslash\b\s*', r'\\', text)
+    # Empty / standalone double-dollar math the writer left behind ($$ with
+    # no symbol between). Renders as literal "$$"; drop it — but only an
+    # unescaped pair, and before \$ is unescaped below so a literal "\$\$"
+    # survives as "$$".
+    text = re.sub(r'(?<!\\)\$\$', '', text)
     text = re.sub(r'\\\$', '$', text)
     text = re.sub(r'\\{', '{', text)
     text = re.sub(r'\\}', '}', text)
     text = re.sub(r'~', ' ', text)
+    # Convert LaTeX-style backtick quotes to curly quotes:
+    #   ``...''   → "..."   (double-backtick + double-apostrophe)
+    #   `...'     → '...'   (single-backtick + single-apostrophe)
+    # Beamer writers emit these literally; PPTX renders them as raw
+    # backticks without conversion. Greedy is safe here because the
+    # paired delimiters are distinct enough not to span unrelated text.
+    text = re.sub(r"``([^']*?)''", r'"\1"', text)
+    text = re.sub(r"`([^']*?)'(?!')", r"'\1'", text)
+    # LaTeX dash ligatures → unicode. In LaTeX "---" is an em-dash and
+    # "--" an en-dash, but the PPTX path shows them as literal hyphens.
+    # Convert so the common quote-then-gloss "..." --- gloss separator
+    # renders as a real em-dash. Order matters: longest run first.
+    text = re.sub(r'(?<!-)---(?!-)', '—', text)
+    text = re.sub(r'(?<!-)--(?!-)', '–', text)
     return text
+
+
+# Markdown-style bold/italic that the writer occasionally produces even
+# inside .tex output. **bold** and __bold__ should render as plain bold
+# inline text on the slide; in our pipeline they show as raw asterisks.
+# Strip the markers and keep the content.
+_MARKDOWN_BOLD_RE = re.compile(r'\*\*([^*\n]+?)\*\*')
+_MARKDOWN_BOLD_UNDERSCORE_RE = re.compile(r'(?<!\w)__([^_\n]+?)__(?!\w)')
+# Markdown italic with a single asterisk pair. Tighter — the content must
+# be non-empty and must not start or end with whitespace, so that a
+# multiplication written with spaced asterisks (``a * b * c``) is left
+# alone; only ``*word*`` / ``*a phrase*`` forms are stripped.
+_MARKDOWN_ITALIC_RE = re.compile(r'(?<![*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![*\w])')
+
+
+# Markdown _italic_ (single-underscore pairs), e.g. "_k_-means". LaTeX
+# treats a bare underscore as a subscript operator; the PPTX path leaks
+# it as literal "_k_". Strip the markers, keep the content. Lookbehind
+# excludes a preceding backslash (escaped ``\_``) or word char (real
+# subscripts ``x_i`` and path underscores ``data_mining``); lookahead
+# excludes a trailing word char so ``C_{ij}`` is left alone.
+_MARKDOWN_ITALIC_UNDERSCORE_RE = re.compile(
+    r"(?<![\\\w])_([A-Za-z][A-Za-z0-9 ()'.,/+-]{0,40}?)_(?![\w])"
+)
+# Guillemet quote markers (<<"...">>) the writer emits instead of plain
+# quotes. Strip the angle pairs, keep the inner text.
+_GUILLEMET_RE = re.compile(r'<<+\s*|\s*>>+')
+
+
+def strip_markdown_artifacts(text: str) -> str:
+    """Remove leftover markdown formatting that the writer included in
+    .tex output and that LaTeX would have ignored (but the PPTX path
+    renders as raw asterisks). Defensive: only matches bounded pairs."""
+    text = _MARKDOWN_BOLD_RE.sub(r'\1', text)
+    text = _MARKDOWN_BOLD_UNDERSCORE_RE.sub(r'\1', text)
+    text = _MARKDOWN_ITALIC_RE.sub(r'\1', text)
+    text = _MARKDOWN_ITALIC_UNDERSCORE_RE.sub(r'\1', text)
+    text = _GUILLEMET_RE.sub('', text)
+    return text
+
+
+# LaTeX math symbols → unicode, used by clean_math_for_display so an
+# equation/align block that survives to the PPTX path renders as readable
+# text instead of raw "\begin{align*} \text{...} \\" source.
+_MATH_SYMBOL_MAP = {
+    r'\rightarrow': '→', r'\Rightarrow': '⇒', r'\leftarrow': '←',
+    r'\leq': '≤', r'\geq': '≥', r'\neq': '≠', r'\approx': '≈',
+    r'\times': '×', r'\cdot': '·', r'\pm': '±', r'\in': '∈',
+    r'\notin': '∉', r'\subseteq': '⊆', r'\subset': '⊂',
+    r'\cup': '∪', r'\cap': '∩', r'\sum': 'Σ', r'\prod': 'Π',
+    r'\forall': '∀', r'\exists': '∃', r'\infty': '∞',
+    r'\partial': '∂', r'\nabla': '∇', r'\sqrt': '√',
+    r'\alpha': 'α', r'\beta': 'β', r'\gamma': 'γ', r'\delta': 'δ',
+    r'\epsilon': 'ε', r'\varepsilon': 'ε', r'\theta': 'θ',
+    r'\lambda': 'λ', r'\mu': 'μ', r'\sigma': 'σ', r'\phi': 'φ',
+    r'\omega': 'ω', r'\pi': 'π', r'\rho': 'ρ', r'\tau': 'τ',
+    r'\ldots': '…', r'\dots': '…', r'\cdots': '…',
+}
+
+# A brace group that tolerates ONE level of nesting: a run of non-brace chars
+# or a simple ``{…}`` group. Lets ``\frac{\sum_{i=1}^{N} x_i}{N}`` (numerator
+# still holding braces) convert instead of being eaten whole as an empty
+# result by the generic command-stripper.
+_BRACE_GROUP = r'(?:[^{}]|\{[^{}]*\})*'
+
+# Accents → trailing combining mark. ``\bar{x}`` → ``x̄`` etc. Appending the
+# mark keeps the accented symbol alive past the generic command-stripper,
+# which would otherwise eat ``\bar{x}`` whole and collapse a mean formula to
+# just "=".
+_MATH_ACCENT_MAP = {
+    'bar': '̄', 'overline': '̄', 'hat': '̂', 'widehat': '̂',
+    'tilde': '̃', 'widetilde': '̃', 'vec': '⃗',
+    'dot': '̇', 'ddot': '̈',
+}
+
+
+def _convert_math_macros(text: str) -> str:
+    """Convert the unambiguous math macros — accents, ``\\frac``, ``\\sqrt``,
+    operator names, braced sub/superscripts, and symbols — to readable
+    unicode. Safe to run on general slide text (these only occur in math),
+    so it also rescues bare formulas the writer emitted without ``$``
+    delimiters, which the generic command-stripper would otherwise erase."""
+    # \text{X} / \mathbf{X} / \mathrm{X} … → X. Unwrap text-formatting macros
+    # FIRST so their CONTENT survives — otherwise the generic command-stripper
+    # in strip_latex_formatting() eats "\text{computer}" whole, which is exactly
+    # how an undelimited rule rendered as "buys(X, ) ⇒ buys(X, )". (Delimited
+    # math is already handled in clean_math_for_display; this covers the bare,
+    # no-$ case that never reaches it.)
+    text = re.sub(
+        r'\\(?:text|mathbf|mathrm|mathit|mathsf|mathcal|mathbb|boldsymbol|operatorname)'
+        r'\{([^{}]*)\}',
+        r'\1', text,
+    )
+    # Accents: \bar{x} → x̄, \hat{x} → x̂, … (combining mark trails the content).
+    for _name, _mark in _MATH_ACCENT_MAP.items():
+        text = re.sub(
+            r'\\' + _name + r'\s*\{([^{}]*)\}',
+            lambda m, mk=_mark: m.group(1) + mk, text,
+        )
+    # \sqrt{x} → √(x). Before the symbol map (which maps bare \sqrt → √) so the
+    # radicand keeps its parens.
+    text = re.sub(r'\\sqrt\s*\{(' + _BRACE_GROUP + r')\}', r'√(\1)', text)
+    text = text.replace('\\sqrt', '√')
+    # Operator/function names: drop the backslash, keep the word
+    text = re.sub(r'\\(max|min|log|ln|exp|arg|deg|gcd|lim|sup|inf|sin|cos|tan|det|dim|mod)\b', r'\1', text)
+    # Symbols → unicode. BEFORE sub/superscript brace-stripping below, so a
+    # symbol macro carrying a subscript (``\sum_{i=1}``) resolves while the
+    # ``_`` still follows it — otherwise stripping the braces glues a letter on
+    # (``\sumi``), the lookahead misfires, and the generic stripper erases the
+    # fake command. The negative lookahead stops a short macro matching inside a
+    # longer command — e.g. \cap must NOT fire inside \caption.
+    for macro, sym in _MATH_SYMBOL_MAP.items():
+        text = re.sub(re.escape(macro) + r'(?![a-zA-Z])', sym, text)
+    # Braced sub/superscripts: keep the content, drop the marker (2^{n} → 2n).
+    # BEFORE \frac so a nested ``\sum_{i=1}^{N}`` in a fraction argument sheds
+    # its braces first — otherwise the fraction can't be matched and the whole
+    # ``\frac{…}{…}`` is erased, collapsing the formula to just "=".
+    text = re.sub(r'[_^]\{([^{}]*)\}', r'\1', text)
+    # \frac{a}{b} → (a)/(b); brace-tolerant + iterated for one nesting level.
+    for _ in range(3):
+        text = re.sub(
+            r'\\frac\s*\{(' + _BRACE_GROUP + r')\}\s*\{(' + _BRACE_GROUP + r')\}',
+            r'(\1)/(\2)', text,
+        )
+    return text
+
+
+def clean_math_for_display(text: str) -> str:
+    """Turn a LaTeX math body into readable plain text.
+
+    pptxgenjs has no math renderer, so math otherwise reaches the slide as
+    raw source — ``\\begin{align*} \\text{Initial:} \\& \\quad...`` for a
+    block, or ``\\frac{b(o)-a(o)}{\\max...}`` for an inline formula whose
+    structural commands the generic command-stripper would erase entirely
+    (leaving "s(o) ="). This converts structure (``\\frac``, ``\\text``,
+    ``\\quad``, ``&`` alignment, ``\\\\`` rows, sub/superscripts) and maps
+    symbols / operator names to unicode so the content stays legible.
+    Returns '' when nothing survives."""
+    text = _convert_math_macros(text)
+    # \text{X} / \mathbf{X} / \mathrm{X} → X
+    text = re.sub(r'\\(?:text|mathbf|mathrm|mathit|mathcal|mathbb|boldsymbol|operatorname)\{([^{}]*)\}', r'\1', text)
+    # Row separators → newline; spacing macros → space
+    text = text.replace('\\\\', '\n')
+    text = re.sub(r'\\(?:quad|qquad)', '  ', text)
+    text = re.sub(r'\\[,;:! ]', ' ', text)
+    # Alignment markers (escaped or bare)
+    text = text.replace('\\&', ' ')
+    text = re.sub(r'(?<!\\)&', ' ', text)
+    text = re.sub(r'\\(?:left|right|big|Big|bigg|Bigg)\b', '', text)
+    # Unbraced subscripts/superscripts: keep the symbol, drop the marker
+    text = re.sub(r'[_^]([A-Za-z0-9])', r'\1', text)
+    # Any remaining \command → drop
+    text = re.sub(r'\\[a-zA-Z]+', '', text)
+    # Strip LaTeX grouping braces, but NOT escaped set-notation braces
+    # (``\{a\}`` must survive as ``{a}``). The lookbehind protects ``\{``;
+    # convert those to literal braces afterwards.
+    text = re.sub(r'(?<!\\)[{}]', '', text)
+    text = text.replace('\\{', '{').replace('\\}', '}')
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n[ \t]*\n+', '\n', text)
+    return text.strip()
+
+
+# Inline / display math delimiters. Content is rendered to readable
+# unicode via clean_math_for_display; this MUST run before the generic
+# ``\command`` stripper so structural macros (\frac, \max) are converted
+# rather than erased. Order: display forms first, then inline.
+def render_inline_math(text: str) -> str:
+    """Convert ``\\[...\\]``, ``$$...$$``, ``\\(...\\)`` and ``$...$`` to
+    readable unicode text. Empty or unpaired delimiters are dropped so a
+    stray ``$`` or literal ``\\( K \\)`` never reaches the slide. An
+    escaped ``\\$`` (a literal dollar sign, e.g. ``\\$5``) is never treated
+    as a delimiter; unescape_latex() later turns it into a plain ``$``."""
+    text = re.sub(r'\\\[(.+?)\\\]', lambda m: clean_math_for_display(m.group(1)), text, flags=re.DOTALL)
+    text = re.sub(r'(?<!\\)\$\$(.+?)(?<!\\)\$\$', lambda m: clean_math_for_display(m.group(1)), text, flags=re.DOTALL)
+    text = re.sub(r'\\\((.+?)\\\)', lambda m: clean_math_for_display(m.group(1)), text, flags=re.DOTALL)
+    text = re.sub(r'(?<!\\)\$(.+?)(?<!\\)\$', lambda m: clean_math_for_display(m.group(1)), text)
+    # Drop any leftover empty / unpaired delimiters (never an escaped \\$).
+    text = re.sub(r'(?<!\\)\$\$', '', text)
+    text = text.replace('\\(', '').replace('\\)', '')
+    text = text.replace('\\[', '').replace('\\]', '')
+    text = re.sub(r'(?<!\\)\$', '', text)
+    return text
+
+
+# Image formats pptxgenjs can embed. Anything else (notably .pdf/.eps
+# figures, which LaTeX handles natively) is skipped rather than emitted as a
+# broken picture.
+_IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.svg')
+_SKIPPED_IMAGE_EXTENSIONS = ('.pdf', '.eps', '.ps')
+
+
+# Leading textbook figure number — "Figure 13.3:", "Figure 10.8.", "Fig 2.16 —".
+# The number references the SOURCE textbook's own figure numbering, which has
+# no meaning in the generated deck (there is no "Figure 13.3" here). Drop the
+# number and keep the description; the renderer adds a generic "Figure." label.
+_TEXTBOOK_FIGURE_NUMBER_RE = re.compile(
+    r'^\s*(?:Figure|Fig\.?)\s+\d+(?:\.\d+)?\s*[:.—\-]+\s*', re.IGNORECASE,
+)
+
+
+def _strip_textbook_figure_number(caption: str) -> str:
+    """Remove a leading source-textbook figure number from a caption so it
+    reads as context, not a dangling cross-reference to the original book."""
+    return _TEXTBOOK_FIGURE_NUMBER_RE.sub('', caption or '').strip()
 
 
 def strip_latex_formatting(text: str) -> str:
@@ -79,23 +303,152 @@ def strip_latex_formatting(text: str) -> str:
     text = re.sub(r'\\(centering|raggedright|raggedleft|noindent|newline|linebreak)\b', '', text)
     # Remove \rule{...}{...}
     text = re.sub(r'\\rule\{[^}]*\}\{[^}]*\}', '', text)
-    # Remove % comments (LaTeX line comments)
-    text = re.sub(r'%[^\n]*', '', text)
+    # Remove % comments (LaTeX line comments) — but NOT an escaped \% (a
+    # literal percent like "80\%"). The negative lookbehind keeps \% so
+    # unescape_latex() below turns it into a real "%". Without it, "80\% of
+    # buyers" lost everything after the % at render (showed just "80\").
+    text = re.sub(r'(?<!\\)%[^\n]*', '', text)
     # Remove remaining \begin{...} / \end{...} that leaked through
     text = re.sub(r'\\begin\{[^}]*\}', '', text)
     text = re.sub(r'\\end\{[^}]*\}', '', text)
-    # Remove remaining unknown \commands (but preserve \\ as newline)
-    text = re.sub(r'\\(?!\\)[a-zA-Z]+\*?(?:\{[^}]*\})*', '', text)
-    # Inline math: keep as-is (raw LaTeX)
+    # Render inline/display math to readable unicode BEFORE the generic
+    # command-strip below, otherwise structural macros inside a formula
+    # (\frac, \max, \leq) get erased, leaving fragments like "s(o) =".
+    text = render_inline_math(text)
+    # Also rescue bare math macros the writer emitted without delimiters
+    # (e.g. "s(o) = \frac{...}" on a line with no $); same erase risk.
+    text = _convert_math_macros(text)
+    # Remove remaining unknown \commands (but preserve \\ as newline).
+    # Match optional ``[opt]`` argument first then any number of ``{arg}``
+    # groups; that way a leftover ``\includegraphics[width=...]{path}``
+    # gets fully stripped rather than leaving the bracket+brace tail as
+    # visible text.
+    text = re.sub(
+        r'\\(?!\\)[a-zA-Z]+\*?(?:\[[^\]\n]*\])?(?:\{[^}]*\})*',
+        '', text,
+    )
+    # Strip markdown leftovers (**bold**, __bold__, *italic*, _italic_).
+    text = strip_markdown_artifacts(text)
     return unescape_latex(text).strip()
+
+
+def _tabular_to_text(body: str) -> str:
+    """Flatten a LaTeX tabular/table body into readable rows so a table slide
+    renders its data instead of a bare "[Table - see LaTeX source]"
+    placeholder. Drops the env wrappers, column spec, caption, and rule
+    macros; splits rows on ``\\\\`` and cells on ``&``; joins cells with a
+    thin separator. Returns '' when nothing parseable remains (the caller
+    falls back to a short label)."""
+    body = body.strip()
+    # Leading column spec when called on a tabular body: {|l|c|r|}
+    body = re.sub(r'^\{[^{}]*\}', '', body)
+    # Env wrappers + their column spec (when called on a full table body).
+    body = re.sub(r'\\begin\{(tabular|table|center)\}(?:\{[^{}]*\})?', '', body)
+    body = re.sub(r'\\end\{(tabular|table|center)\}', '', body)
+    body = re.sub(r'\\caption\{[^}]*\}', '', body)
+    body = re.sub(r'\\(centering|hline|toprule|midrule|bottomrule|cline\{[^}]*\})', '', body)
+    rows = []
+    for raw in re.split(r'\\\\', body):
+        cells = []
+        for c in raw.split('&'):
+            # Unwrap text/format commands to their content first — the generic
+            # command-strip in strip_latex_formatting() would otherwise drop a
+            # \text{Customer} cell (command + arg) and leave the row blank.
+            c = re.sub(
+                r'\\(?:text|textbf|textit|texttt|textsf|emph|mathrm|mathbf|mathit)'
+                r'\{([^{}]*)\}',
+                r'\1', c,
+            )
+            cells.append(strip_latex_formatting(c).strip())
+        cells = [c for c in cells if c]
+        if cells:
+            rows.append('  |  '.join(cells))
+    return '\n'.join(rows)
 
 
 class LaTeXParser:
     """Parses LaTeX Beamer content into structured FrameData."""
 
+    def __init__(self, source_dir: Optional[Path] = None):
+        # Directory that contains the source .tex file. Used as the
+        # primary search root when resolving relative \includegraphics
+        # paths (LaTeX resolves them against the compile directory).
+        self.source_dir = Path(source_dir) if source_dir else None
+        # Directories declared with \graphicspath{{dir1/}{dir2/}} in the
+        # preamble, relative to source_dir. Filled by parse().
+        self.graphics_paths: List[str] = []
+
+    @staticmethod
+    def _existing_image(candidate: Path) -> Optional[Path]:
+        """Return ``candidate`` (resolved) if it is an existing file with an
+        extension pptxgenjs can embed. A name without an extension is tried
+        with each embeddable extension, the way LaTeX does; a ``.pdf``/``.eps``
+        figure (or any other extension) yields None so no image is emitted."""
+        suffix = candidate.suffix.lower()
+        if suffix in _IMAGE_EXTENSIONS:
+            return candidate.resolve() if candidate.is_file() else None
+        if suffix in _SKIPPED_IMAGE_EXTENSIONS:
+            return None
+        for ext in _IMAGE_EXTENSIONS:
+            with_ext = candidate.with_name(candidate.name + ext)
+            if with_ext.is_file():
+                return with_ext.resolve()
+        return None
+
+    def _resolve_image_path(self, raw: str) -> Optional[Path]:
+        """Resolve an \\includegraphics path to an existing image on disk.
+
+        Exact-path resolution only. The path as written is tried:
+          1. as an absolute path;
+          2. relative to the .tex source directory;
+          3. relative to each ``\\graphicspath`` directory (under source_dir);
+          4. relative to the current working directory;
+          5. relative to each ancestor of the source directory (the writer
+             emits project-root-relative paths such as
+             ``.grounding_cache/figures/x.png`` while the .tex lives in
+             ``exp/<run>/chapter_N/``).
+
+        No fuzzy matching or same-page substitution is attempted: a path
+        that does not resolve drops the image (the caller also drops its
+        caption) rather than risk embedding a different figure. Only
+        png/jpg/jpeg/gif/svg files are accepted; see _existing_image().
+        """
+        raw = (raw or '').strip()
+        if not raw:
+            return None
+        p = Path(raw)
+        if p.is_absolute():
+            return self._existing_image(p)
+        bases: List[Path] = []
+        if self.source_dir is not None:
+            src = Path(self.source_dir)
+            bases.append(src)
+            bases.extend(src / gp for gp in self.graphics_paths)
+        bases.append(Path.cwd())
+        if self.source_dir is not None:
+            cur = Path(self.source_dir).resolve()
+            for _ in range(6):  # cap the climb
+                parent = cur.parent
+                if parent == cur:
+                    break
+                cur = parent
+                bases.append(cur)
+        for base in bases:
+            hit = self._existing_image(base / p)
+            if hit is not None:
+                return hit
+        return None
+
     def parse(self, tex_content: str) -> List[FrameData]:
         """Parse a complete .tex file into a list of frames."""
         frames = []
+        # \graphicspath{{figs/}{images/}} — extra directories (relative to
+        # the .tex file) that \includegraphics paths may be relative to.
+        self.graphics_paths = [
+            d.strip() for grp in re.findall(
+                r'\\graphicspath\s*\{((?:\s*\{[^{}]*\}\s*)+)\}', tex_content)
+            for d in re.findall(r'\{([^{}]*)\}', grp) if d.strip()
+        ]
         # Extract content between \begin{document} and \end{document}
         doc_match = re.search(r'\\begin\{document\}(.*?)\\end\{document\}', tex_content, re.DOTALL)
         if not doc_match:
@@ -179,20 +532,23 @@ class LaTeXParser:
             if matched:
                 continue
 
-            # Itemize
-            m = re.match(r'\\begin\{itemize\}(.*?)\\end\{itemize\}', content[pos:], re.DOTALL)
-            if m:
-                items = self._parse_items(m.group(1))
+            # Itemize (depth-aware so nested itemize doesn't get cut at
+            # the inner \end{itemize})
+            consumed = self._match_balanced_env(content, pos, 'itemize')
+            if consumed:
+                inner, end_pos = consumed
+                items = self._parse_items(inner)
                 elements.append(SlideElement(type='itemize', items=items))
-                pos += m.end()
+                pos = end_pos
                 continue
 
-            # Enumerate
-            m = re.match(r'\\begin\{enumerate\}(.*?)\\end\{enumerate\}', content[pos:], re.DOTALL)
-            if m:
-                items = self._parse_items(m.group(1))
+            # Enumerate (same depth-aware match)
+            consumed = self._match_balanced_env(content, pos, 'enumerate')
+            if consumed:
+                inner, end_pos = consumed
+                items = self._parse_items(inner)
                 elements.append(SlideElement(type='enumerate', items=items))
-                pos += m.end()
+                pos = end_pos
                 continue
 
             # Code listing
@@ -210,10 +566,14 @@ class LaTeXParser:
                 pos += m.end()
                 continue
 
-            # Math environments
+            # Math environments. pptxgenjs can't typeset math, so flatten
+            # the body to readable unicode text rather than dumping raw
+            # LaTeX source onto the slide.
             m = re.match(r'\\begin\{(equation\*?|align\*?|gather\*?)\}(.*?)\\end\{\1\}', content[pos:], re.DOTALL)
             if m:
-                elements.append(SlideElement(type='math', content=m.group(2).strip()))
+                cleaned = clean_math_for_display(m.group(2).strip())
+                if cleaned:
+                    elements.append(SlideElement(type='text', content=cleaned))
                 pos += m.end()
                 continue
 
@@ -221,6 +581,47 @@ class LaTeXParser:
             m = re.match(r'\\begin\{tikzpicture\}(.*?)\\end\{tikzpicture\}', content[pos:], re.DOTALL)
             if m:
                 elements.append(SlideElement(type='tikz', content=m.group(1).strip()))
+                pos += m.end()
+                continue
+
+            # \includegraphics — embed real image files (png/jpg/gif/svg)
+            # into the PPTX. The path is resolved exactly (relative to the
+            # .tex file, \graphicspath, cwd, or an ancestor directory); see
+            # _resolve_image_path(). Unresolvable paths and .pdf figures are
+            # dropped together with their caption.
+            m = re.match(
+                r'\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}',
+                content[pos:],
+            )
+            if m:
+                raw_path = m.group(1).strip()
+                resolved = self._resolve_image_path(raw_path)
+                if resolved:
+                    elements.append(SlideElement(type='image', content=str(resolved)))
+                    pos += m.end()
+                else:
+                    # Path doesn't resolve: skip the image AND a caption that
+                    # immediately follows it, so we don't leave an orphan
+                    # "Figure. …" line with no picture above it.
+                    pos += m.end()
+                    drop = re.match(r'\s*\\caption\*?\{(?:.+?)\}\s*',
+                                    content[pos:], re.DOTALL)
+                    if drop:
+                        pos += drop.end()
+                continue
+
+            # \caption{...} — the writer's figure description. Render it as
+            # a caption line so figures carry context instead of floating
+            # bare. (Outside a figure env \caption doesn't render in beamer,
+            # and the generic command-strip would otherwise drop it.) Only
+            # kept when the immediately-preceding element is an image —
+            # otherwise it's an orphan caption (image failed to resolve).
+            m = re.match(r'\\caption\*?\{(.+?)\}\s*', content[pos:], re.DOTALL)
+            if m:
+                cap = strip_latex_formatting(m.group(1))
+                cap = _strip_textbook_figure_number(cap)
+                if cap and elements and elements[-1].type == 'image':
+                    elements.append(SlideElement(type='caption', content=cap))
                 pos += m.end()
                 continue
 
@@ -232,10 +633,11 @@ class LaTeXParser:
                 pos += m.end()
                 continue
 
-            # Table
+            # Table — flatten to readable rows rather than a bare placeholder.
             m = re.match(r'\\begin\{(tabular|table)\}(.*?)\\end\{\1\}', content[pos:], re.DOTALL)
             if m:
-                elements.append(SlideElement(type='text', content='[Table - see LaTeX source]'))
+                table_txt = _tabular_to_text(m.group(2))
+                elements.append(SlideElement(type='text', content=table_txt or '[Table]'))
                 pos += m.end()
                 continue
 
@@ -253,8 +655,14 @@ class LaTeXParser:
                 pos += m.end()
                 continue
 
-            # Text paragraph: consume until next \begin or end of content
-            text_match = re.match(r'((?:(?!\\begin\{).)+)', content[pos:], re.DOTALL)
+            # Text paragraph: consume until next \begin{, \includegraphics,
+            # or end of content. \includegraphics needs its own stopper
+            # so multiple images in one frame don't all get swallowed by
+            # the first text run.
+            text_match = re.match(
+                r'((?:(?!\\begin\{)(?!\\includegraphics\b)(?!\\caption\b).)+)',
+                content[pos:], re.DOTALL,
+            )
             if text_match:
                 text = text_match.group(1).strip()
                 if text:
@@ -329,10 +737,49 @@ class LaTeXParser:
             else:
                 item['text'] = strip_latex_formatting(part)
 
-            if item['text'] or item['subitems']:
-                items.append(item)
+            # Drop empty items so they don't render as a lone "•" bullet
+            # on the slide. We accept "text is empty AND subitems is
+            # empty" as the empty signal, and also strip items whose
+            # text is only punctuation/whitespace.
+            cleaned_text = (item['text'] or '').strip()
+            if not cleaned_text and not item['subitems']:
+                continue
+            # Whitespace-or-punct-only text counts as empty too
+            if cleaned_text and not re.search(r'\w', cleaned_text):
+                if not item['subitems']:
+                    continue
+                # Keep subitems but null out the noise text
+                item['text'] = ''
+            items.append(item)
 
         return items
+
+    def _match_balanced_env(self, content: str, pos: int, env_name: str):
+        """Match \\begin{env}...\\end{env} starting at content[pos] with
+        balanced depth tracking. Returns (inner_content, end_pos) or None.
+        Used by _parse_content so a nested itemize doesn't get truncated at
+        its inner \\end{itemize}."""
+        m_open = re.match(rf'\\begin\{{{env_name}\}}', content[pos:])
+        if not m_open:
+            return None
+        search_start = pos + m_open.end()
+        depth = 1
+        i = search_start
+        while i < len(content) and depth > 0:
+            m_b = re.match(rf'\\begin\{{{env_name}\}}', content[i:])
+            m_e = re.match(rf'\\end\{{{env_name}\}}', content[i:])
+            if m_b:
+                depth += 1
+                i += m_b.end()
+            elif m_e:
+                depth -= 1
+                if depth == 0:
+                    inner = content[search_start:i]
+                    return (inner, i + m_e.end())
+                i += m_e.end()
+            else:
+                i += 1
+        return None
 
     def _find_nested_env(self, text: str):
         """Find the first nested itemize/enumerate environment, handling balanced nesting.
@@ -492,6 +939,10 @@ class LaTeXToPPTXConverter:
             output_path = str(tex_path.with_suffix('.pptx'))
 
         tex_content = tex_path.read_text(encoding='utf-8')
+        # Give the parser the .tex file's directory so it can resolve
+        # relative \includegraphics paths (against that directory, its
+        # \graphicspath entries, or an ancestor such as the project root).
+        self.parser.source_dir = tex_path.resolve().parent
         frames = self.parser.parse(tex_content)
 
         if not frames:
