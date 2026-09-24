@@ -60,6 +60,29 @@ opt-in; the upload endpoint requires the API-key header and uploads are gitignor
 
 ## Test status on `upgrade`
 
-`OPENAI_API_KEY=dummy python -m pytest -q tests` — see the final section of the branch's
-commit messages; the pre-existing 39 tests, PR #15's preflight/agents tests and the new
-video tests pass without network access (LaTeX-dependent tests skip when `pdflatex` is absent).
+```
+OPENAI_API_KEY=dummy PYTHONMALLOC=malloc python -m pytest -q tests
+523 passed, 28 skipped   (main had 39 tests)
+```
+
+Skips are LaTeX-dependent tests (no `pdflatex`) and grounding tests that need textbooks which are
+not in the repo. No test makes network calls. Note: on the conda Python 3.13.11 build used for
+this work, pytest's assertion rewriting occasionally segfaults inside `ast` during collection with
+the default pymalloc allocator; `PYTHONMALLOC=malloc` avoids it and is unrelated to the code.
+
+Real-API smoke checks performed while building the branch: `python run.py --render-video` on a
+4-slide fixture (OpenAI TTS, ffmpeg, captions), and the Studio page end to end in headless
+Chromium (8 model calls, 4 TTS calls, a 182 s WebM lecture video, full audit log).
+
+## Branch summary
+
+| Area | Commits on `upgrade` |
+|---|---|
+| Refine mode (feature/slide-local-refine) | 592ab5a |
+| PR #15 safe parts + slides.py prompt/preflight port | 99213ed, a9f6767 |
+| PR #14 (author commits + follow-ups) | 55ae950, 1ce9790, 277774c, 0c324a3 |
+| PR #12 refinement pipeline (with fixes) | 32d3e0d |
+| EduCAST video rendering + CLI/API/UI hooks | 3aeaffa, 30e2c48, f0031da |
+| PR #13 PPTX/evaluate port | 451468b (merge d97ef32) |
+| PR #13 grounding core | 7 commits merged after 798e3fa |
+| evaluate.py shim, README zh | 798e3fa |
