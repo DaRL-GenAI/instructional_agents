@@ -28,7 +28,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from .ingest_md import _blocks_to_chapters, _extract_blocks
-from .ingest_pdf import _file_sort_key, _normalize_pdf_markdown_headings, _renumber_chapter
+from .ingest_pdf import (
+    HeadingState,
+    _file_sort_key,
+    _normalize_pdf_markdown_headings,
+    _renumber_chapter,
+)
 from .schema import Chapter, PageSpan, Textbook
 from .equation_vlm import (
     looks_like_equation as _looks_like_equation,
@@ -259,19 +264,22 @@ def _extract_figure_captions(md_text: str) -> list[tuple[str, str]]:
     return out
 
 
-def _extract_blocks_with_page(md_text: str, page_num: int,
-                              seen_chapter: bool) -> tuple[list[dict], bool]:
+def _extract_blocks_with_page(
+    md_text: str, page_num: int, seen_chapter: bool,
+    state: "HeadingState | None" = None,
+) -> tuple[list[dict], bool]:
     """Extract blocks from one page's markdown and tag them with ``page``.
 
     Returns ``(blocks, new_seen_chapter)`` so caller can thread the
-    ``seen_chapter`` state across pages. The state is now passed INTO
-    the heading normaliser as well (previously the normaliser reset
-    the flag every call, causing one chapter per page on PDFs whose
-    pymupdf4llm output has unnumbered ``##`` headings throughout —
-    the chapter-inflation bug observed at an earlier measurement).
+    ``seen_chapter`` state across pages (the normaliser would otherwise
+    reset it every call, yielding one chapter per page on PDFs whose
+    output has unnumbered ``##`` headings throughout). ``state``, when
+    provided, threads the richer chapter-number record and enables the
+    page-top "Title N" opening detection — each call here receives
+    exactly one source page, so ``page_start`` is always True.
     """
     md_normalised, next_seen = _normalize_pdf_markdown_headings(
-        md_text, seen_chapter=seen_chapter,
+        md_text, seen_chapter=seen_chapter, state=state, page_start=True,
     )
     blocks = _extract_blocks(md_normalised)
     for blk in blocks:
@@ -377,6 +385,7 @@ def ingest_pdf_file_paged(
 
     all_blocks: list[dict] = []
     seen_chapter = False
+    heading_state = HeadingState()
     for page_idx, page in enumerate(pages):
         # pymupdf4llm returns a list of either dicts (with 'text', etc.)
         # or bare strings depending on the version. Handle both.
@@ -392,7 +401,7 @@ def ingest_pdf_file_paged(
         page_num = page_idx + 1
         if md_text and md_text.strip():
             blocks, seen_chapter = _extract_blocks_with_page(
-                md_text, page_num, seen_chapter,
+                md_text, page_num, seen_chapter, state=heading_state,
             )
             all_blocks.extend(blocks)
         # Emit one figure_cap paragraph per image extracted from this

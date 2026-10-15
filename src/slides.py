@@ -1438,6 +1438,10 @@ class SlidesDeliberation:
         if visual_rules:
             evidence_block = evidence_block + visual_rules
 
+        structure = self._bound_structure_block()
+        if evidence_block and structure:
+            evidence_block = evidence_block + structure
+
         return evidence_block, ""
 
     def _excerpt_block(self, r, idx, total, text):
@@ -1536,6 +1540,32 @@ class SlidesDeliberation:
 
     _GROUPED_PER_SLIDE_K = 3
 
+    def _bound_structure_block(self) -> str:
+        """Title list of the bound sections, appended to evidence blocks
+        so the writer organizes the material around the source's own
+        skeleton instead of inventing structure from memory (reduces
+        off-topic drift). Empty when ungrounded or unbound.
+        """
+        if self.retriever is None or not self.section_ids:
+            return ""
+        wanted = set(self.section_ids)
+        titles: list[str] = []
+        try:
+            for chapter in self.retriever.kb.textbook.chapters:
+                for section in chapter.sections:
+                    if section.section_id in wanted and (section.title or "").strip():
+                        titles.append(section.title.strip())
+        except Exception:
+            return ""
+        if not titles:
+            return ""
+        lines = "\n".join(f"- {t}" for t in titles)
+        return (
+            "\nSOURCE STRUCTURE (the sections this material is bound to; "
+            "organize the material around THESE topics and no others):\n"
+            f"{lines}\n\n"
+        )
+
     def _build_grouped_evidence_block(self, outline, artifact="slide"):
         """Group evidence BY outline slide: each slide-topic gets its own
         labeled set of excerpts, so the writer sees focused per-slide context
@@ -1601,6 +1631,9 @@ class SlidesDeliberation:
         visual_rules = self._build_visual_content_rules(joined_text, artifact)
         if visual_rules:
             evidence_block = evidence_block + visual_rules
+        structure = self._bound_structure_block()
+        if evidence_block and structure:
+            evidence_block = evidence_block + structure
         return evidence_block, ""
 
     # Per-slide section binding.

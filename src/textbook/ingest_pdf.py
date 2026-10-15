@@ -22,10 +22,12 @@ tagged kind="equation" and kept as-is. parser_quality reports parse cleanliness.
 """
 
 from collections import Counter
+import dataclasses
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import string
-from typing import List, Optional
+from typing import List, Optional, Set
 
 import fitz  # PyMuPDF
 
@@ -433,10 +435,18 @@ def ingest_pdf_directory(
 # in the same `Textbook` IR shape as before.
 #
 # pymupdf4llm emits every heading at `##` level regardless of nesting.
-# We normalise the markdown first: promote the first non-numbered
-# heading to `#` (chapter title) and demote `N.N.N` patterns to `###`
-# (treated as prose paragraphs by the IR builder). Numbered `N.N`
-# headings stay at `##` (sections).
+# We normalise the markdown first: promote chapter boundaries to `#`
+# and demote `N.N.N` patterns to `###` (treated as prose paragraphs by
+# the IR builder). Numbered `N.N` headings stay at `##` (sections).
+#
+# Chapter boundaries are recognised from two shapes:
+#   * an explicit "Chapter N ..." heading — unless it carries a trailing
+#     page number (a table-of-contents entry) or repeats a chapter
+#     number already promoted (a running header);
+#   * a page-top "Title N" heading whose standalone number is the next
+#     chapter in sequence and whose page continues with prose — the
+#     opening-page layout of textbooks that print the chapter number as
+#     a display numeral beside the title rather than as "Chapter N".
 
 
 _PDF_MD_HEADING_RE = re.compile(r"^(#+)\s+(.*)$")
@@ -447,22 +457,87 @@ _PDF_MD_CHAPTER_PATTERN_RE = re.compile(
     r"^[\*_\s]*(?:Chapter|Appendix|Part|Section|Unit)\s+(?:\d+|[A-Z]|[IVX]+)\b",
     re.IGNORECASE,
 )
+_PDF_MD_CHAPTER_NUM_RE = re.compile(r"(?:Chapter|Unit)\s+(\d+)", re.IGNORECASE)
+# A chapter-keyword heading ending in a bare integer is a reference line
+# (TOC entry with its page number), not a chapter boundary.
+_PDF_MD_TRAILING_INT_RE = re.compile(r"\s\d{1,4}\s*$")
+# Standalone 1-2 digit integer (not part of "3.1" or a longer number).
+_PDF_MD_STANDALONE_INT_RE = re.compile(r"(?<![\d.])(\d{1,2})(?![\d.])")
+_PDF_MD_EMPHASIS_RE = re.compile(r"[\*_\[\]]")
 
 
-def _normalize_pdf_markdown_headings(md_text: str, seen_chapter: bool = False) -> tuple[str, bool]:
+@dataclass
+class HeadingState:
+    """Chapter-detection state threaded across per-page normaliser calls."""
+
+    seen_chapter: bool = False
+    promoted_numbers: Set[int] = dataclasses.field(default_factory=set)
+    max_number: int = 0
+
+
+def _looks_like_body_prose(text: str) -> bool:
+    """True when ``text`` reads as running prose rather than a TOC/index.
+
+    Chapter-opening pages follow their title with paragraphs; contents
+    pages follow theirs with digit-dense entry lists. Sampled on the
+    first 500 non-space characters.
+    """
+    sample = re.sub(r"\s", "", text)[:500]
+    if len(sample) < 200:
+        return False
+    digits = sum(c.isdigit() for c in sample)
+    return digits / len(sample) < 0.10
+
+
+def _match_title_number_opening(
+    plain: str, state: "HeadingState",
+) -> Optional[tuple[int, str]]:
+    """Match a chapter-opening heading of the form "Title N" / "Ti N tle".
+
+    Requires exactly one standalone small integer that is the next
+    chapter number in sequence, with a title-like remainder. Returns
+    ``(number, title)`` or None.
+    """
+    ints = [(m.start(), m.group(1))
+            for m in _PDF_MD_STANDALONE_INT_RE.finditer(plain)]
+    if len(ints) != 1:
+        return None
+    pos, tok = ints[0]
+    number = int(tok)
+    if number > 40 or number != state.max_number + 1:
+        return None
+    title = (plain[:pos] + plain[pos + len(tok):]).strip()
+    title = re.sub(r"\s{2,}", " ", title)
+    if sum(c.isalpha() for c in title) < 3 or not title[:1].isupper():
+        return None
+    return number, title
+
+
+def _normalize_pdf_markdown_headings(
+    md_text: str,
+    seen_chapter: bool = False,
+    state: Optional[HeadingState] = None,
+    page_start: bool = False,
+) -> tuple[str, bool]:
     """Convert pymupdf4llm's uniform `##` headings into the level
     hierarchy that the markdown ingester expects.
 
     Heuristics (applied in order; first match wins):
       * ``## Chapter N ...`` / ``## Appendix X ...`` / ``## Part I`` /
         ``## Unit 3`` -> ``#`` (explicit chapter — handles multi-chapter
-        PDFs like Agentic Design Patterns).
+        PDFs like pattern-catalog books) — UNLESS the heading ends in a
+        bare integer (a TOC entry carrying its page number) or repeats a
+        chapter number already promoted (a running header); those demote
+        to ``###``.
       * ``## N.N ...`` -> ``##`` (top-level numbered section, kept).
       * ``## N.N.N ...`` -> ``###`` (subsection — emitted as prose
         paragraph by the IR builder).
+      * Page-top ``## Title N`` where N is the next chapter number in
+        sequence and the page continues with prose -> ``# Chapter N
+        Title`` (the display-numeral opening-page layout; only when
+        ``page_start`` is True).
       * First otherwise-unnumbered ``##`` -> ``#`` (handles single-chapter
-        PDFs like Han's per-chapter files where the chapter title isn't
-        prefixed with "Chapter N").
+        PDFs where the chapter title isn't prefixed with "Chapter N").
       * Subsequent unnumbered ``##`` -> ``###`` (sub-section labels like
         "Method:", "Figure 10.15", "Key takeaways", etc. that pymupdf4llm
         emits as headings but aren't structural breaks).
@@ -477,23 +552,55 @@ def _normalize_pdf_markdown_headings(md_text: str, seen_chapter: bool = False) -
     ``(normalised_text, seen_chapter_after)`` tuple so callers can
     chain calls without losing state.
 
+    ``state`` (optional) carries the richer cross-page record — chapter
+    numbers already promoted and the running maximum — enabling two
+    protections the bool alone cannot give: TOC/running-header
+    suppression for "Chapter N" headings, and page-top "Title N"
+    opening detection (only attempted when ``page_start`` is True,
+    i.e. the call receives exactly one source page). When ``state`` is
+    given it is mutated in place and is authoritative over the bool.
+
     Operates line-by-line on the raw markdown text.
     """
+    if state is None:
+        state = HeadingState(seen_chapter=seen_chapter)
     lines = md_text.split("\n")
     out_lines: List[str] = []
-    for line in lines:
+    content_seen = False
+    for idx, line in enumerate(lines):
         m = _PDF_MD_HEADING_RE.match(line)
         if not m:
             out_lines.append(line)
+            if line.strip():
+                content_seen = True
             continue
         hashes, content = m.group(1), m.group(2)
         if len(hashes) != 2:
             out_lines.append(line)
+            content_seen = True
             continue
-        # Explicit "Chapter N" / "Appendix X" / "Part I" / "Unit 3" — always a chapter.
+        at_page_top = page_start and not content_seen
+        content_seen = True
+        plain = _PDF_MD_EMPHASIS_RE.sub("", content).strip()
+        # Explicit "Chapter N" / "Appendix X" / "Part I" / "Unit 3" heading.
         if _PDF_MD_CHAPTER_PATTERN_RE.match(content):
-            out_lines.append(f"# {content}")
-            seen_chapter = True
+            num_m = _PDF_MD_CHAPTER_NUM_RE.search(plain)
+            number = int(num_m.group(1)) if num_m else None
+            # A trailing integer AFTER the title ("Chapter 4 Title 125")
+            # is a TOC entry's page number; the prefix's own number
+            # ("Chapter 12" with no title) must not trigger this.
+            prefix_m = _PDF_MD_CHAPTER_PATTERN_RE.match(plain)
+            remainder = plain[prefix_m.end():] if prefix_m else plain
+            is_reference = _PDF_MD_TRAILING_INT_RE.search(remainder) is not None
+            is_repeat = number is not None and number in state.promoted_numbers
+            if is_reference or is_repeat:
+                out_lines.append(f"### {content}")
+            else:
+                out_lines.append(f"# {content}")
+                state.seen_chapter = True
+                if number is not None:
+                    state.promoted_numbers.add(number)
+                    state.max_number = max(state.max_number, number)
             continue
         # Numbered "N.N" or "N.N.N" — section vs subsection.
         num = _PDF_MD_NUMBER_PREFIX_RE.match(content)
@@ -504,13 +611,25 @@ def _normalize_pdf_markdown_headings(md_text: str, seen_chapter: bool = False) -
             else:
                 out_lines.append(f"### {content}")
             continue
+        # Page-top "Title N" chapter opening (display-numeral layout).
+        if at_page_top:
+            opening = _match_title_number_opening(plain, state)
+            if opening is not None and _looks_like_body_prose(
+                "\n".join(lines[idx + 1:])
+            ):
+                number, title = opening
+                out_lines.append(f"# Chapter {number} {title}")
+                state.seen_chapter = True
+                state.promoted_numbers.add(number)
+                state.max_number = number
+                continue
         # Unnumbered heading.
-        if not seen_chapter:
+        if not state.seen_chapter:
             out_lines.append(f"# {content}")
-            seen_chapter = True
+            state.seen_chapter = True
         else:
             out_lines.append(f"### {content}")
-    return "\n".join(out_lines), seen_chapter
+    return "\n".join(out_lines), state.seen_chapter
 
 
 def ingest_pdf_file_via_markdown(
