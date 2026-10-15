@@ -34,7 +34,7 @@ def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catal
     return data_catalog
 
 
-def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None):
+def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None, strict_verification: bool = True):
     """
     Main function to run the instructional design workflow by sequentially
     executing the six deliberation processes
@@ -95,7 +95,7 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
 
 
     from src.ADDIE import ADDIE
-    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume, textbook_path=textbook_path, vlm_extraction=vlm_extraction, only_chapters=only_chapters)
+    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume, textbook_path=textbook_path, vlm_extraction=vlm_extraction, only_chapters=only_chapters, strict_verification=strict_verification)
 
     # Run the workflow
     output_dir = f"./exp/{exp_name}/"
@@ -227,6 +227,17 @@ def main():
              "(the default), every chapter is generated."
     )
 
+    parser.add_argument(
+        "--no-strict-verification",
+        dest="strict_verification",
+        action="store_false",
+        help="Judge claims against the writer's excerpts only, instead of "
+             "the complete bound source, and skip the two second-chance "
+             "passes. Cheaper, but excerpt-window judging saturates and the "
+             "resulting fidelity is not comparable to a strict run. Only "
+             "affects grounded runs (--use-textbook)."
+    )
+
 
     parser.add_argument(
         "--use-textbook",
@@ -337,6 +348,7 @@ def main():
             only_chapters=(
                 {int(n) for n in args.only_chapters.split(",") if n.strip()}
                 if args.only_chapters else None),
+            strict_verification=args.strict_verification,
             textbook_path=args.textbook_path,
             vlm_extraction=args.vlm_extraction,
         )

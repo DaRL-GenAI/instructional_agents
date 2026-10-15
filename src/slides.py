@@ -782,6 +782,10 @@ def _drop_empty_frames(text):
         if "\\includegraphics" in body:
             return True
         b = _FRAMETITLE_RE.sub("", body)                # drop the title
+        # Beamer also titles a frame inline, \begin{frame}{Title}; _FRAME_RE
+        # leaves that title at the head of the body, where it would read as
+        # content and keep a blank slide alive.
+        b = re.sub(r"^\s*\{(?:[^{}]|\{[^{}]*\})*\}", "", b)
         b = re.sub(r"\\(begin|end)\{[^}]*\}", "", b)    # env delimiters (name isn't content)
         b = re.sub(r"\[[^\]]*\]", "", b)                # bracket options like [fragile]
         b = re.sub(r"\\[a-zA-Z]+\*?", "", b)            # command tokens, keep braced text
@@ -1143,6 +1147,7 @@ class SlidesDeliberation:
                  section_ids=None,
                  textbook_id: str = None,
                  content_verifier=None,
+                 strict_verification: bool = True,
                  ):
         """
         Initialize SlidesDeliberation
@@ -1180,6 +1185,11 @@ class SlidesDeliberation:
         # the save and a report is logged. Log-only — never mutates artifacts.
         # Vanilla path leaves this None and behavior is byte-identical.
         self.content_verifier = content_verifier
+        # Strict verification judges every claim against the complete bound
+        # source with two second-chance passes. Inert unless a content
+        # verifier is attached (the grounded path), so the vanilla pipeline
+        # is unaffected.
+        self.strict_verification = strict_verification
         # Per-chapter top_k tuned by the density of chunks in the
         # chapter's bound sections. Dense chapters (many candidate
         # chunks) get a wider window so the LLM sees more options;
@@ -2166,13 +2176,26 @@ class SlidesDeliberation:
         # Grounded path only; gated so the vanilla pipeline never runs it.
         if self.retriever is not None and getattr(self, "content_verifier", None) is not None:
             try:
-                from src.grounding.content_verifier import report_line
+                from src.grounding.content_verifier import _MAX_CLAIMS, report_line
+                strict = bool(getattr(self, "strict_verification", False))
+                # Strict mode judges against the complete bound source rather
+                # than the writer's excerpts, and gives both a loose quote and
+                # a first flag one more chance. It costs more tokens;
+                # --no-strict-verification keeps the cheap capped check.
+                source_text = (
+                    self.content_verifier.bound_section_text(self.section_ids)
+                    if strict else None)
                 report = self.content_verifier.verify_chapter(
                     self.id,
                     chapter.get("title", self.name),
-                    {"slides": latex_source, "script": slides_script_md},
+                    # Slides only: the deck is the delivered artifact; the
+                    # script is narration and is not claim-checked.
+                    {"slides": latex_source},
                     self.section_ids,
                     writer_evidence=getattr(self, "_writer_evidence", None),
+                    full_source_text=source_text or None,
+                    second_chances=strict,
+                    limit=None if strict else _MAX_CLAIMS,
                 )
                 print(report_line(report))
                 with open(

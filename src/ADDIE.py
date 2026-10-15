@@ -703,6 +703,8 @@ class ADDIERunner:
                 if self.addie.knowledge_base else None
             ),
             content_verifier=getattr(self.addie, "content_verifier", None),
+            strict_verification=getattr(
+                self.addie, "strict_verification", False),
         )
     
     def _save_result(self, deliberation, result):
@@ -845,7 +847,7 @@ class ADDIE:
     ADDIE (Analyze, Design, Develop, Implement, Evaluate) class for instructional design
     This class coordinates a series of deliberations to create a complete course design
     """
-    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None):
+    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None, strict_verification: bool = True):
         """
         Initialize ADDIE workflow
 
@@ -874,6 +876,10 @@ class ADDIE:
         self.catalog = catalog
         self.resume = resume
         self.only_chapters = only_chapters
+        # Strict verification is ON for grounded runs: an excerpt-window
+        # judge saturates. Inert without a content verifier, so the vanilla
+        # path is untouched. --no-strict-verification opts out.
+        self.strict_verification = strict_verification
         self.llm = LLM(model_name=model_name, seed=seed, temperature=temperature)
         self.deliberations = []
         self.results = []
