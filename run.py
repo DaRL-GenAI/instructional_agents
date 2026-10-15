@@ -34,7 +34,7 @@ def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catal
     return data_catalog
 
 
-def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False):
+def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None, strict_verification: bool = True, verifier_model: str = None):
     """
     Main function to run the instructional design workflow by sequentially
     executing the six deliberation processes
@@ -95,7 +95,7 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
 
 
     from src.ADDIE import ADDIE
-    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume)
+    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume, textbook_path=textbook_path, vlm_extraction=vlm_extraction, only_chapters=only_chapters, strict_verification=strict_verification, verifier_model=verifier_model)
 
     # Run the workflow
     output_dir = f"./exp/{exp_name}/"
@@ -216,6 +216,59 @@ def main():
              "from the last incomplete chapter (or mid-chapter checkpoint)."
     )
 
+    parser.add_argument(
+        "--only-chapters",
+        type=str,
+        default=None,
+        metavar="N[,N...]",
+        help="Generate only these 1-based chapter numbers (e.g. \"2\" or "
+             "\"2,5\"); all other chapters are skipped. Useful for "
+             "regenerating a single chapter after feedback. When omitted "
+             "(the default), every chapter is generated."
+    )
+
+    parser.add_argument(
+        "--verifier-model",
+        type=str,
+        default=None,
+        help="Model for the content-fidelity verifier (default: the "
+             "verifier's own default). Only affects grounded runs."
+    )
+    parser.add_argument(
+        "--no-strict-verification",
+        dest="strict_verification",
+        action="store_false",
+        help="Judge claims against the writer's excerpts only, instead of "
+             "the complete bound source, and skip the two second-chance "
+             "passes. Cheaper, but excerpt-window judging saturates and the "
+             "resulting fidelity is not comparable to a strict run. Only "
+             "affects grounded runs (--use-textbook)."
+    )
+
+
+    parser.add_argument(
+        "--use-textbook",
+        dest="textbook_path",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Ground course generation in a textbook. PATH may be a PDF file, "
+             "a markdown file, or a directory of either. When omitted (the "
+             "default), generation runs exactly as in the vanilla pipeline."
+    )
+
+    parser.add_argument(
+        "--vlm-extraction",
+        dest="vlm_extraction",
+        action="store_true",
+        help="When ingesting a PDF textbook, route pages classified "
+             "as complex (figures, equations, diagrams) through GPT-4o-mini "
+             "vision for structured extraction. Cropped page PNGs are saved "
+             "to .grounding_cache/figures/ so the slide generator can include "
+             "real figures alongside the extracted descriptions. No effect "
+             "without --use-textbook."
+    )
+
     # Optimize mode arguments
     parser.add_argument(
         "--optimize",
@@ -299,6 +352,13 @@ def main():
             seed=args.seed,
             temperature=args.temperature,
             resume=args.resume,
+            only_chapters=(
+                {int(n) for n in args.only_chapters.split(",") if n.strip()}
+                if args.only_chapters else None),
+            strict_verification=args.strict_verification,
+            verifier_model=args.verifier_model,
+            textbook_path=args.textbook_path,
+            vlm_extraction=args.vlm_extraction,
         )
 
 

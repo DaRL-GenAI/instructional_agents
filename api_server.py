@@ -60,6 +60,15 @@ class CourseRequest(BaseModel):
     catalog: Optional[str] = Field(default=None, description="Catalog name to use")
     catalog_data: Optional[Dict[str, Any]] = Field(default=None, description="Catalog data as JSON object")
     generate_pptx: Optional[bool] = Field(default=False, description="Also generate PPTX slides")
+    textbook_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to a textbook for grounded course generation — a PDF file, "
+            "a markdown file, or a directory of either. Must resolve to a path "
+            "under data/textbooks/ or data/repos/. When omitted, generation "
+            "runs exactly as in the vanilla pipeline."
+        )
+    )
 
 class OptimizeRequest(BaseModel):
     storage_id: str = Field(..., description="ID of the stored PDF files")
@@ -113,6 +122,315 @@ def get_api_key(x_openai_api_key: Opt[str] = Header(None, alias="X-OpenAI-API-Ke
         )
     return env_key
 
+
+# Textbook-grounding helpers
+# Two allowed roots: `data/textbooks/` for canonical course textbooks (e.g.
+# Han Data Mining), and `data/repos/` for textbook content shipped inside
+# cloned repos (e.g. Agentic Design Patterns). Resolving and confining
+# `textbook_path` to one of these roots prevents path-traversal attacks
+# via the API surface.
+ALLOWED_TEXTBOOK_ROOTS = [
+    (Path(__file__).resolve().parent / "data" / "textbooks").resolve(),
+    (Path(__file__).resolve().parent / "data" / "repos").resolve(),
+]
+
+
+def _validate_textbook_path(textbook_path: Optional[str]) -> Optional[str]:
+    """Validate that `textbook_path` is real and under an allowed root.
+
+    Returns the canonical absolute path on success. Raises HTTPException(400)
+    on any violation. `None` input passes through unchanged (vanilla path).
+    """
+    if not textbook_path:
+        return None
+    p = Path(textbook_path).expanduser().resolve()
+    if not p.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"textbook_path does not exist: {textbook_path}",
+        )
+    if not any(p.is_relative_to(root) for root in ALLOWED_TEXTBOOK_ROOTS):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"textbook_path must resolve to a path under "
+                f"data/textbooks/ or data/repos/; got: {textbook_path}"
+            ),
+        )
+    return str(p)
+
+
+def _list_available_textbooks() -> List[Dict[str, Any]]:
+    """Walk the allowed roots and enumerate ingestable textbook sources.
+
+    A "textbook" is:
+      - a top-level .pdf or .md file under an allowed root, OR
+      - a subdirectory under an allowed root that contains one or more
+        .pdf or .md files. If the subdirectory has exactly ONE .pdf, the
+        returned `path` points at that file (so PDF-file ingest is used);
+        otherwise it points at the directory (so directory ingest is used).
+    """
+    out: List[Dict[str, Any]] = []
+    for root in ALLOWED_TEXTBOOK_ROOTS:
+        if not root.exists():
+            continue
+        for entry in sorted(root.iterdir()):
+            if entry.is_file() and entry.suffix.lower() in {".pdf", ".md"}:
+                out.append({
+                    "id": entry.stem,
+                    "title": entry.stem.replace("_", " ").replace("-", " ").title(),
+                    "path": str(entry),
+                    "kind": "file",
+                })
+            elif entry.is_dir():
+                pdfs = sorted(entry.glob("*.pdf"))
+                mds = sorted(entry.glob("*.md")) + sorted(entry.glob("*.markdown"))
+                if not pdfs and not mds:
+                    continue
+                # One-PDF textbook → point at the file so PDF-file ingest
+                # runs (preserves internal chapter detection). Any markdown
+                # alongside a single PDF is treated as metadata (typically
+                # a README), not as textbook content.
+                if len(pdfs) == 1:
+                    target = pdfs[0]
+                    out.append({
+                        "id": target.stem,
+                        "title": target.stem.replace("_", " ").replace("-", " ").title(),
+                        "path": str(target),
+                        "kind": "file",
+                    })
+                else:
+                    out.append({
+                        "id": entry.name,
+                        "title": entry.name.replace("_", " ").replace("-", " ").title(),
+                        "path": str(entry),
+                        "kind": "directory",
+                        "n_pdfs": len(pdfs),
+                        "n_mds": len(mds),
+                    })
+    return out
+
+
+@app.get("/api/textbooks/list")
+async def list_textbooks():
+    """List textbooks available for grounded course generation.
+
+    The frontend uses this to populate its textbook-selection dropdown.
+    Empty list means no textbooks are present locally — the UI should
+    grey out the grounding option in that case.
+    """
+    return {"textbooks": _list_available_textbooks()}
+
+
+# Upload constraints. Cap chosen high enough for our two real eval sources
+# (Han ~7 MB total, Agentic 19 MB) plus headroom; small enough to bound the
+# attack surface on a public deployment.
+ALLOWED_TEXTBOOK_EXTENSIONS = {".pdf", ".md", ".markdown"}
+MAX_TEXTBOOK_UPLOAD_MB = 100
+UPLOADED_TEXTBOOK_DIR = (
+    Path(__file__).resolve().parent / "data" / "textbooks"
+)
+
+
+def _sanitise_stem(name: str) -> str:
+    """Strip everything outside [A-Za-z0-9._-]+ from a filename stem."""
+    import re as _re
+    return _re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name).stem).strip("._-")
+
+
+async def _stream_to_disk(upload: UploadFile, target: Path,
+                          bytes_remaining: int) -> int:
+    """Stream an UploadFile to `target` honouring a shared byte budget.
+
+    Returns bytes written. Raises HTTPException(413) if the upload would
+    exceed `bytes_remaining`. Caller is responsible for unlinking the
+    target on failure.
+    """
+    written = 0
+    with open(target, "wb") as out:
+        while True:
+            chunk = await upload.read(1024 * 1024)  # 1 MB at a time
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > bytes_remaining:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"Combined upload exceeds {MAX_TEXTBOOK_UPLOAD_MB} MB "
+                        f"limit (cap reached while writing {target.name})."
+                    ),
+                )
+            out.write(chunk)
+    return written
+
+
+@app.post("/api/textbooks/upload")
+async def upload_textbook(files: List[UploadFile] = File(...)):
+    """Upload one or more PDF / markdown files for grounded generation.
+
+    Single-file uploads land at `data/textbooks/uploaded_<token>_<name>.ext`
+    and return `kind=file`.
+
+    Multi-file uploads land in a new subdirectory
+    `data/textbooks/uploaded_<token>/`, each file saved with its sanitised
+    original filename. Returned with `kind=directory` — the ingester then
+    treats each file as one chapter (the Han-style pattern). Useful when
+    a user has a multi-chapter textbook split across PDF files.
+
+    Validation:
+      - Every file's extension must be .pdf, .md, or .markdown.
+      - All files in a single batch must share the same kind (all PDF or
+        all markdown). Mixed batches are rejected because the textbook
+        ingester refuses mixed-content directories.
+      - Combined size across all files capped at 100 MB.
+      - PDF files are sniffed for the `%PDF` magic header.
+      - Filenames sanitised to `[A-Za-z0-9._-]+`.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded.")
+
+    # First pass: validate extensions, count by kind, reject mixed batches.
+    classified: list[tuple[UploadFile, str, str]] = []  # (file, ext, safe_stem)
+    pdf_count = md_count = 0
+    for f in files:
+        if not f.filename or not f.filename.strip():
+            raise HTTPException(
+                status_code=400, detail="Empty filename in upload batch.",
+            )
+        ext = Path(f.filename).suffix.lower()
+        if ext not in ALLOWED_TEXTBOOK_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported extension {ext!r} in file {f.filename!r}. "
+                    "Allowed: " + ", ".join(sorted(ALLOWED_TEXTBOOK_EXTENSIONS))
+                ),
+            )
+        safe_stem = _sanitise_stem(f.filename)
+        if not safe_stem:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Filename {f.filename!r} has no usable characters "
+                    "after sanitisation."
+                ),
+            )
+        if ext == ".pdf":
+            pdf_count += 1
+        else:
+            md_count += 1
+        classified.append((f, ext, safe_stem))
+
+    if pdf_count > 0 and md_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Mixed PDF + markdown upload is not supported — the textbook "
+                "ingester requires all files in one directory to be the same "
+                f"kind ({pdf_count} PDF / {md_count} markdown received)."
+            ),
+        )
+
+    UPLOADED_TEXTBOOK_DIR.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex[:8]
+    max_bytes = MAX_TEXTBOOK_UPLOAD_MB * 1024 * 1024
+
+    # Single-file path — preserve the existing flat layout + filename
+    # pattern (`uploaded_<token>_<stem>.<ext>`).
+    if len(classified) == 1:
+        f, ext, safe_stem = classified[0]
+        target = UPLOADED_TEXTBOOK_DIR / f"uploaded_{token}_{safe_stem}{ext}"
+        try:
+            total = await _stream_to_disk(f, target, max_bytes)
+            if ext == ".pdf":
+                with open(target, "rb") as fh:
+                    if not fh.read(8).startswith(b"%PDF"):
+                        target.unlink()
+                        raise HTTPException(
+                            status_code=400,
+                            detail="File does not start with %PDF magic header.",
+                        )
+        except HTTPException:
+            if target.exists():
+                target.unlink()
+            raise
+        except Exception as e:
+            if target.exists():
+                target.unlink()
+            raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}")
+
+        canonical = _validate_textbook_path(str(target))
+        return {
+            "id": target.stem,
+            "title": safe_stem.replace("_", " ").replace("-", " ").title(),
+            "path": canonical,
+            "kind": "file",
+            "n_files": 1,
+            "size_bytes": total,
+            "size_mb": round(total / (1024 * 1024), 2),
+        }
+
+    # Multi-file path — bundle into a per-upload subdirectory so the
+    # ingester reads it as a multi-chapter textbook.
+    upload_dir = UPLOADED_TEXTBOOK_DIR / f"uploaded_{token}"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    total = 0
+    written_paths: list[Path] = []
+    seen_stems: set[str] = set()
+    try:
+        for f, ext, safe_stem in classified:
+            # De-duplicate stems inside the batch (foo.pdf + foo.pdf → foo.pdf + foo_2.pdf).
+            stem = safe_stem
+            dup_idx = 2
+            while stem in seen_stems:
+                stem = f"{safe_stem}_{dup_idx}"
+                dup_idx += 1
+            seen_stems.add(stem)
+
+            target = upload_dir / f"{stem}{ext}"
+            written = await _stream_to_disk(f, target, max_bytes - total)
+            total += written
+            written_paths.append(target)
+
+            if ext == ".pdf":
+                with open(target, "rb") as fh:
+                    if not fh.read(8).startswith(b"%PDF"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"File {f.filename!r} does not start with "
+                                "%PDF magic header."
+                            ),
+                        )
+    except HTTPException:
+        for p in written_paths:
+            if p.exists():
+                p.unlink()
+        if upload_dir.exists() and not any(upload_dir.iterdir()):
+            upload_dir.rmdir()
+        raise
+    except Exception as e:
+        for p in written_paths:
+            if p.exists():
+                p.unlink()
+        if upload_dir.exists() and not any(upload_dir.iterdir()):
+            upload_dir.rmdir()
+        raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}")
+
+    canonical = _validate_textbook_path(str(upload_dir))
+    return {
+        "id": upload_dir.name,
+        "title": f"Uploaded {len(classified)} files ({token})",
+        "path": canonical,
+        "kind": "directory",
+        "n_files": len(classified),
+        "n_pdfs": pdf_count,
+        "n_mds": md_count,
+        "size_bytes": total,
+        "size_mb": round(total / (1024 * 1024), 2),
+    }
+
 # API endpoints
 @app.post("/api/course/generate")
 async def generate_course(
@@ -125,7 +443,14 @@ async def generate_course(
     """
     # Get API key from header or environment
     api_key = get_api_key(x_openai_api_key)
-    
+
+    # Validate textbook path UP FRONT so a bad path returns 400 immediately,
+    # before a task is created. _validate_textbook_path raises HTTPException
+    # on out-of-root / missing paths; None passes through (vanilla pipeline).
+    # The canonical absolute path is written back onto the request so the
+    # background task uses the already-validated value.
+    request.textbook_path = _validate_textbook_path(request.textbook_path)
+
     task_id = str(uuid.uuid4())
     
     # Initialize task
@@ -796,6 +1121,14 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
         tasks[task_id]["current_stage"] = "Starting workflow"
         tasks[task_id]["updated_at"] = datetime.now().isoformat()
         
+        # textbook_path was already validated + canonicalised in the
+        # handler (generate_course) — bad paths returned 400 before the
+        # task was even created. Here we just announce it in the streamed
+        # logs so the UI shows grounded mode is on.
+        if request.textbook_path:
+            print(f"📚 Textbook (grounded): {request.textbook_path}")
+            sys.stdout.flush()
+
         # Run the generation (this is synchronous, but we're in a background task)
         # Note: For better progress tracking, you might want to modify ADDIE to accept callbacks
         run_instructional_design(
@@ -803,7 +1136,8 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
             copilot="default_copilot" if request.copilot else None,
             catalog=catalog_source,
             model_name=request.model_name,
-            exp_name=request.exp_name
+            exp_name=request.exp_name,
+            textbook_path=request.textbook_path,
         )
         
         # Generate PPTX if requested

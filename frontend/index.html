@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="pageTitle">Instructional Agents - 课程生成系统</title>
-    <link rel="stylesheet" href="styles.css?v=2">
+    <link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
     <div class="language-toggle-container">
@@ -118,8 +118,23 @@
 
                     <div class="form-group" id="catalog-json-group" style="display: none;">
                         <label for="catalog-json" data-i18n="catalogJsonLabel">Catalog JSON 数据</label>
-                        <textarea id="catalog-json" rows="10" 
+                        <textarea id="catalog-json" rows="10"
                                   placeholder='{"student_profile": {...}, "instructor_preferences": {...}}' data-i18n-placeholder="catalogJsonPlaceholder"></textarea>
+                    </div>
+
+                    <!-- Textbook grounding (opt-in). Upload a PDF/markdown
+                         to ground the generated course. The hidden input
+                         #textbook-path holds the canonical server-side path
+                         returned by /api/textbooks/upload; the form-submit
+                         handler forwards it as textbook_path. Empty hidden
+                         input = vanilla pipeline (byte-identical to a run
+                         without --use-textbook on the CLI). -->
+                    <div class="form-group">
+                        <label for="textbook-upload" data-i18n="textbookLabel">Textbook grounding (optional)</label>
+                        <input type="file" id="textbook-upload" accept=".pdf,.md,.markdown" multiple>
+                        <input type="hidden" id="textbook-path" name="textbook_path" value="">
+                        <small id="textbook-upload-status" style="display: block; margin-top: 4px;"></small>
+                        <small id="textbook-hint" data-i18n="textbookHint">Upload one or more PDF / markdown files to ground the generated course in. Multiple files are treated as one multi-chapter textbook. Citations will be inserted inline in slides, scripts, and assessments. Leave empty to generate without grounding.</small>
                     </div>
 
                     <button type="submit" id="submit-btn" class="btn btn-primary" data-i18n="submitButtonText" data-i18n-target="html">
@@ -253,7 +268,7 @@
         </footer>
     </div>
 
-    <script src="app.js?v=2"></script>
+    <script src="app.js?v=7"></script>
 </body>
 </html>
 

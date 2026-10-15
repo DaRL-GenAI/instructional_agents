@@ -208,3 +208,39 @@ class TestDeliberation:
     def test_output_format_custom(self):
         delib, _ = self._make_deliberation(output_format="tex")
         assert delib.output_format == "tex"
+
+
+class TestLLMErrorReturnsThreeTuple:
+    """Regression test: when the OpenAI client raises (rate limit, network
+    error, etc.), `LLM.generate_response` must return a 3-tuple so callers
+    that do `response, elapsed, tokens = generate_response(...)` don't
+    crash with `ValueError: too many values to unpack`. The previous
+    behaviour returned a bare string, which exploded any caller doing
+    tuple unpacking — e.g. evaluate.py's rubric scorer on a 429.
+    """
+
+    def test_returns_three_tuple_on_exception(self):
+        from unittest.mock import MagicMock, patch
+        from src.agents import LLM
+
+        # Stub out the OpenAI client so we never hit the network.
+        with patch("src.agents.OpenAI"):
+            llm = LLM(model_name="gpt-4o-mini")
+            llm.client = MagicMock()
+            # Force any LLM call to raise — simulates a 429-style failure.
+            llm.client.chat.completions.create.side_effect = RuntimeError(
+                "Rate limit reached for gpt-4o-mini ... (simulated 429)"
+            )
+
+            result = llm.generate_response(
+                [{"role": "user", "content": "hi"}], stream=False
+            )
+
+            # Must be exactly 3 values — the caller pattern is:
+            #   response, elapsed_time, token_usage = generate_response(...)
+            assert isinstance(result, tuple)
+            assert len(result) == 3
+            response, elapsed, tokens = result  # the line that used to crash
+            assert response.startswith("Error:")
+            assert elapsed == 0.0
+            assert tokens == 0
