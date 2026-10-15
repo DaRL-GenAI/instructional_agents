@@ -847,7 +847,7 @@ class ADDIE:
     ADDIE (Analyze, Design, Develop, Implement, Evaluate) class for instructional design
     This class coordinates a series of deliberations to create a complete course design
     """
-    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None, strict_verification: bool = True):
+    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None, strict_verification: bool = True, verifier_model: str = None):
         """
         Initialize ADDIE workflow
 
@@ -987,7 +987,8 @@ class ADDIE:
             # are written it judges generated claims against retrieved evidence
             # and logs a report — log-only, never mutates artifacts.
             from src.grounding.content_verifier import ContentVerifier
-            self.content_verifier = ContentVerifier(retriever=self.retriever)
+            kwargs = {"model": verifier_model} if verifier_model else {}
+            self.content_verifier = ContentVerifier(retriever=self.retriever, **kwargs)
         else:
             self.content_verifier = None
 

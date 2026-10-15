@@ -34,7 +34,7 @@ def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catal
     return data_catalog
 
 
-def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None, strict_verification: bool = True):
+def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None, strict_verification: bool = True, verifier_model: str = None):
     """
     Main function to run the instructional design workflow by sequentially
     executing the six deliberation processes
@@ -95,7 +95,7 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
 
 
     from src.ADDIE import ADDIE
-    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume, textbook_path=textbook_path, vlm_extraction=vlm_extraction, only_chapters=only_chapters, strict_verification=strict_verification)
+    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume, textbook_path=textbook_path, vlm_extraction=vlm_extraction, only_chapters=only_chapters, strict_verification=strict_verification, verifier_model=verifier_model)
 
     # Run the workflow
     output_dir = f"./exp/{exp_name}/"
@@ -228,6 +228,13 @@ def main():
     )
 
     parser.add_argument(
+        "--verifier-model",
+        type=str,
+        default=None,
+        help="Model for the content-fidelity verifier (default: the "
+             "verifier's own default). Only affects grounded runs."
+    )
+    parser.add_argument(
         "--no-strict-verification",
         dest="strict_verification",
         action="store_false",
@@ -349,6 +356,7 @@ def main():
                 {int(n) for n in args.only_chapters.split(",") if n.strip()}
                 if args.only_chapters else None),
             strict_verification=args.strict_verification,
+            verifier_model=args.verifier_model,
             textbook_path=args.textbook_path,
             vlm_extraction=args.vlm_extraction,
         )
