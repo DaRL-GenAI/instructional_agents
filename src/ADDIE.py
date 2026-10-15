@@ -110,7 +110,8 @@ class ADDIERunner:
     Runner class for the ADDIE workflow
     Handles command-line interaction and execution logic
     """
-    def __init__(self, addie_instance, output_dir="output", resume: bool = False):
+    def __init__(self, addie_instance, output_dir="output", resume: bool = False,
+                 only_chapters=None):
         """
         Initialize the runner with an ADDIE instance
 
@@ -119,11 +120,15 @@ class ADDIERunner:
             output_dir: Directory to read/write deliberation outputs.
             resume: If True, skip deliberations whose outputs are already
                 present on disk and pick up chapter work mid-stream.
+            only_chapters: Optional collection of 1-based chapter numbers to
+                generate; all other chapters are skipped (their directories
+                are left untouched). None (default) generates every chapter.
         """
         self.addie = addie_instance
         self.course_name = None
         self.output_dir = output_dir
         self.resume = resume
+        self.only_chapters = set(only_chapters) if only_chapters else None
         self.results = []
         self.chapters = []
 
@@ -500,6 +505,9 @@ class ADDIERunner:
         
         # For each chapter, run the SlidesDeliberation
         for chapter_idx, chapter in enumerate(self.chapters):
+            if self.only_chapters is not None and (chapter_idx + 1) not in self.only_chapters:
+                print(f"[only-chapters] Skipped chapter_{chapter_idx+1} — not in {sorted(self.only_chapters)}")
+                continue
             print(f"\n{'#'*50}\nChapter {chapter_idx+1}/{len(self.chapters)}: {chapter['title']}\n{'#'*50}\n")
 
             # Create chapter directory
@@ -837,7 +845,7 @@ class ADDIE:
     ADDIE (Analyze, Design, Develop, Implement, Evaluate) class for instructional design
     This class coordinates a series of deliberations to create a complete course design
     """
-    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False):
+    def __init__(self, course_name, model_name: str = "gpt-4o-mini", copilot: bool = False, catalog: bool = False, data_catalog: dict = {}, data_copilot: dict = {}, seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None):
         """
         Initialize ADDIE workflow
 
@@ -865,6 +873,7 @@ class ADDIE:
         self.copilot = copilot
         self.catalog = catalog
         self.resume = resume
+        self.only_chapters = only_chapters
         self.llm = LLM(model_name=model_name, seed=seed, temperature=temperature)
         self.deliberations = []
         self.results = []
@@ -1313,5 +1322,6 @@ class ADDIE:
         Returns:
             List of results from each deliberation
         """
-        runner = ADDIERunner(self, output_dir=output_dir, resume=self.resume)
+        runner = ADDIERunner(self, output_dir=output_dir, resume=self.resume,
+                             only_chapters=self.only_chapters)
         return runner.run()

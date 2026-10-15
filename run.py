@@ -34,7 +34,7 @@ def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catal
     return data_catalog
 
 
-def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False):
+def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False, textbook_path: str = None, vlm_extraction: bool = False, only_chapters=None):
     """
     Main function to run the instructional design workflow by sequentially
     executing the six deliberation processes
@@ -95,7 +95,7 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
 
 
     from src.ADDIE import ADDIE
-    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume, textbook_path=textbook_path, vlm_extraction=vlm_extraction)
+    addie = ADDIE(course_name, model_name=model_name, copilot=use_copilot, catalog=use_catalog, data_catalog=data_catalog, data_copilot=data_copilot, seed=seed, temperature=temperature, resume=resume, textbook_path=textbook_path, vlm_extraction=vlm_extraction, only_chapters=only_chapters)
 
     # Run the workflow
     output_dir = f"./exp/{exp_name}/"
@@ -217,6 +217,18 @@ def main():
     )
 
     parser.add_argument(
+        "--only-chapters",
+        type=str,
+        default=None,
+        metavar="N[,N...]",
+        help="Generate only these 1-based chapter numbers (e.g. \"2\" or "
+             "\"2,5\"); all other chapters are skipped. Useful for "
+             "regenerating a single chapter after feedback. When omitted "
+             "(the default), every chapter is generated."
+    )
+
+
+    parser.add_argument(
         "--use-textbook",
         dest="textbook_path",
         type=str,
@@ -322,6 +334,9 @@ def main():
             seed=args.seed,
             temperature=args.temperature,
             resume=args.resume,
+            only_chapters=(
+                {int(n) for n in args.only_chapters.split(",") if n.strip()}
+                if args.only_chapters else None),
             textbook_path=args.textbook_path,
             vlm_extraction=args.vlm_extraction,
         )
