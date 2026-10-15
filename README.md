@@ -477,6 +477,14 @@ Options:
                            markdown file, or a directory of either). When
                            omitted, generation runs identically to a vanilla
                            run — no grounding is applied.
+  --only-chapters N[,N]    Generate only these 1-based chapters (e.g. "2,5");
+                           every other chapter is skipped. Pair with --resume
+                           to redo one chapter after feedback.
+  --no-strict-verification Grounded runs only: judge claims against the
+                           writer's excerpts (capped, cheaper) instead of the
+                           complete bound source with second-chance passes.
+  --verifier-model MODEL   Grounded runs only: model for the content-fidelity
+                           verifier (default: the verifier's own default).
   --optimize STORAGE_ID    Optimize mode: provide storage_id of uploaded PDFs
   --requirements TEXT      User requirements for optimization (with --optimize)
   --chapter NAME           Specific chapter to optimize (with --optimize)
@@ -586,9 +594,9 @@ Embeddings are cached on disk after the first ingest (one-time per textbook). Pe
 
 **How the grounding works under the hood:**
 - The textbook is ingested (`pymupdf4llm`) into a chapter → section → paragraph IR; equation-shaped image crops are converted to native LaTeX by a focused VLM pass (cached). Paragraphs are chunked (~512 tokens) and indexed for BM25 + dense (`text-embedding-3-large`) retrieval.
-- Each chapter is decomposed into subtopics by the LLM; each subtopic is HyDE-expanded into a hypothetical textbook paragraph and used as a retrieval query. Per-section rankings across queries are fused via Reciprocal Rank Fusion (RRF, k=60), and a **book-relative gate** binds each chapter to its top sections — or **abstains** (writes ungrounded) when nothing scores well, rather than fabricate against weak retrieval.
+- Each chapter is decomposed into subtopics by the LLM; each subtopic is HyDE-expanded into a hypothetical textbook paragraph and used as a retrieval query. Per-section rankings across queries are fused via Reciprocal Rank Fusion (RRF, k=60), and a **book-relative gate** binds each chapter to its top sections. When nothing scores above the floor it still binds the best-scoring sections and records the low confidence in the contract rationale — a chapter left unbound would be written with no evidence at all.
 - The writer injects a per-slide block of retrieved evidence with mandatory grounding rules (teach in your own words, abstain if unsupported, preserve worked examples / math notation). Deterministic post-passes handle figure placement, textbook captions, navigation frames, and LaTeX cleanup.
-- After each chapter, an advisory content-fidelity verifier checks the generated claims against the writer's evidence and logs `content_verification.json` (claims supported / unsupported) — log-only, it never edits the deck. This feeds the Grounding Fidelity metric in evaluation.
+- After each chapter, an advisory content-fidelity verifier splits the deck into sentence-level claims (titles and headings are not claims) and judges every one against the complete text of the chapter's bound sections. Judging is quote-anchored: a "supported" verdict only counts if it carries a verbatim evidence quote that is checked mechanically; loosely quoted passes and first-pass flags each get one focused re-judge. The result is logged to `content_verification.json` (supported claims with their quotes, flagged claims with reasons) — log-only, it never edits the deck. `--no-strict-verification` falls back to the cheaper capped check against the writer's excerpts. This feeds the Grounding Fidelity metric in evaluation.
 
 ### Automatic Evaluation
 
