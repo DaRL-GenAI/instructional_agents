@@ -6,3 +6,5 @@ include .env.example
 recursive-include catalog *.json *.tex
 recursive-include frontend *.html *.js *.css
 recursive-include docs *.md
+recursive-include assets/slide_gen *
+global-exclude *.py[cod]

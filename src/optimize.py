@@ -16,6 +16,7 @@ from datetime import datetime
 from src.agents import Agent, Deliberation, LLM
 from src.slides import SlideUtils
 from src.slide_knowledge_base import SlideKnowledgeBase
+from src.slide_refiner import SlideRefiner
 
 
 class OptimizeSlidesDeliberation:
@@ -65,6 +66,7 @@ class OptimizeSlidesDeliberation:
         chapter_slides: List[Dict[str, Any]],
         user_requirements: str,
         user_feedback: Optional[Dict[str, Any]] = None,
+        mode: str = "regenerate",
     ) -> Dict[str, Any]:
         """
         Run the optimization deliberation for a chapter.
@@ -74,6 +76,12 @@ class OptimizeSlidesDeliberation:
                 (each has: title, content, slide_number, etc.)
             user_requirements: User's requirements for improvement
             user_feedback: Optional user feedback dict (e.g. {"slides": "...", "overall": "..."})
+            mode: Improvement strategy:
+                - "regenerate" (default): per-slide multi-agent deliberation that
+                  rewrites every slide from scratch.
+                - "refine": localized, frame-level rewrite via SlideRefiner. Builds a
+                  baseline deck from the existing slides, then surgically edits only the
+                  frames most relevant to the feedback, leaving the rest untouched.
 
         Returns:
             Dict with success status, file paths, and statistics
@@ -81,8 +89,12 @@ class OptimizeSlidesDeliberation:
         if user_feedback is None:
             user_feedback = {"slides": "", "overall": ""}
 
+        if mode not in ("regenerate", "refine"):
+            raise ValueError(f"Unknown optimize mode: {mode!r} (expected 'regenerate' or 'refine')")
+
         print(f"\n{'='*60}")
         print(f"Starting Optimize Deliberation: {self.name}")
+        print(f"Mode: {mode}")
         print(f"{'='*60}\n")
         print(f"Slides to optimize: {len(chapter_slides)}")
         print(f"User requirements: {user_requirements[:200]}...")
@@ -107,43 +119,54 @@ class OptimizeSlidesDeliberation:
             f.write(f"# Content Analysis\n\n{analysis_result}")
         print(f"Analysis saved to: {analysis_path}")
 
-        # ── Phase 2: Per-slide Enhancement Deliberation ─────────────
-        print(f"\n{'#'*50}")
-        print(f"Phase 2: Slide Enhancement & LaTeX Generation")
-        print(f"{'#'*50}\n")
-
-        # Get LaTeX template
+        # Get LaTeX template (shared by both modes)
         latex_template = SlideUtils.get_latex_template(catalog=False)
         latex_prefix, latex_suffix = SlideUtils.parse_latex_template(latex_template)
 
-        enhanced_frames = []
-        enhanced_content_list = []
+        # ── Phase 2: Improve slides (mode-dependent) ────────────────
+        if mode == "refine":
+            print(f"\n{'#'*50}")
+            print(f"Phase 2: Localized Frame-level Refinement")
+            print(f"{'#'*50}\n")
 
-        for idx, slide in enumerate(chapter_slides):
-            slide_title = slide.get("title", f"Slide {idx + 1}")
-            print(f"\n{'-'*50}")
-            print(f"Enhancing Slide {idx + 1}/{len(chapter_slides)}: {slide_title}")
-            print(f"{'-'*50}\n")
-
-            # Search knowledge base for related content
-            relevant_content = self.knowledge_base.search(slide_title, top_k=3)
-
-            enhanced, frames, enh_time, enh_tokens = self._run_enhancement_deliberation(
-                slide, idx, analysis_result, user_requirements, user_feedback, relevant_content
+            full_latex, enhanced_frames, enhanced_content_list, refine_info = self._refine_slides(
+                chapter_slides, analysis_result, user_requirements, user_feedback,
+                latex_prefix, latex_suffix,
             )
-            total_time += enh_time
-            total_tokens += enh_tokens
+        else:
+            print(f"\n{'#'*50}")
+            print(f"Phase 2: Slide Enhancement & LaTeX Generation")
+            print(f"{'#'*50}\n")
 
-            enhanced_content_list.append(enhanced)
-            enhanced_frames.extend(frames)
+            refine_info = None
+            enhanced_frames = []
+            enhanced_content_list = []
 
-        # ── Phase 3: Compile and Save ───────────────────────────────
+            for idx, slide in enumerate(chapter_slides):
+                slide_title = slide.get("title", f"Slide {idx + 1}")
+                print(f"\n{'-'*50}")
+                print(f"Enhancing Slide {idx + 1}/{len(chapter_slides)}: {slide_title}")
+                print(f"{'-'*50}\n")
+
+                # Search knowledge base for related content
+                relevant_content = self.knowledge_base.search(slide_title, top_k=3)
+
+                enhanced, frames, enh_time, enh_tokens = self._run_enhancement_deliberation(
+                    slide, idx, analysis_result, user_requirements, user_feedback, relevant_content
+                )
+                total_time += enh_time
+                total_tokens += enh_tokens
+
+                enhanced_content_list.append(enhanced)
+                enhanced_frames.extend(frames)
+
+            # Compile full LaTeX document from the regenerated frames
+            full_latex = SlideUtils.compile_latex_document(latex_prefix, enhanced_frames, latex_suffix)
+
+        # ── Phase 3: Save ───────────────────────────────────────────
         print(f"\n{'#'*50}")
         print(f"Phase 3: Compiling Results")
         print(f"{'#'*50}\n")
-
-        # Compile full LaTeX document
-        full_latex = SlideUtils.compile_latex_document(latex_prefix, enhanced_frames, latex_suffix)
 
         # Save LaTeX file
         latex_file = os.path.join(self.output_dir, "enhanced_slides.tex")
@@ -155,8 +178,10 @@ class OptimizeSlidesDeliberation:
         with open(content_file, "w", encoding="utf-8") as f:
             json.dump({
                 "enhanced_at": datetime.now().isoformat(),
+                "mode": mode,
                 "original_slides_count": len(chapter_slides),
                 "enhanced_slides": enhanced_content_list,
+                "refine_info": refine_info,
                 "user_requirements": user_requirements,
             }, f, indent=2, ensure_ascii=False)
 
@@ -164,6 +189,7 @@ class OptimizeSlidesDeliberation:
         stats_file = os.path.join(self.output_dir, f"statistics_{self.id}.json")
         with open(stats_file, "w", encoding="utf-8") as f:
             json.dump({
+                "mode": mode,
                 "elapsed_time": total_time,
                 "token_usage": total_tokens,
                 "total_slides": len(chapter_slides),
@@ -178,14 +204,159 @@ class OptimizeSlidesDeliberation:
 
         return {
             "success": True,
+            "mode": mode,
             "latex_file": latex_file,
             "content_file": content_file,
             "analysis_file": analysis_path,
             "total_slides": len(chapter_slides),
             "total_frames": len(enhanced_frames),
+            "refine_info": refine_info,
             "elapsed_time": total_time,
             "token_usage": total_tokens,
         }
+
+    # Maximum localized-refine repair attempts per chapter deck.
+    REFINE_MAX_RETRIES = 2
+
+    def _refine_slides(
+        self,
+        chapter_slides: List[Dict[str, Any]],
+        analysis_result: str,
+        user_requirements: str,
+        user_feedback: Dict[str, Any],
+        latex_prefix: str,
+        latex_suffix: str,
+    ) -> tuple:
+        """
+        Localized refinement path (mode="refine").
+
+        Builds a baseline LaTeX deck from the existing slides, then uses SlideRefiner
+        to locate only the frames relevant to the feedback and rewrite just their
+        bodies, leaving every other frame byte-identical.
+
+        Returns:
+            (full_latex, frames, content_list, refine_info)
+        """
+        # 1. Build a clean, escaped baseline deck from the existing slides.
+        baseline_frames = [
+            self._build_baseline_frame(slide, idx)
+            for idx, slide in enumerate(chapter_slides)
+        ]
+        baseline_latex = SlideUtils.compile_latex_document(
+            latex_prefix, baseline_frames, latex_suffix
+        )
+
+        # 2. Assemble the feedback string the refiner will act on.
+        feedback_text = self._build_refine_feedback(
+            analysis_result, user_requirements, user_feedback
+        )
+
+        # 3. Surgical, frame-level refinement with deterministic validation + retries.
+        refiner = SlideRefiner(self.llm)
+        result = refiner.refine_slides(
+            content=baseline_latex,
+            feedback_text=feedback_text,
+            max_retries=self.REFINE_MAX_RETRIES,
+        )
+
+        full_latex = result["refined_content"]
+        frames = SlideUtils.extract_latex_frames(full_latex)
+
+        edited_indexes = {f["index"] for f in result.get("edited_frames", [])}
+        print(
+            f"Refine complete: status={result['slide_validation_status']}, "
+            f"targeted={result.get('target_indexes')}, "
+            f"edited={sorted(edited_indexes)}, retries={result.get('retries_used')}"
+        )
+        if result["slide_validation_status"] != "PASS":
+            print("Refine validation did not fully pass:")
+            for err in result.get("slide_validation_errors", []):
+                print(f"  - {err}")
+
+        content_list = [
+            {
+                "index": idx,
+                "title": slide.get("title", f"Slide {idx + 1}"),
+                "edited": idx in edited_indexes,
+            }
+            for idx, slide in enumerate(chapter_slides)
+        ]
+
+        refine_info = {
+            "validation_status": result["slide_validation_status"],
+            "validation_errors": result.get("slide_validation_errors", []),
+            "target_indexes": result.get("target_indexes", []),
+            "edited_frames": result.get("edited_frames", []),
+            "retries_used": result.get("retries_used"),
+            "locator_response": result.get("locator_response"),
+        }
+
+        return full_latex, frames, content_list, refine_info
+
+    def _build_baseline_frame(self, slide: Dict[str, Any], idx: int) -> str:
+        """Build a single valid Beamer frame from an existing slide dict."""
+        title = slide.get("title", f"Slide {idx + 1}")
+        content = slide.get("content", slide.get("text", "")) or ""
+
+        title_tex = self._escape_latex(title)
+
+        # Turn the slide content into a small, escaped itemize body.
+        lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+        lines = lines[:8]  # keep frames presentation-sized
+        if lines:
+            items = "\n".join(
+                f"        \\item {self._escape_latex(ln[:300])}" for ln in lines
+            )
+            body = f"    \\begin{{itemize}}\n{items}\n    \\end{{itemize}}"
+        else:
+            body = f"    {self._escape_latex(content[:300]) or '~'}"
+
+        return (
+            f"\\begin{{frame}}[fragile]\n"
+            f"    \\frametitle{{{title_tex}}}\n"
+            f"{body}\n"
+            f"\\end{{frame}}"
+        )
+
+    @staticmethod
+    def _escape_latex(text: str) -> str:
+        """Escape LaTeX special characters so baseline frames compile cleanly."""
+        if not text:
+            return ""
+        # Stash backslashes behind a sentinel so the braces in their replacement
+        # (\textbackslash{}) don't get re-escaped by the {}-escaping below.
+        sentinel = "\x00BSLASH\x00"
+        text = text.replace("\\", sentinel)
+        for ch, esc in (
+            ("&", r"\&"), ("%", r"\%"), ("$", r"\$"), ("#", r"\#"),
+            ("_", r"\_"), ("{", r"\{"), ("}", r"\}"),
+        ):
+            text = text.replace(ch, esc)
+        # These insert braces too, but only after {}-escaping has run.
+        text = text.replace("~", r"\textasciitilde{}")
+        text = text.replace("^", r"\textasciicircum{}")
+        text = text.replace(sentinel, r"\textbackslash{}")
+        return text
+
+    def _build_refine_feedback(
+        self,
+        analysis_result: str,
+        user_requirements: str,
+        user_feedback: Dict[str, Any],
+    ) -> str:
+        """Combine requirements, analysis, and human feedback into one feedback string."""
+        parts = []
+        if user_requirements:
+            parts.append(f"USER REQUIREMENTS:\n{user_requirements}")
+        slides_fb = (user_feedback or {}).get("slides", "")
+        overall_fb = (user_feedback or {}).get("overall", "")
+        if slides_fb:
+            parts.append(f"USER FEEDBACK ON SLIDES:\n{slides_fb}")
+        if overall_fb:
+            parts.append(f"OVERALL USER FEEDBACK:\n{overall_fb}")
+        if analysis_result:
+            parts.append(f"ANALYSIS & RECOMMENDATIONS:\n{analysis_result[:3000]}")
+        return "\n\n".join(parts)
 
     def _run_analysis_deliberation(
         self,

@@ -34,7 +34,11 @@ Thumbs.db
 exp/
 eval/
 logs/
-assets/
+assets/*
+!assets/slide_gen/
+!assets/slide_gen/**
+assets/slide_gen/**/__pycache__/
+assets/slide_gen/**/*.py[cod]
 .cache/
 
 # Uploaded catalogs (user-specific)

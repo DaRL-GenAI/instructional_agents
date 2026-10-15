@@ -22,10 +22,12 @@ numpy>=1.24.0
 
 # PPTX generation (pptxgenjs via Node.js) + content QA
 markitdown[pptx]>=0.1.0
+pylatexenc>=2.10
+playwright>=1.61.0
+python-pptx>=1.0.2
 
 # Note: pdflatex is installed via system package manager in Docker
 #
 # Node.js dependencies (install via npm, not pip):
 #   npm install -g pptxgenjs              # Required for LaTeX-to-PPTX conversion
 #   npm install -g react-icons react react-dom sharp  # Optional: adds icons to slides
-

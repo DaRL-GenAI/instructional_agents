@@ -10,7 +10,11 @@ from src.agents import (
 )
 
 from src.slides import SlidesDeliberation
-from src.compile import LaTeXCompiler
+from src.html_slides import ensure_course_slide_style, finalize_chapter
+from src.html_slides_code import CodeImageConfig, load_code_image_config
+from src.html_slides_img import ImageGenerationConfig, load_image_generation_config
+from src.html_slides_style import PRESENTATION_DESIGN_FILENAME
+from src.html_slides_style import PRESENTATION_DESIGN_NAME
 
 class SyllabusProcessor(Agent):
     """
@@ -99,7 +103,15 @@ class ADDIERunner:
     Runner class for the ADDIE workflow
     Handles command-line interaction and execution logic
     """
-    def __init__(self, addie_instance, output_dir="output", resume: bool = False):
+    def __init__(
+        self,
+        addie_instance,
+        output_dir="output",
+        resume: bool = False,
+        reselect_presentation_design: bool = False,
+        image_generation_config: ImageGenerationConfig | None = None,
+        code_image_config: CodeImageConfig | None = None,
+    ):
         """
         Initialize the runner with an ADDIE instance
 
@@ -108,17 +120,37 @@ class ADDIERunner:
             output_dir: Directory to read/write deliberation outputs.
             resume: If True, skip deliberations whose outputs are already
                 present on disk and pick up chapter work mid-stream.
+            reselect_presentation_design: Explicitly replace the frozen
+                course-wide presentation decision.
         """
         self.addie = addie_instance
         self.course_name = None
         self.output_dir = output_dir
         self.resume = resume
+        self.reselect_presentation_design = reselect_presentation_design
+        if image_generation_config is None:
+            try:
+                image_generation_config = load_image_generation_config(output_dir)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid persisted image-generation configuration: {exc}"
+                ) from exc
+        self.image_generation_config = image_generation_config.validated()
+        if code_image_config is None:
+            try:
+                code_image_config = load_code_image_config(output_dir)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid persisted code-image configuration: {exc}"
+                ) from exc
+        self.code_image_config = code_image_config.validated()
         self.results = []
         self.chapters = []
 
         # Store these for retry logic with slides
         self.latex_source = None
         self.slides_script = None
+        self.course_slide_style = None
     
     def setup(self):
         """Setup the runner by getting user input and creating output directory"""
@@ -130,18 +162,19 @@ class ADDIERunner:
         self.results = [self.course_name]
     
     def run_foundation_deliberations(self):
-        """Run the first 6 foundational deliberations"""
+        """Run all seven foundational deliberations."""
         print(f"\n{'#'*60}\nStarting ADDIE Workflow: Foundation Phase\n{'#'*60}\n")
         
-        # Get the first 6 deliberations
+        # The six ADDIE documents are followed by presentation design.
         foundation_deliberations = self.addie.deliberations
+        deliberation_count = len(foundation_deliberations) + 1
         
         # Run each deliberation in sequence
         i = 0
         statistics = []
         while i < len(foundation_deliberations):
             deliberation = foundation_deliberations[i]
-            print(f"\n{'#'*50}\nDeliberation {i+1}/{len(foundation_deliberations)}: {deliberation.name}\n{'#'*50}\n")
+            print(f"\n{'#'*50}\nDeliberation {i+1}/{deliberation_count}: {deliberation.name}\n{'#'*50}\n")
 
             # Resume: if a result file for this deliberation already exists,
             # load it into self.results and skip the LLM call.
@@ -210,6 +243,78 @@ class ADDIERunner:
 
         # After running the syllabus design deliberation, process the syllabus
         self._process_syllabus()
+        print(
+            f"\n{'#'*50}\nDeliberation {deliberation_count}/{deliberation_count}: "
+            f"{PRESENTATION_DESIGN_NAME}\n{'#'*50}\n"
+        )
+        self.course_slide_style = ensure_course_slide_style(
+            self.addie,
+            self.output_dir,
+            self.results,
+            self.chapters,
+            reselect=self.reselect_presentation_design,
+            image_generation_requested=(
+                self.image_generation_config.enabled
+                or self.image_generation_config.replace_images
+            ),
+            ai_decides_image_count=(
+                self.image_generation_config.ai_decides_image_count
+            ),
+        )
+        result_path = os.path.join(self.output_dir, PRESENTATION_DESIGN_FILENAME)
+        with open(result_path, "r", encoding="utf-8") as result_file:
+            presentation_result = result_file.read()
+        header = (
+            f"{PRESENTATION_DESIGN_NAME}\n"
+            f"{'=' * len(PRESENTATION_DESIGN_NAME)}\n\n"
+        )
+        if presentation_result.startswith(header):
+            presentation_result = presentation_result[len(header):]
+        result_index = len(foundation_deliberations) + 1
+        if len(self.results) <= result_index:
+            self.results.append(presentation_result)
+        else:
+            self.results[result_index] = presentation_result
+        style_stats_path = os.path.join(
+            self.output_dir, "statistics_slide_style.json"
+        )
+        foundation_stats_path = os.path.join(self.output_dir, "statistics.json")
+        if os.path.exists(style_stats_path):
+            try:
+                with open(style_stats_path, "r", encoding="utf-8") as stats_file:
+                    style_stats = json.load(stats_file)
+                existing_stats = []
+                if os.path.exists(foundation_stats_path):
+                    with open(
+                        foundation_stats_path, "r", encoding="utf-8"
+                    ) as stats_file:
+                        loaded_stats = json.load(stats_file)
+                    if isinstance(loaded_stats, list):
+                        existing_stats = loaded_stats
+                existing_stats = [
+                    entry
+                    for entry in existing_stats
+                    if not (
+                        isinstance(entry, dict)
+                        and entry.get("deliberation") == "presentation_design"
+                    )
+                ]
+                existing_stats.append(
+                    {
+                        "deliberation": "presentation_design",
+                        "elapsed_time": style_stats.get("elapsed_time", 0),
+                        "token_usage": style_stats.get("token_usage", 0),
+                    }
+                )
+                with open(
+                    foundation_stats_path, "w", encoding="utf-8"
+                ) as stats_file:
+                    json.dump(existing_stats, stats_file, indent=2)
+            except (OSError, json.JSONDecodeError, AttributeError):
+                print(
+                    "Warning: could not append presentation-design statistics "
+                    "to statistics.json"
+                )
     
     def _process_syllabus(self):
         """Process the syllabus to extract chapters"""
@@ -284,31 +389,30 @@ class ADDIERunner:
             chapter_dir = os.path.join(self.output_dir, f"chapter_{chapter_idx+1}")
             os.makedirs(chapter_dir, exist_ok=True)
 
-            # Resume: skip this chapter entirely if all three final outputs
-            # already exist and are non-empty. Partial chapters (e.g. empty
-            # dir, or missing one of the three) fall through — the inner
-            # SlidesDeliberation will pick up from its own checkpoint.
-            if self.resume:
-                required = ["slides.tex", "script.md", "assessment.md"]
-                if all(
-                    os.path.exists(os.path.join(chapter_dir, f))
-                    and os.path.getsize(os.path.join(chapter_dir, f)) > 0
-                    for f in required
-                ):
-                    print(f"[resume] Skipped chapter_{chapter_idx+1} — all outputs present")
-                    continue
-
-            # Run SlidesDeliberation for this chapter with retry support
-            self._run_slides_generation_with_retry(chapter, chapter_idx, chapter_dir)
+            required = ["slides.tex", "script.md", "assessment.md"]
+            sources_complete = all(
+                os.path.exists(os.path.join(chapter_dir, filename))
+                and os.path.getsize(os.path.join(chapter_dir, filename)) > 0
+                for filename in required
+            )
+            if self.resume and sources_complete:
+                print(
+                    f"[resume] Skipped chapter_{chapter_idx+1} source generation — "
+                    "all source outputs are present"
+                )
+            else:
+                self._run_slides_generation_with_retry(
+                    chapter, chapter_idx, chapter_dir
+                )
+            self.finalize_chapter(chapter_dir)
 
         # All chapters finished successfully — sweep any leftover checkpoint
         # files (belt-and-suspenders; SlidesDeliberation already removes its
         # own on successful completion).
         self._cleanup_checkpoints()
 
-        # After all chapters, compile the LaTeX source and slides script
-        compiler = LaTeXCompiler(self.output_dir)
-        compiler.compile_all()
+        # Each chapter is compiled and exported immediately after its sources
+        # are ready, so failures preserve prior chapters and resume precisely.
 
     def _cleanup_checkpoints(self):
         """Remove any leftover _checkpoint.json files under output_dir.
@@ -411,6 +515,89 @@ class ADDIERunner:
                 satisfaction = input("Your choice (1 or 2): ").strip()
                 if satisfaction == "1":
                     retry_loop = False
+
+    def finalize_chapter(self, chapter_dir):
+        """Compile and create all deterministic frontend artifacts for one chapter."""
+        match = re.search(r"chapter_(\d+)$", os.path.basename(str(chapter_dir)))
+        chapter = None
+        if match:
+            index = int(match.group(1)) - 1
+            if 0 <= index < len(self.chapters):
+                chapter = self.chapters[index]
+        result = finalize_chapter(
+            self.output_dir,
+            chapter_dir,
+            llm=self.addie.llm,
+            chapter=chapter,
+            image_config=self.image_generation_config,
+            code_image_config=self.code_image_config,
+        )
+        action = "already current" if result.skipped else "generated"
+        print(
+            f"Frontend slides {action}: {result.html_path.name}, "
+            f"{result.html_pdf_path.name}, {result.html_pptx_path.name}"
+        )
+        if match:
+            self._append_image_statistics_to_course(
+                chapter_dir, int(match.group(1))
+            )
+        return result
+
+    def _append_image_statistics_to_course(
+        self, chapter_dir, chapter_number: int
+    ) -> None:
+        chapter_stats_path = os.path.join(
+            str(chapter_dir), "statistics_slide_images.json"
+        )
+        course_stats_path = os.path.join(self.output_dir, "statistics.json")
+        try:
+            with open(chapter_stats_path, "r", encoding="utf-8") as handle:
+                chapter_stats = json.load(handle)
+            runs = chapter_stats.get("runs", [])
+            if not isinstance(runs, list) or not runs:
+                return
+            latest = runs[-1]
+            if not isinstance(latest, dict):
+                return
+            course_stats = []
+            if os.path.isfile(course_stats_path):
+                with open(course_stats_path, "r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                if isinstance(loaded, list):
+                    course_stats = loaded
+            course_stats.append(
+                {
+                    "deliberation": f"slide_images_chapter_{chapter_number}",
+                    "timestamp": latest.get("timestamp"),
+                    "elapsed_time": latest.get("elapsed_time", 0),
+                    "token_usage": latest.get("token_usage", 0),
+                    "image_count": latest.get("generated", 0),
+                    "current_image_count": latest.get(
+                        "current_image_count", 0
+                    ),
+                    "estimated_cost_usd": latest.get(
+                        "estimated_cost_usd", 0
+                    ),
+                    "reused_from_cache": latest.get(
+                        "reused_from_cache", False
+                    ),
+                    "replaced": latest.get("replaced", False),
+                    "committed": latest.get("committed", False),
+                    "request_fingerprint": latest.get(
+                        "request_fingerprint", ""
+                    ),
+                }
+            )
+            temporary = course_stats_path + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(course_stats, handle, indent=2)
+                handle.write("\n")
+            os.replace(temporary, course_stats_path)
+        except (OSError, json.JSONDecodeError, AttributeError):
+            print(
+                "Warning: could not append image-generation statistics "
+                f"for chapter {chapter_number} to statistics.json"
+            )
     
     def _create_slides_deliberation(self, chapter, chapter_dir_name):
         """
@@ -455,6 +642,11 @@ class ADDIERunner:
             catalog=self.addie.catalog,
             catalog_dict=self.addie.catalog_dict,
             resume=self.resume,
+            slide_style_guidance=(
+                self.course_slide_style.ta_guidance
+                if self.course_slide_style is not None
+                else ""
+            ),
         )
     
     def _save_result(self, deliberation, result):
@@ -579,7 +771,7 @@ class ADDIERunner:
             print(f"Error running ADDIE workflow: {str(e)}")
             import traceback
             traceback.print_exc()
-            return None
+            raise
         
 
 class ADDIE:
@@ -621,10 +813,59 @@ class ADDIE:
             "learner_analysis": "",
             "syllabus_design": "",
             "assessment_planning": "",
+            "presentation_style_preferences": {},
             "slides_length": 30,
         }
         
         if self.catalog:
+            if not isinstance(data_catalog, dict):
+                raise ValueError("Catalog data must be a JSON object.")
+
+            style_preferences = data_catalog.get(
+                "presentation_style_preferences", {}
+            )
+            if style_preferences is None:
+                style_preferences = {}
+            if not isinstance(style_preferences, dict):
+                raise ValueError(
+                    "Catalog section 'presentation_style_preferences' must be a JSON object."
+                )
+
+            allowed_style_preference_fields = {
+                "preferred_visual_direction",
+                "color_preferences",
+                "typography_preferences",
+                "layout_and_density_preferences",
+                "accessibility_requirements",
+                "styles_to_avoid",
+                "additional_notes",
+                "image_generation_preferences",
+            }
+            unknown_fields = sorted(
+                set(style_preferences) - allowed_style_preference_fields
+            )
+            if unknown_fields:
+                raise ValueError(
+                    "Catalog section 'presentation_style_preferences' contains "
+                    f"unsupported fields: {', '.join(unknown_fields)}."
+                )
+            invalid_fields = sorted(
+                key
+                for key, value in style_preferences.items()
+                if value is not None and not isinstance(value, str)
+            )
+            if invalid_fields:
+                raise ValueError(
+                    "Catalog section 'presentation_style_preferences' requires "
+                    "text values for populated fields: "
+                    f"{', '.join(invalid_fields)}."
+                )
+            style_preferences = {
+                key: value
+                for key, value in style_preferences.items()
+                if value is not None
+            }
+
             # Debugging line: Check available keys in data_catalog before accessing them.
             # Added to troubleshoot potential KeyError when loading course_structure from JSON.
             print("Debug: data_catalog keys =", data_catalog.keys())
@@ -634,6 +875,7 @@ class ADDIE:
                 "learner_analysis": [data_catalog['student_profile'], data_catalog['prior_feedback']],
                 "syllabus_design": [data_catalog['course_structure'], data_catalog['institutional_requirements'],  data_catalog['instructor_preferences']],
                 "assessment_planning": [data_catalog['assessment_design'], data_catalog['instructor_preferences']],
+                "presentation_style_preferences": style_preferences,
                 "slides_length": int(data_catalog['teaching_constraints']['max_slide_count'])
             }
     
@@ -937,7 +1179,13 @@ class ADDIE:
         )
 
         
-    def run(self, output_dir: str = "./outputs/") -> List[str]:
+    def run(
+        self,
+        output_dir: str = "./outputs/",
+        reselect_presentation_design: bool = False,
+        image_generation_config: ImageGenerationConfig | None = None,
+        code_image_config: CodeImageConfig | None = None,
+    ) -> List[str]:
         """Run the ADDIE workflow using the ADDIERunner
         
         Args:
@@ -946,5 +1194,12 @@ class ADDIE:
         Returns:
             List of results from each deliberation
         """
-        runner = ADDIERunner(self, output_dir=output_dir, resume=self.resume)
+        runner = ADDIERunner(
+            self,
+            output_dir=output_dir,
+            resume=self.resume,
+            reselect_presentation_design=reselect_presentation_design,
+            image_generation_config=image_generation_config,
+            code_image_config=code_image_config,
+        )
         return runner.run()

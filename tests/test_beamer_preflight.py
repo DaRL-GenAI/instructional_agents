@@ -1,0 +1,701 @@
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from src.beamer_preflight import (
+    BeamerPreflightResult,
+    normalize_beamer_file,
+    normalize_beamer_source,
+    repair_messages,
+)
+
+
+def _document(body: str, preamble: str = "") -> str:
+    return (
+        "\\documentclass{beamer}\n"
+        "\\usepackage{xcolor}\n"
+        f"{preamble}"
+        "\\begin{document}\n"
+        f"{body}\n"
+        "\\end{document}\n"
+    )
+
+
+def test_flattens_only_list_wrappers_beyond_three_levels() -> None:
+    source = r"""
+\begin{itemize}
+  \item Level 1
+  \begin{enumerate}
+    \item Level 2
+    \begin{itemize}
+      \item Level 3
+      \begin{itemize}[<+->]
+        \item Level 4 content
+      \end{itemize}
+    \end{itemize}
+  \end{enumerate}
+\end{itemize}
+"""
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.removed_list_wrapper_pairs == 1
+    assert result.original_max_list_depth == 4
+    assert result.normalized_max_list_depth == 3
+    assert "Level 4 content" in result.source
+    assert result.source.count(r"\begin{itemize}") == 2
+    assert "[<+->]" not in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_preserves_list_examples_in_comments_and_listings() -> None:
+    source = r"""
+% \begin{itemize}
+\begin{lstlisting}
+\begin{itemize}
+\begin{itemize}
+\begin{itemize}
+\begin{itemize}
+\end{itemize}
+\end{itemize}
+\end{itemize}
+\end{itemize}
+\end{lstlisting}
+"""
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+def test_malformed_list_structure_is_not_rewritten() -> None:
+    source = r"\begin{itemize}\begin{enumerate}\end{itemize}\end{enumerate}"
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+def test_closes_indented_child_list_before_outdented_sibling_item() -> None:
+    source = r"""
+\begin{enumerate}
+    \item Linear Regression
+        \begin{itemize}
+            \item Strengths
+            \begin{itemize}
+                \item Easy to interpret
+            \end{itemize}
+    \item Decision Trees
+        \begin{itemize}
+            \item Handles varied data
+        \end{itemize}
+\end{enumerate}
+"""
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.inserted_list_closures == 1
+    assert result.normalized_max_list_depth == 3
+    assert (
+        "        \\end{itemize}\n"
+        "    \\item Decision Trees"
+    ) in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_closes_every_open_list_before_frame_end() -> None:
+    source = _document(
+        r"""
+\begin{frame}{Challenges}
+\begin{itemize}
+  \item Challenges
+  \begin{itemize}
+    \item Multicollinearity
+  \end{itemize}
+\end{frame}
+"""
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.inserted_list_closures == 1
+    assert (
+        "\\end{itemize}\n"
+        "\\end{frame}"
+    ) in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_protects_item_leading_comparison_without_changing_overlays() -> None:
+    source = _document(
+        r"""
+\begin{frame}{AUC}
+\begin{itemize}
+  \item < 0.5: Worse than random
+  \item<2-> 0.5: Random
+  % \item < commented comparison
+\begin{verbatim}
+\item < verbatim comparison
+\end{verbatim}
+\end{itemize}
+\end{frame}
+"""
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.repaired_item_comparisons == 1
+    assert r"\item \(<\) 0.5: Worse than random" in result.source
+    assert r"\item<2-> 0.5: Random" in result.source
+    assert r"% \item < commented comparison" in result.source
+    assert r"\item < verbatim comparison" in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_wraps_math_only_big_o_notation_without_touching_existing_math() -> None:
+    source = _document(
+        r"""
+\begin{frame}[fragile]{Complexity}
+\begin{itemize}
+  \item K-means: O(n \cdot k \cdot i)
+  \item Hierarchical: O(n^2)
+  \item Linear: O(n)
+  \item Existing: \(O(n^3)\), $O(n^4)$
+  % Commented: O(n^5)
+\begin{verbatim}
+O(n^6)
+\end{verbatim}
+\end{itemize}
+\end{frame}
+"""
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.repaired_big_o_expressions == 2
+    assert r"K-means: \(O(n \cdot k \cdot i)\)" in result.source
+    assert r"Hierarchical: \(O(n^2)\)" in result.source
+    assert r"Linear: O(n)" in result.source
+    assert r"Existing: \(O(n^3)\), $O(n^4)$" in result.source
+    assert r"% Commented: O(n^5)" in result.source
+    assert "O(n^6)" in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_wraps_big_o_notation_with_nested_parentheses() -> None:
+    source = _document("The bound is O((n+1)^2), unlike O(n).")
+
+    result = normalize_beamer_source(source)
+
+    assert result.repaired_big_o_expressions == 1
+    assert r"\(O((n+1)^2)\)" in result.source
+    assert "unlike O(n)" in result.source
+
+
+def test_stray_structural_end_does_not_corrupt_a_later_table() -> None:
+    source = _document(
+        "\\end{tabular}\n"
+        "\\begin{tabular}{cc}\n"
+        "A & B \\\\\n"
+        "\\end{tabular}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.escaped_prose_ampersands == 0
+    assert "A & B \\\\" in result.source
+
+
+def test_inline_list_end_does_not_disable_repairs_in_later_frames() -> None:
+    benign = r"""\begin{frame}
+\begin{itemize}
+\item Last point \end{itemize}
+\end{frame}
+"""
+    broken = r"""\begin{frame}
+\begin{itemize}
+  \item Parent
+    \begin{itemize}
+      \item Child
+  \item Sibling
+\end{itemize}
+\end{frame}
+"""
+
+    result = normalize_beamer_source(benign + broken)
+
+    assert result.inserted_list_closures == 1
+    assert "    \\end{itemize}\n  \\item Sibling" in result.source
+
+
+def test_repair_messages_covers_every_repair_counter() -> None:
+    result = BeamerPreflightResult(
+        source="",
+        removed_list_wrapper_pairs=1,
+        original_max_list_depth=4,
+        normalized_max_list_depth=3,
+        injected_color_definitions=("electricblue",),
+        inserted_list_closures=1,
+        repaired_nested_math_environments=1,
+        repaired_equation_commands=1,
+        escaped_prose_ampersands=1,
+        repaired_item_comparisons=1,
+        repaired_big_o_expressions=1,
+    )
+
+    messages = repair_messages(result)
+
+    assert len(messages) == 8
+    assert any("ampersand" in message for message in messages)
+    assert any("big-O" in message for message in messages)
+
+
+def test_normalize_beamer_file_writes_repaired_source_atomically(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "slides.tex"
+    source = (
+        r"\begin{itemize}" * 4
+        + r"\item Keep me"
+        + r"\end{itemize}" * 4
+    )
+    path.write_text(source, encoding="utf-8")
+
+    result = normalize_beamer_file(path)
+
+    assert result.changed
+    assert path.read_text(encoding="utf-8") == result.source
+    assert not path.with_suffix(".tex.preflight.tmp").exists()
+
+
+def test_escapes_prose_ampersands_without_changing_alignment_or_literals() -> None:
+    source = _document(
+        r"""
+\begin{frame}[fragile]{Correlations}
+\begin{itemize}
+  \item Height & Weight is strongly correlated.
+  \item Research \& Development is already escaped.
+\end{itemize}
+\begin{tabular}{cc}
+Height & Weight \\
+1.00 & 0.70
+\end{tabular}
+\url{https://example.test/?left=height&right=weight}
+% Height & Weight in a comment
+\begin{verbatim}
+Height & Weight in verbatim
+\end{verbatim}
+\end{frame}
+"""
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.escaped_prose_ampersands == 1
+    assert r"\item Height \& Weight is strongly correlated." in result.source
+    assert r"\item Research \& Development is already escaped." in result.source
+    assert "Height & Weight \\\\" in result.source
+    assert "1.00 & 0.70" in result.source
+    assert "left=height&right=weight" in result.source
+    assert "% Height & Weight in a comment" in result.source
+    assert "Height & Weight in verbatim" in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_injects_providecolor_for_undefined_named_color() -> None:
+    source = _document(r"\textcolor{electricblue}{\textbf{Ethics}}")
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.injected_color_definitions == ("electricblue",)
+    assert r"\providecolor{electricblue}{HTML}{0047AB}" in result.source
+    definition_index = result.source.index(r"\providecolor{electricblue}")
+    assert definition_index < result.source.index(r"\begin{document}")
+
+
+def test_explicit_color_models_are_not_treated_as_names() -> None:
+    source = _document(
+        r"\textcolor[HTML]{FF0000}{x} \color[rgb]{1,0,0} y"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+def test_defined_colors_are_not_reinjected() -> None:
+    source = _document(
+        r"\textcolor{myblue}{x} \colorlet{halfblue}{myblue!50}"
+        + "\n"
+        + r"\colorbox{halfblue}{y} \textcolor{mystery}{z}",
+        preamble="\\definecolor{myblue}{HTML}{2244AA}\n",
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.injected_color_definitions == ("mystery",)
+
+
+def test_colorlet_source_expression_is_repaired() -> None:
+    source = _document(r"\colorlet{shade}{undefinedname!30!white}")
+
+    result = normalize_beamer_source(source)
+
+    assert result.injected_color_definitions == ("undefinedname",)
+
+
+def test_color_expressions_are_decomposed() -> None:
+    source = _document(r"\colorbox{myaccent!20!white}{x}")
+
+    result = normalize_beamer_source(source)
+
+    assert result.injected_color_definitions == ("myaccent",)
+
+
+def test_setbeamercolor_fg_bg_values_are_repaired() -> None:
+    source = _document(
+        r"x",
+        preamble=r"\setbeamercolor{frametitle}{fg=white, bg=brandnavy}" + "\n",
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.injected_color_definitions == ("brandnavy",)
+
+
+def test_tikz_color_keys_are_repaired_and_none_is_skipped() -> None:
+    source = _document(
+        r"\tikz{\node[fill=deepteal!60, draw=none, text=offivory] {x};}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert set(result.injected_color_definitions) == {"deepteal", "offivory"}
+
+
+def test_known_names_and_garbage_fall_back_deterministically() -> None:
+    source = _document(r"\textcolor{SteelBlue}{x} \textcolor{zorbcolor}{y}")
+
+    result = normalize_beamer_source(source)
+
+    assert r"\providecolor{SteelBlue}{HTML}{4682B4}" in result.source
+    assert r"\providecolor{zorbcolor}{HTML}{4A5568}" in result.source
+
+
+def test_colors_in_comments_and_listings_are_ignored() -> None:
+    source = _document(
+        "% \\textcolor{commentonly}{x}\n"
+        "\\begin{lstlisting}\n"
+        "\\textcolor{listingonly}{x}\n"
+        "\\end{lstlisting}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+def test_color_injection_is_idempotent() -> None:
+    source = _document(r"\textcolor{electricblue}{x}")
+
+    first = normalize_beamer_source(source)
+    second = normalize_beamer_source(first.source)
+
+    assert first.changed
+    assert not second.changed
+    assert second.source == first.source
+
+
+def test_sources_without_document_environment_are_left_unchanged() -> None:
+    source = r"\textcolor{electricblue}{x}"
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+def test_repairs_alignment_environment_nested_in_equation() -> None:
+    source = _document(
+        "\\begin{equation}\n"
+        "\\begin{align*}\n"
+        "x(t) &= f(t) \\\\\n"
+        "y(t) &= g(t)\n"
+        "\\end{align*}\n"
+        "\\end{equation}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.repaired_nested_math_environments == 1
+    assert r"\begin{equation}" in result.source
+    assert r"\begin{aligned}" in result.source
+    assert r"\end{aligned}" in result.source
+    assert r"\begin{align*}" not in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_repairs_supported_nested_display_math_variants() -> None:
+    source = _document(
+        "\\begin{equation*}\\begin{gather}a=b\\end{gather}\\end{equation*}\n"
+        "\\begin{equation}\\begin{alignat}{2}a&=b\\end{alignat}\\end{equation}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.repaired_nested_math_environments == 2
+    assert r"\begin{gathered}a=b\end{gathered}" in result.source
+    assert r"\begin{alignedat}{2}a&=b\end{alignedat}" in result.source
+
+
+def test_nested_math_in_comments_and_listings_is_ignored() -> None:
+    source = _document(
+        "% \\begin{equation}\\begin{align*}x&=1\\end{align*}\\end{equation}\n"
+        "\\begin{lstlisting}\n"
+        "\\begin{equation}\\begin{align*}x&=1\\end{align*}\\end{equation}\n"
+        "\\end{lstlisting}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+def test_malformed_nested_math_structure_is_not_rewritten() -> None:
+    source = _document(
+        r"\begin{equation}\begin{align*}x&=1\end{equation}\end{align*}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+def test_repairs_equation_command_shorthand_with_nested_groups() -> None:
+    source = _document(
+        "\\begin{frame}\n"
+        "\\begin{itemize}\n"
+        "  \\item Population dynamics:\n"
+        "    \\equation{\\frac{dP}{dt} = rP\\left(1 - \\frac{P}{K}\\right)}\n"
+        "  \\item RC circuit analysis\n"
+        "\\end{itemize}\n"
+        "\\end{frame}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert result.changed
+    assert result.repaired_equation_commands == 1
+    assert r"\equation{" not in result.source
+    assert (
+        r"\begin{equation}\frac{dP}{dt} = "
+        r"rP\left(1 - \frac{P}{K}\right)\end{equation}"
+    ) in result.source
+    assert not normalize_beamer_source(result.source).changed
+
+
+def test_equation_command_shorthand_in_comments_and_listings_is_ignored() -> None:
+    source = _document(
+        "% \\equation{x = 1}\n"
+        "\\begin{lstlisting}\n"
+        "\\equation{y = 2}\n"
+        "\\end{lstlisting}"
+    )
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+def test_unbalanced_equation_command_shorthand_is_not_rewritten() -> None:
+    source = _document(r"\equation{\frac{dP}{dt}")
+
+    result = normalize_beamer_source(source)
+
+    assert not result.changed
+    assert result.source == source
+
+
+_PDFLATEX = shutil.which("pdflatex")
+
+
+@pytest.mark.latex
+@pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
+def test_repaired_undefined_color_compiles_with_pdflatex(tmp_path: Path) -> None:
+    source = _document(
+        "\\begin{frame}\n"
+        "\\frametitle{Ethics}\n"
+        "\\textcolor{electricblue}{\\textbf{Introduction to Ethical Considerations}}\n"
+        "\\end{frame}"
+    )
+    tex_path = tmp_path / "slides.tex"
+    tex_path.write_text(normalize_beamer_source(source).source, encoding="utf-8")
+
+    completed = subprocess.run(
+        [_PDFLATEX, "-interaction=nonstopmode", "-halt-on-error", tex_path.name],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    pdf_path = tmp_path / "slides.pdf"
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    assert pdf_path.is_file() and pdf_path.stat().st_size > 0
+
+
+@pytest.mark.latex
+@pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
+def test_repaired_nested_display_math_compiles_with_pdflatex(
+    tmp_path: Path,
+) -> None:
+    source = _document(
+        "\\begin{frame}[fragile]\n"
+        "\\begin{equation}\n"
+        "\\begin{align*}\n"
+        "x(t) &= f(t) \\\\\n"
+        "y(t) &= g(t)\n"
+        "\\end{align*}\n"
+        "\\end{equation}\n"
+        "\\end{frame}"
+    )
+    tex_path = tmp_path / "slides.tex"
+    tex_path.write_text(normalize_beamer_source(source).source, encoding="utf-8")
+
+    completed = subprocess.run(
+        [_PDFLATEX, "-interaction=nonstopmode", "-halt-on-error", tex_path.name],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    pdf_path = tmp_path / "slides.pdf"
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    assert pdf_path.is_file() and pdf_path.stat().st_size > 0
+
+
+@pytest.mark.latex
+@pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
+def test_repaired_equation_command_shorthand_compiles_with_pdflatex(
+    tmp_path: Path,
+) -> None:
+    source = _document(
+        "\\begin{frame}[fragile]\n"
+        "\\begin{itemize}\n"
+        "  \\item Population dynamics:\n"
+        "    \\equation{\\frac{dP}{dt} = rP\\left(1 - \\frac{P}{K}\\right)}\n"
+        "  \\item RC circuit analysis\n"
+        "\\end{itemize}\n"
+        "\\end{frame}"
+    )
+    tex_path = tmp_path / "slides.tex"
+    tex_path.write_text(normalize_beamer_source(source).source, encoding="utf-8")
+
+    completed = subprocess.run(
+        [_PDFLATEX, "-interaction=nonstopmode", "-halt-on-error", tex_path.name],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    pdf_path = tmp_path / "slides.pdf"
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    assert pdf_path.is_file() and pdf_path.stat().st_size > 0
+
+
+@pytest.mark.latex
+@pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
+def test_compiler_retry_recovers_undefined_color_without_touching_source(
+    tmp_path: Path,
+) -> None:
+    from src.compile import LaTeXCompiler
+
+    source = _document(
+        "\\begin{frame}\n"
+        "\\textcolor{electricblue}{x}\n"
+        "\\end{frame}"
+    )
+    tex_path = tmp_path / "slides.tex"
+    tex_path.write_text(source, encoding="utf-8")
+
+    pdf_path = LaTeXCompiler(str(tmp_path)).compile_one(tex_path)
+
+    assert pdf_path.is_file() and pdf_path.stat().st_size > 0
+    assert tex_path.read_text(encoding="utf-8") == source
+
+
+@pytest.mark.latex
+@pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
+def test_compiler_retry_recovers_nested_math_without_touching_source(
+    tmp_path: Path,
+) -> None:
+    from src.compile import LaTeXCompiler
+
+    source = _document(
+        "\\begin{frame}[fragile]\n"
+        "\\begin{equation}\n"
+        "\\begin{align*}\n"
+        "x(t) &= f(t) \\\\\n"
+        "y(t) &= g(t)\n"
+        "\\end{align*}\n"
+        "\\end{equation}\n"
+        "\\end{frame}"
+    )
+    tex_path = tmp_path / "slides.tex"
+    tex_path.write_text(source, encoding="utf-8")
+
+    pdf_path = LaTeXCompiler(str(tmp_path)).compile_one(tex_path)
+
+    assert pdf_path.is_file() and pdf_path.stat().st_size > 0
+    assert tex_path.read_text(encoding="utf-8") == source
+
+
+@pytest.mark.latex
+@pytest.mark.skipif(_PDFLATEX is None, reason="pdflatex is not installed")
+def test_compiler_retry_recovers_missing_list_closure_without_touching_source(
+    tmp_path: Path,
+) -> None:
+    from src.compile import LaTeXCompiler
+
+    source = _document(
+        "\\begin{frame}\n"
+        "\\begin{enumerate}\n"
+        "    \\item Linear Regression\n"
+        "        \\begin{itemize}\n"
+        "            \\item Strengths\n"
+        "            \\begin{itemize}\n"
+        "                \\item Easy to interpret\n"
+        "            \\end{itemize}\n"
+        "    \\item Decision Trees\n"
+        "        \\begin{itemize}\n"
+        "            \\item Handles varied data\n"
+        "        \\end{itemize}\n"
+        "\\end{enumerate}\n"
+        "\\end{frame}"
+    )
+    tex_path = tmp_path / "slides.tex"
+    tex_path.write_text(source, encoding="utf-8")
+
+    pdf_path = LaTeXCompiler(str(tmp_path)).compile_one(tex_path)
+
+    assert pdf_path.is_file() and pdf_path.stat().st_size > 0
+    assert tex_path.read_text(encoding="utf-8") == source

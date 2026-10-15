@@ -129,6 +129,7 @@ class ADDIEOptimizer:
         output_dir: str = "./exp/optimize/",
         exp_name: Optional[str] = None,
         chapter_name: Optional[str] = None,
+        mode: str = "regenerate",
     ) -> Dict[str, Any]:
         """
         Run the optimize workflow.
@@ -139,12 +140,14 @@ class ADDIEOptimizer:
             output_dir: Base output directory
             exp_name: Experiment name
             chapter_name: Specific chapter to optimize (None = all chapters)
+            mode: "regenerate" (per-slide full rewrite) or "refine" (localized
+                frame-level rewrite via SlideRefiner)
 
         Returns:
             Results dict with per-chapter outcomes and overall summary
         """
         runner = OptimizeRunner(self, output_dir)
-        return runner.run(storage_id, user_requirements, exp_name, chapter_name)
+        return runner.run(storage_id, user_requirements, exp_name, chapter_name, mode)
 
 
 class OptimizeRunner:
@@ -166,6 +169,7 @@ class OptimizeRunner:
         user_requirements: str,
         exp_name: Optional[str] = None,
         chapter_name: Optional[str] = None,
+        mode: str = "regenerate",
     ) -> Dict[str, Any]:
         """
         Run the full optimization workflow.
@@ -175,6 +179,7 @@ class OptimizeRunner:
             user_requirements: User's requirements for improvement
             exp_name: Experiment name for organizing outputs
             chapter_name: Specific chapter to optimize (None = all)
+            mode: "regenerate" or "refine" (localized frame-level rewrite)
 
         Returns:
             Results dict
@@ -221,7 +226,7 @@ class OptimizeRunner:
 
             try:
                 chapter_result = self._optimize_chapter(
-                    storage_id, ch_name, user_requirements, exp_name
+                    storage_id, ch_name, user_requirements, exp_name, mode
                 )
                 results["chapters"].append(chapter_result)
             except Exception as e:
@@ -265,6 +270,7 @@ class OptimizeRunner:
         chapter_name: str,
         user_requirements: str,
         exp_name: Optional[str] = None,
+        mode: str = "regenerate",
     ) -> Dict[str, Any]:
         """
         Optimize a single chapter.
@@ -327,7 +333,7 @@ class OptimizeRunner:
             knowledge_base=kb,
         )
 
-        result = deliberation.run(chapter_slides, user_requirements)
+        result = deliberation.run(chapter_slides, user_requirements, mode=mode)
         result["chapter"] = chapter_name
         result["knowledge_base_name"] = kb_name
 

@@ -2,6 +2,7 @@ import os
 import time
 import argparse
 import json
+from dataclasses import replace
 
 
 def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catalog") -> dict:
@@ -34,7 +35,24 @@ def load_catalog(catalog_dir: str = "catalog", catalog_name: str = "merged_catal
     return data_catalog
 
 
-def run_instructional_design(course_name: str, copilot = None, catalog = None, model_name: str = "gpt-4o-mini", exp_name: str = "test", seed: int = None, temperature: float = None, resume: bool = False):
+def run_instructional_design(
+    course_name: str,
+    copilot=None,
+    catalog=None,
+    model_name: str = "gpt-4o-mini",
+    exp_name: str = "test",
+    seed: int = None,
+    temperature: float = None,
+    resume: bool = False,
+    reselect_presentation_design: bool = False,
+    enable_image_generation: bool = False,
+    replace_images: bool = False,
+    max_images_per_chapter: int | None = None,
+    ai_decides_image_count: bool = False,
+    code_images: bool | None = None,
+    image_generation: str | None = None,
+    image_count: str | None = None,
+):
     """
     Main function to run the instructional design workflow by sequentially
     executing the six deliberation processes
@@ -100,9 +118,87 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
     # Run the workflow
     output_dir = f"./exp/{exp_name}/"
     os.makedirs(output_dir, exist_ok=True)
+    from src.html_slides_img import (
+        configured_from_cli_modes,
+        configured_for_invocation,
+        load_image_generation_config,
+        style_has_explicit_image_guidance,
+        write_image_generation_config,
+    )
+
+    if image_generation is not None and (
+        enable_image_generation or replace_images
+    ):
+        raise ValueError(
+            "image_generation cannot be combined with legacy image-generation controls"
+        )
+    if image_count is not None and (
+        max_images_per_chapter is not None or ai_decides_image_count
+    ):
+        raise ValueError(
+            "image_count cannot be combined with legacy image-count controls"
+        )
+
+    stored_image_config = load_image_generation_config(output_dir)
+    enable_images = enable_image_generation or image_generation in {"on", "replace"}
+    replace_images_for_run = replace_images or image_generation == "replace"
+    if (
+        (enable_images or replace_images_for_run)
+        and not reselect_presentation_design
+        and os.path.isfile(os.path.join(output_dir, "course_slide_style.json"))
+        and not style_has_explicit_image_guidance(output_dir)
+    ):
+        raise ValueError(
+            "This legacy course has no image guidance. Rerun foundation with "
+            "--reselect-presentation-design --image-generation on first."
+        )
+    if max_images_per_chapter is not None:
+        stored_image_config = replace(
+            stored_image_config,
+            max_images_per_chapter=max_images_per_chapter,
+            ai_decides_image_count=False,
+        ).validated()
+    elif ai_decides_image_count:
+        stored_image_config = replace(
+            stored_image_config,
+            ai_decides_image_count=True,
+        ).validated()
+    if image_generation is not None or image_count is not None:
+        image_config = configured_from_cli_modes(
+            stored_image_config,
+            image_generation=image_generation,
+            image_count=image_count,
+        )
+    else:
+        image_config = configured_for_invocation(
+            stored_image_config,
+            enable=enable_images,
+            replace_images=replace_images_for_run,
+        )
+    write_image_generation_config(output_dir, image_config)
+    from src.html_slides_code import (
+        configured_for_invocation as configured_code_images_for_invocation,
+        load_code_image_config,
+        write_code_image_config,
+    )
+
+    stored_code_image_config = load_code_image_config(output_dir)
+    code_image_config = configured_code_images_for_invocation(
+        stored_code_image_config,
+        code_images,
+    )
+    if code_images is not None or not os.path.isfile(
+        os.path.join(output_dir, "course_code_images.json")
+    ):
+        write_code_image_config(output_dir, code_image_config)
     if resume:
         print(f"[resume] Resuming from existing outputs in {output_dir}")
-    addie.run(output_dir=output_dir)
+    addie.run(
+        output_dir=output_dir,
+        reselect_presentation_design=reselect_presentation_design,
+        image_generation_config=image_config,
+        code_image_config=code_image_config,
+    )
     
     # Calculate execution time
     execution_time = time.time() - start_time
@@ -116,7 +212,8 @@ def run_instructional_design(course_name: str, copilot = None, catalog = None, m
 
 
 def run_optimization(storage_id: str, user_requirements: str, model_name: str = "gpt-4o-mini",
-                     exp_name: str = "optimize", chapter_name: str = None):
+                     exp_name: str = "optimize", chapter_name: str = None,
+                     mode: str = "regenerate"):
     """
     Run the optimization workflow on existing slide materials.
 
@@ -126,6 +223,8 @@ def run_optimization(storage_id: str, user_requirements: str, model_name: str = 
         model_name: Name of the LLM model to use
         exp_name: Experiment name for output directory
         chapter_name: Specific chapter to optimize (None = all chapters)
+        mode: "regenerate" (per-slide full rewrite) or "refine" (localized
+            frame-level rewrite via SlideRefiner)
     """
     # Ensure the OPENAI_API_KEY is set
     if not os.environ.get("OPENAI_API_KEY"):
@@ -146,19 +245,12 @@ def run_optimization(storage_id: str, user_requirements: str, model_name: str = 
         output_dir=output_dir,
         exp_name=exp_name,
         chapter_name=chapter_name,
+        mode=mode,
     )
 
 
-def main():
-    """CLI entry point for instructional-agents."""
-    # Load config if available
-    config_path = os.path.join(os.path.dirname(__file__), "config.json")
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            config = json.load(f)
-        os.environ.setdefault("OPENAI_API_KEY", config.get("OPENAI_API_KEY", ""))
-
-    # Set up command line arguments
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser for the instructional workflow."""
     parser = argparse.ArgumentParser(description="Run instructional design workflow")
 
     parser.add_argument("course_name", type=str, nargs='?', default=None,
@@ -215,6 +307,41 @@ def main():
              "already exist in exp/<exp_name>/ and pick up chapter generation "
              "from the last incomplete chapter (or mid-chapter checkpoint)."
     )
+    parser.add_argument(
+        "--reselect-presentation-design",
+        action="store_true",
+        help=(
+            "Replace the frozen course presentation design during foundation. "
+            "Required to add image guidance to a legacy course."
+        ),
+    )
+    parser.add_argument(
+        "--image-generation",
+        choices=("on", "off", "replace"),
+        default=None,
+        help=(
+            "Persist generated-image behavior: on enables and reuses cached "
+            "images, off disables, and replace regenerates images this run."
+        ),
+    )
+    parser.add_argument(
+        "--image-count",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "Persist AI-selected image counts: on always lets the AI choose "
+            "the count; off restores the stored fixed cap."
+        ),
+    )
+    parser.add_argument(
+        "--code-images",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "Persist code rendering: on uses Carbon code images and off uses "
+            "styled HTML code blocks."
+        ),
+    )
 
     # Optimize mode arguments
     parser.add_argument(
@@ -255,6 +382,19 @@ def main():
         help="Convert existing .tex files to .pptx. Provide exp directory path (e.g., ./exp/my_course/)"
     )
 
+    return parser
+
+
+def main():
+    """CLI entry point for instructional-agents."""
+    # Load config if available
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        os.environ.setdefault("OPENAI_API_KEY", config.get("OPENAI_API_KEY", ""))
+
+    parser = build_parser()
     args = parser.parse_args()
 
     # PPTX-only conversion mode (no ADDIE workflow, no API key needed)
@@ -299,6 +439,12 @@ def main():
             seed=args.seed,
             temperature=args.temperature,
             resume=args.resume,
+            reselect_presentation_design=args.reselect_presentation_design,
+            image_generation=args.image_generation,
+            image_count=args.image_count,
+            code_images=(
+                None if args.code_images is None else args.code_images == "on"
+            ),
         )
 
 

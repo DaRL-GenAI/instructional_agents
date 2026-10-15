@@ -3,10 +3,26 @@
 import json
 import os
 import tempfile
+from pathlib import Path
 import pytest
 from unittest.mock import patch
 
 from run import load_catalog
+from src.ADDIE import ADDIE
+
+
+CATALOG_DIR = Path(__file__).resolve().parents[1] / "catalog"
+
+
+def load_packaged_catalog(name: str = "default_catalog") -> dict:
+    return json.loads((CATALOG_DIR / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def map_addie_catalog(catalog_data: dict) -> dict:
+    addie = object.__new__(ADDIE)
+    addie.catalog = True
+    addie.set_catalog(catalog_data)
+    return addie.catalog_dict
 
 
 class TestLoadCatalog:
@@ -52,6 +68,55 @@ class TestLoadCatalog:
 
             result = load_catalog(catalog_dir=tmpdir, catalog_name="bad")
         assert result == {}
+
+    def test_legacy_catalog_without_style_preferences_remains_valid(self):
+        catalog_data = load_packaged_catalog()
+        catalog_data.pop("presentation_style_preferences")
+
+        mapped = map_addie_catalog(catalog_data)
+
+        assert mapped["presentation_style_preferences"] == {}
+
+    def test_catalog_preserves_structured_style_preferences(self):
+        catalog_data = load_packaged_catalog()
+        expected = catalog_data["presentation_style_preferences"]
+
+        mapped = map_addie_catalog(catalog_data)
+
+        assert mapped["presentation_style_preferences"] == expected
+
+    @pytest.mark.parametrize("catalog_name", ("default_catalog", "mwe_catalog"))
+    def test_packaged_catalogs_pass_addie_style_preference_validation(
+        self, catalog_name
+    ):
+        catalog_data = load_packaged_catalog(catalog_name)
+
+        mapped = map_addie_catalog(catalog_data)
+
+        assert mapped["presentation_style_preferences"]
+
+    @pytest.mark.parametrize(
+        ("preferences", "message"),
+        [
+            ("minimal", "must be a JSON object"),
+            (
+                {"color_preferences": ["blue"]},
+                "requires text values for populated fields",
+            ),
+            (
+                {"unknown_preference": "value"},
+                "contains unsupported fields",
+            ),
+        ],
+    )
+    def test_malformed_style_preferences_are_rejected_before_generation(
+        self, preferences, message
+    ):
+        catalog_data = load_packaged_catalog()
+        catalog_data["presentation_style_preferences"] = preferences
+
+        with pytest.raises(ValueError, match=message):
+            map_addie_catalog(catalog_data)
 
 
 class TestCLIArgs:

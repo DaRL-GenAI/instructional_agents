@@ -18,7 +18,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File, H
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional as Opt
 import uvicorn
 
@@ -60,6 +60,50 @@ class CourseRequest(BaseModel):
     catalog: Optional[str] = Field(default=None, description="Catalog name to use")
     catalog_data: Optional[Dict[str, Any]] = Field(default=None, description="Catalog data as JSON object")
     generate_pptx: Optional[bool] = Field(default=False, description="Also generate PPTX slides")
+    reselect_presentation_design: bool = Field(
+        default=False,
+        description="Replace the frozen course-wide presentation design",
+    )
+    enable_image_generation: bool = Field(
+        default=False,
+        description="Persist opt-in to dynamic frontend slide image generation",
+    )
+    replace_images: bool = Field(
+        default=False,
+        description="Replace images for every processed chapter; implies enablement",
+    )
+    max_images_per_chapter: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=3,
+        description="Persistent experiment default image cap",
+    )
+    ai_decides_image_count: bool = Field(
+        default=False,
+        description=(
+            "Remove the numeric per-chapter cap and let the placement AI choose "
+            "every strong eligible image opportunity"
+        ),
+    )
+    code_images: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Persist Carbon code-image behavior: true enables and may install "
+            "carbon-now-cli globally, false disables, null preserves course state"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_image_count_mode(self) -> "CourseRequest":
+        if (
+            self.ai_decides_image_count
+            and self.max_images_per_chapter is not None
+        ):
+            raise ValueError(
+                "ai_decides_image_count and max_images_per_chapter are "
+                "mutually exclusive"
+            )
+        return self
 
 class OptimizeRequest(BaseModel):
     storage_id: str = Field(..., description="ID of the stored PDF files")
@@ -67,6 +111,7 @@ class OptimizeRequest(BaseModel):
     model_name: str = Field(default="gpt-4o-mini", description="OpenAI model to use")
     exp_name: str = Field(default="default", description="Experiment name for output")
     chapter_name: Optional[str] = Field(default=None, description="Specific chapter to optimize (None = all)")
+    mode: str = Field(default="regenerate", description="Improvement strategy: 'regenerate' (per-slide full rewrite) or 'refine' (localized frame-level rewrite)")
 
 class TaskStatus(BaseModel):
     task_id: str
@@ -803,7 +848,13 @@ async def run_generation_task(task_id: str, request: CourseRequest, api_key: str
             copilot="default_copilot" if request.copilot else None,
             catalog=catalog_source,
             model_name=request.model_name,
-            exp_name=request.exp_name
+            exp_name=request.exp_name,
+            reselect_presentation_design=request.reselect_presentation_design,
+            enable_image_generation=request.enable_image_generation,
+            replace_images=request.replace_images,
+            max_images_per_chapter=request.max_images_per_chapter,
+            ai_decides_image_count=request.ai_decides_image_count,
+            code_images=request.code_images,
         )
         
         # Generate PPTX if requested
@@ -900,6 +951,8 @@ async def run_optimization_task(task_id: str, request: OptimizeRequest, api_key:
         sys.stdout.flush()
         print(f"Experiment: {request.exp_name}")
         sys.stdout.flush()
+        print(f"Mode: {request.mode}")
+        sys.stdout.flush()
         if request.chapter_name:
             print(f"Chapter: {request.chapter_name}")
             sys.stdout.flush()
@@ -916,6 +969,7 @@ async def run_optimization_task(task_id: str, request: OptimizeRequest, api_key:
             model_name=request.model_name,
             exp_name=request.exp_name,
             chapter_name=request.chapter_name,
+            mode=request.mode,
         )
 
         print("\n" + "=" * 60)
@@ -971,4 +1025,3 @@ if __name__ == "__main__":
         port=8000,
         reload=True
     )
-
