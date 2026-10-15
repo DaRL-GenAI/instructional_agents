@@ -411,15 +411,17 @@ def build_course_contract(
         n_queries = len(queries)
 
         # Coverage gating: if the top section barely registered, this
-        # chapter doesn't map to anything in the textbook. Better to
-        # generate ungrounded content than to fabricate citations to a
-        # weakly-related section. Downstream sees `section_ids=[]` and
-        # falls back to the vanilla (no-citation) prompt for that chapter.
+        # chapter has no strong anchor in the textbook. Weak-bind fallback:
+        # an empty binding would make the writer generate the entire
+        # chapter with no evidence at all, which is strictly worse than
+        # writing from the least-bad sections, so bind the top sections
+        # anyway and record the low confidence in the rationale.
         if top_norm < coverage_floor:
-            section_ids: List[str] = []
+            section_ids: List[str] = [sid for sid, _ in ranked[:sections_per_topic]]
             coverage_status = (
-                f"off-textbook (top normalized RRF={top_norm:.3f} < floor "
-                f"{coverage_floor:.3f})"
+                f"below coverage floor (top normalized RRF={top_norm:.3f} < "
+                f"{coverage_floor:.3f}); weak-bind fallback to top "
+                f"{len(section_ids)} sections"
             )
         else:
             # Smart intro widening. If the chapter looks like a
@@ -445,24 +447,23 @@ def build_course_contract(
                     effective_top_n, min(MAX_SECTIONS_PER_TOPIC, n_above_floor)
                 )
 
-            # Meta-chapter abstain — if the chapter was widened but the
-            # top section's score is STILL below the abstain floor, the
-            # topic has no real anchor in the source (e.g. "Pattern
-            # Evaluation", "Project Work"). Force section_ids=[] so the
-            # writer falls back to vanilla rather than fabricate
-            # citations against weakly-related sections.
+            # Meta-chapter floor — if the chapter was widened but the top
+            # section's score is STILL below the meta floor, the topic has
+            # no real anchor in the source (e.g. a review or project week).
+            # Same weak-bind fallback as the coverage floor: the least-bad
+            # sections beat writing the whole week without evidence.
             if smart_widen_trigger and top_norm < meta_floor:
-                section_ids = []
+                section_ids = [sid for sid, _ in ranked[:sections_per_topic]]
                 rationale_parts.append(
-                    f"META-ABSTAIN (widened but top normalized RRF={top_norm:.3f} "
-                    f"< meta_floor={meta_floor:.3f})"
+                    f"below meta floor (top normalized RRF={top_norm:.3f} "
+                    f"< meta_floor={meta_floor:.3f}); weak-bind fallback"
                 )
                 mappings.append(TopicMapping(
                     topic=title,
                     section_ids=section_ids,
                     rationale=" · ".join(
                         [f"{len(queries)} queries"] + rationale_parts +
-                        ["meta-chapter abstain"]
+                        ["weak-bind fallback"]
                     ),
                 ))
                 continue
