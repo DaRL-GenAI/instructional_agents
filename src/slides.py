@@ -614,6 +614,22 @@ def _scaled_slide_budget(base_target: int, n_sections: int) -> int:
     )
 
 
+def _parse_outline_json(response: str):
+    """Parse the outline agent's JSON (with the backslash repair). Raises
+    json.JSONDecodeError when it cannot."""
+    json_match = re.search(r'\[\s*\{.*\}\s*\]', response, re.DOTALL)
+    json_str = json_match.group(0) if json_match else response
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        # The outline agent sometimes echoes LaTeX commands into string
+        # values ("\colorbox", "\frac"), which are invalid JSON escapes.
+        # Double every backslash that does not start a legal JSON escape
+        # and retry before giving up.
+        repaired = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', json_str)
+        return json.loads(repaired)
+
+
 _EXAMPLE_ID_RE = re.compile(
     r"\bExample\s+(\d+\.\d+)\b[^.]{0,180}",
     re.IGNORECASE,
@@ -2424,14 +2440,7 @@ class SlidesDeliberation:
         
         # Parse the JSON response
         try:
-            # Try to extract JSON from the response
-            json_match = re.search(r'\[\s*\{.*\}\s*\]', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                self.slides_outline = json.loads(json_str)
-            else:
-                # If no JSON array pattern is found, try direct parsing
-                self.slides_outline = json.loads(response)
+            self.slides_outline = _parse_outline_json(response)
 
             # Drop duplicate-title slides the outline agent sometimes emits
             # (e.g. two "Applications of Cluster Analysis"); grounded path
@@ -3362,11 +3371,11 @@ class SlidesDeliberation:
                 if assessment['assessment'].get('questions'):
                     assessment_md += "### Assessment Questions\n\n"
                     for idx, q in enumerate(assessment['assessment']['questions'], 1):
-                        assessment_md += f"**Question {idx}:** {q['question']}\n\n"
-                        for option in q['options']:
+                        assessment_md += f"**Question {idx}:** {q.get('question', '')}\n\n"
+                        for option in q.get('options', []):
                             assessment_md += f"  {option}\n"
-                        assessment_md += f"\n**Correct Answer:** {q['correct_answer']}\n"
-                        assessment_md += f"**Explanation:** {q['explanation']}\n\n"
+                        assessment_md += f"\n**Correct Answer:** {q.get('correct_answer', '')}\n"
+                        assessment_md += f"**Explanation:** {q.get('explanation', '')}\n\n"
                 
                 # Activities
                 if assessment['assessment'].get('activities'):
