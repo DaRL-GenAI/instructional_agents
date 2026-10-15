@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # Sentence boundary; LaTeX command stripper; visual-marker line prefixes.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -63,6 +63,38 @@ _META_DISCOURSE_RE = re.compile(
     r"The (?:lecture|session|module) will\b|"
     r"You will (?:learn|be able)\b|Let'?s\b|Welcome\b|Today,? we)")
 _MAX_CLAIMS = 50
+# Evidence longer than this (characters, ~150k tokens) is judged in shards
+# so a single call never exceeds the judge's context limit.
+_EVIDENCE_SHARD_CHARS = 600_000
+
+
+_FRAME_BLOCK_RE = re.compile(r"\\begin\{frame\}.*?\\end\{frame\}", re.S)
+_FRAME_ANY_TITLE_RE = re.compile(
+    r"\\frametitle\{([^}]*)\}|\\begin\{frame\}(?:\[[^\]]*\])?\{([^}]*)\}")
+
+
+def _split_frames_by_title(text: str, pattern) -> Tuple[str, str, List[str]]:
+    """Separate the frames whose title matches ``pattern`` from the rest.
+    Returns ``(kept_text, skipped_text, skipped_titles)``. Used for frames
+    that are hypothetical by design (discussion cases, knowledge-check
+    scenarios): their sentences are not factual claims about the source and
+    are reported separately instead of being judged."""
+    if not text or pattern is None:
+        return text, "", []
+    skipped, titles = [], []
+
+    def _cut(m):
+        frame = m.group(0)
+        tm = _FRAME_ANY_TITLE_RE.search(frame)
+        title = ((tm.group(1) or tm.group(2)) if tm else "") or ""
+        if pattern.search(title):
+            skipped.append(frame)
+            titles.append(re.sub(r"\s+", " ", title).strip())
+            return " "
+        return frame
+
+    kept = _FRAME_BLOCK_RE.sub(_cut, text)
+    return kept, "\n".join(skipped), titles
 
 
 def _segment_claims(text: str, limit: Optional[int] = _MAX_CLAIMS) -> List[str]:
@@ -307,10 +339,23 @@ class ContentVerifier:
                     "verdict_raw": str(v.get("verdict") or "")}
         return out
 
+    def _verify_sharded(self, report, chapter_id, chapter_title, artifacts,
+                        section_ids, evidence, second_chances, limit):
+        shards = _shard_evidence(evidence, _EVIDENCE_SHARD_CHARS)
+        parts = []
+        for shard in shards:
+            # Frames were already set aside by the caller (artifacts are the
+            # judged text), so no skip pattern is passed down.
+            parts.append(self.verify_chapter(
+                chapter_id, chapter_title, artifacts, section_ids,
+                full_source_text=shard, second_chances=second_chances,
+                limit=limit))
+        return _merge_shard_reports(report, parts)
+
     def verify_chapter(self, chapter_id, chapter_title, artifacts: dict,
                        section_ids, writer_evidence=None,
                        full_source_text=None, second_chances=False,
-                       limit=_MAX_CLAIMS) -> dict:
+                       limit=_MAX_CLAIMS, skip_frame_titles=None) -> dict:
         """Check the chapter's claims against its evidence. Advisory + log-only:
         never mutates ``artifacts``. Fail-open — any error returns a zero-count
         report with an ``error`` field instead of raising.
@@ -362,6 +407,23 @@ class ContentVerifier:
             "model": self.model,
         }
         claims: List[str] = []
+        if skip_frame_titles is not None:
+            # Frames that are hypothetical by design (discussion cases,
+            # knowledge-check scenarios) are set aside and counted, not
+            # judged: their sentences are not claims about the source.
+            skipped_frames, skipped_sentences, skipped_titles = 0, 0, []
+            judged = {}
+            for name, text in (artifacts or {}).items():
+                kept, skipped, titles = _split_frames_by_title(text or "", skip_frame_titles)
+                judged[name] = kept
+                skipped_frames += len(titles)
+                skipped_titles.extend(titles)
+                skipped_sentences += len(_segment_claims(skipped, limit=None))
+            artifacts = judged
+            report["scenario_frames_skipped"] = skipped_frames
+            report["scenario_sentences_skipped"] = skipped_sentences
+            report["scenario_frame_titles"] = skipped_titles
+            report["scenario_pattern"] = skip_frame_titles.pattern
         for text in (artifacts or {}).values():
             claims.extend(_segment_claims(text or "", limit=None))
         # Coverage disclosure: verification is capped at _MAX_CLAIMS claims in
@@ -381,6 +443,14 @@ class ContentVerifier:
             "full_source_text" if full_source_text
             else "writer_evidence" if writer_evidence
             else "title_retrieval")
+        if len(evidence) > _EVIDENCE_SHARD_CHARS:
+            # The bound source is too long for one judge call. Judge the
+            # same claims against each shard of the evidence and merge:
+            # a claim is supported when any shard anchors a quote for it,
+            # flagged only when every shard flags it.
+            return self._verify_sharded(
+                report, chapter_id, chapter_title, artifacts, section_ids,
+                evidence, second_chances, limit)
         numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(claims, 1))
         user = f"EVIDENCE:\n{evidence}\n\nCLAIMS:\n{numbered}\n\nReturn the JSON."
         report["judge_protocol"] = "quote_anchored_v1"
@@ -408,6 +478,20 @@ class ContentVerifier:
                 data = _parse_json(resp)
                 verdicts = data.get("claims") if isinstance(data, dict) else None
             if not isinstance(verdicts, list) or not verdicts:
+                if not isinstance(data, dict) or "unsupported" not in data:
+                    # No verdicts in any format (typically an API error
+                    # echoed back as text, e.g. the evidence exceeded the
+                    # context limit): the judge did not run. Never report
+                    # this as a pass.
+                    report["judge_protocol"] = "judge_error"
+                    report["error"] = (resp or "")[:300]
+                    report["flagged_claims"] = []
+                    report["supported_claims"] = []
+                    report["claims_unverified"] = len(claims)
+                    report["unsupported_claim_count"] = 0
+                    report["summary"] = (
+                        f"judge failed: 0/{len(claims)} claims verified")
+                    return report
                 # Old-style {"unsupported": [...]} reply twice: accept the
                 # lenient result rather than mass-flag on format grounds, but
                 # record that these passes are NOT quote-anchored.
@@ -508,6 +592,67 @@ class ContentVerifier:
             report["error"] = f"{type(e).__name__}: {e}"
             report["summary"] = "verification failed (fail-open)"
         return report
+
+
+def _shard_evidence(evidence: str, limit: int) -> List[str]:
+    """Split evidence at paragraph boundaries into pieces of at most ``limit``
+    characters (a single oversized paragraph becomes its own piece)."""
+    shards, cur = [], []
+    size = 0
+    for para in evidence.split("\n\n"):
+        if cur and size + len(para) + 2 > limit:
+            shards.append("\n\n".join(cur))
+            cur, size = [], 0
+        cur.append(para)
+        size += len(para) + 2
+    if cur:
+        shards.append("\n\n".join(cur))
+    return shards
+
+
+def _merge_shard_reports(report: dict, parts: List[dict]) -> dict:
+    """Combine per-shard reports: supported if any shard anchored a quote,
+    flagged only if every shard flagged; judge errors count as no support."""
+    ok = [p for p in parts if p.get("judge_protocol") != "judge_error"]
+    report["evidence_shards"] = len(parts)
+    report["shard_protocols"] = [p.get("judge_protocol") for p in parts]
+    if not ok:
+        report["judge_protocol"] = "judge_error"
+        report["error"] = "; ".join(str(p.get("error", ""))[:120] for p in parts)
+        report["flagged_claims"] = []
+        report["supported_claims"] = []
+        report["claims_unverified"] = report["claims_checked"]
+        report["unsupported_claim_count"] = 0
+        report["summary"] = f"judge failed: 0/{report['claims_checked']} claims verified"
+        return report
+    supported = {}
+    for p in ok:
+        for s in p.get("supported_claims", []):
+            supported.setdefault(s["index"], dict(s, shard=ok.index(p) + 1))
+    flagged = {}
+    for p in ok:
+        for f in p.get("flagged_claims", []):
+            flagged[f["index"]] = f
+    flagged = {i: f for i, f in flagged.items() if i not in supported}
+    report["supported_claims"] = [supported[i] for i in sorted(supported)]
+    report["flagged_claims"] = [flagged[i] for i in sorted(flagged)]
+    report["judge_protocol"] = ok[-1].get("judge_protocol")
+    stats = {"requoted": 0, "retracted": 0, "flags_recovered": 0}
+    for p in ok:
+        for k, v in (p.get("second_chance_stats") or {}).items():
+            stats[k] = stats.get(k, 0) + v
+    if any("second_chance_stats" in p for p in ok):
+        report["second_chance_stats"] = stats
+    report["flag_kinds"] = {}
+    for f in report["flagged_claims"]:
+        k = f["flag_kind"]
+        report["flag_kinds"][k] = report["flag_kinds"].get(k, 0) + 1
+    report["unsupported_claim_count"] = len(report["flagged_claims"])
+    n, u = report["claims_checked"], report["unsupported_claim_count"]
+    state = "" if report["grounded"] else " [chapter not grounded]"
+    report["summary"] = (
+        f"{n - u}/{n} claims supported ({u} flagged) [{len(parts)} evidence shards]{state}")
+    return report
 
 
 def report_line(report: dict) -> str:
