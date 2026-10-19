@@ -116,11 +116,21 @@ class TestChapterKeywordSuppression:
         assert 12 in state.promoted_numbers
 
     def test_running_header_repeat_demoted(self):
+        # Chapter 3 was opened by a real chapter page (body prose followed).
+        state = HeadingState(seen_chapter=True, promoted_numbers={3},
+                             max_number=3, solid_numbers={3})
+        out, _ = _normalize_pdf_markdown_headings(
+            "## Chapter 3 Data Preprocessing\nbody", state=state)
+        assert out.splitlines()[0].startswith("### ")
+
+    def test_repeat_of_a_hollow_entry_is_promoted(self):
+        # Chapter 3 was only taken by a contents line (no body followed), so
+        # the real opening later in the book still becomes the chapter.
         state = HeadingState(seen_chapter=True,
                              promoted_numbers={3}, max_number=3)
         out, _ = _normalize_pdf_markdown_headings(
             "## Chapter 3 Data Preprocessing\nbody", state=state)
-        assert out.splitlines()[0].startswith("### ")
+        assert out.splitlines()[0] == "# Chapter 3 Data Preprocessing"
 
     def test_fresh_chapter_number_still_promotes(self):
         state = HeadingState(seen_chapter=True,

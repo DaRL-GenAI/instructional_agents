@@ -345,17 +345,19 @@ class ContentVerifier:
         parts = []
         for shard in shards:
             # Frames were already set aside by the caller (artifacts are the
-            # judged text), so no skip pattern is passed down.
+            # judged text), so no skip pattern is passed down; every shard
+            # fits the limit, so a shard is never split again.
             parts.append(self.verify_chapter(
                 chapter_id, chapter_title, artifacts, section_ids,
                 full_source_text=shard, second_chances=second_chances,
-                limit=limit))
+                limit=limit, _allow_sharding=False))
         return _merge_shard_reports(report, parts)
 
     def verify_chapter(self, chapter_id, chapter_title, artifacts: dict,
                        section_ids, writer_evidence=None,
                        full_source_text=None, second_chances=False,
-                       limit=_MAX_CLAIMS, skip_frame_titles=None) -> dict:
+                       limit=_MAX_CLAIMS, skip_frame_titles=None,
+                       _allow_sharding=True) -> dict:
         """Check the chapter's claims against its evidence. Advisory + log-only:
         never mutates ``artifacts``. Fail-open — any error returns a zero-count
         report with an ``error`` field instead of raising.
@@ -388,7 +390,15 @@ class ContentVerifier:
         ``supported_claims`` with their quotes, so every pass is auditable. A
         reply without per-claim verdicts gets one corrective retry; if the
         judge still replies in the old list-the-unsupported format, that lenient
-        result is accepted but marked ``judge_protocol: "legacy_fallback"``."""
+        result is accepted but marked ``judge_protocol: "legacy_fallback"``.
+
+        ``skip_frame_titles`` (a compiled title pattern) sets aside frames that
+        are hypothetical by design — discussion cases, knowledge-check
+        scenarios — and reports them in ``scenario_*`` fields instead of
+        judging them. The standard grounded deck has no such frames, so its
+        writer leaves this unset; a writer that produces them passes its
+        pattern. ``_allow_sharding`` is internal: shard calls set it False so
+        a shard is never split again."""
         bound = list(section_ids or [])
         report = {
             "chapter_id": chapter_id,
@@ -443,14 +453,19 @@ class ContentVerifier:
             "full_source_text" if full_source_text
             else "writer_evidence" if writer_evidence
             else "title_retrieval")
-        if len(evidence) > _EVIDENCE_SHARD_CHARS:
+        if _allow_sharding and len(evidence) > _EVIDENCE_SHARD_CHARS:
             # The bound source is too long for one judge call. Judge the
             # same claims against each shard of the evidence and merge:
             # a claim is supported when any shard anchors a quote for it,
             # flagged only when every shard flags it.
-            return self._verify_sharded(
-                report, chapter_id, chapter_title, artifacts, section_ids,
-                evidence, second_chances, limit)
+            try:
+                return self._verify_sharded(
+                    report, chapter_id, chapter_title, artifacts, section_ids,
+                    evidence, second_chances, limit)
+            except Exception as e:  # fail-open, same as the single-call path
+                report["error"] = f"{type(e).__name__}: {e}"
+                report["summary"] = "verification failed (fail-open)"
+                return report
         numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(claims, 1))
         user = f"EVIDENCE:\n{evidence}\n\nCLAIMS:\n{numbered}\n\nReturn the JSON."
         report["judge_protocol"] = "quote_anchored_v1"
@@ -594,12 +609,27 @@ class ContentVerifier:
         return report
 
 
+def _split_oversized(para: str, limit: int) -> List[str]:
+    """Cut one paragraph longer than ``limit`` into pieces of at most
+    ``limit`` characters, breaking at the last whitespace when possible."""
+    pieces = []
+    while len(para) > limit:
+        cut = para.rfind(" ", 0, limit)
+        if cut <= 0:
+            cut = limit
+        pieces.append(para[:cut])
+        para = para[cut:].lstrip(" ")
+    pieces.append(para)
+    return pieces
+
+
 def _shard_evidence(evidence: str, limit: int) -> List[str]:
     """Split evidence at paragraph boundaries into pieces of at most ``limit``
-    characters (a single oversized paragraph becomes its own piece)."""
+    characters; a paragraph longer than the limit is cut on its own."""
     shards, cur = [], []
     size = 0
-    for para in evidence.split("\n\n"):
+    paras = [p for para in evidence.split("\n\n") for p in _split_oversized(para, limit)]
+    for para in paras:
         if cur and size + len(para) + 2 > limit:
             shards.append("\n\n".join(cur))
             cur, size = [], 0
@@ -632,11 +662,19 @@ def _merge_shard_reports(report: dict, parts: List[dict]) -> dict:
     flagged = {}
     for p in ok:
         for f in p.get("flagged_claims", []):
-            flagged[f["index"]] = f
+            # A legacy-format shard ({"unsupported": [...]}) carries the
+            # judge's raw dicts: no flag_kind, possibly a string index.
+            try:
+                i = int(f.get("index"))
+            except (TypeError, ValueError):
+                continue
+            flagged[i] = dict(f, index=i, flag_kind=f.get("flag_kind", "legacy_unsupported"))
     flagged = {i: f for i, f in flagged.items() if i not in supported}
     report["supported_claims"] = [supported[i] for i in sorted(supported)]
     report["flagged_claims"] = [flagged[i] for i in sorted(flagged)]
-    report["judge_protocol"] = ok[-1].get("judge_protocol")
+    protocols = [p.get("judge_protocol") for p in ok]
+    report["judge_protocol"] = ("legacy_fallback" if "legacy_fallback" in protocols
+                                else protocols[-1])
     stats = {"requoted": 0, "retracted": 0, "flags_recovered": 0}
     for p in ok:
         for k, v in (p.get("second_chance_stats") or {}).items():

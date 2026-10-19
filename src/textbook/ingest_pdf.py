@@ -464,15 +464,31 @@ _PDF_MD_TRAILING_INT_RE = re.compile(r"\s\d{1,4}\s*$")
 # Standalone 1-2 digit integer (not part of "3.1" or a longer number).
 _PDF_MD_STANDALONE_INT_RE = re.compile(r"(?<![\d.])(\d{1,2})(?![\d.])")
 _PDF_MD_EMPHASIS_RE = re.compile(r"[\*_\[\]]")
+# Numbered labels that sit at the top of a page without opening a chapter
+# ("Figure 2", "Table 3", "Example 4"): the word right before the number.
+_PDF_MD_CAPTION_WORD_RE = re.compile(
+    r"(?:fig(?:ure)?s?|tables?|examples?|exercises?|steps?|algorithms?|"
+    r"equations?|eqs?|listings?|box(?:es)?|problems?|lemmas?|theorems?|"
+    r"definitions?|proofs?|corollar(?:y|ies)|propositions?|remarks?|notes?|"
+    r"cases?|questions?|solutions?|activit(?:y|ies)|labs?|plates?|charts?|"
+    r"exhibits?|pages?|slides?|items?)\.?",
+    re.IGNORECASE,
+)
 
 
 @dataclass
 class HeadingState:
-    """Chapter-detection state threaded across per-page normaliser calls."""
+    """Chapter-detection state threaded across per-page normaliser calls.
+
+    ``solid_numbers`` are chapter numbers whose promoted heading was followed
+    by body prose on its page (a real chapter opening). Only those make a
+    later heading with the same number a running header; a number promoted
+    from a hollow entry (a contents line) yields to the real opening."""
 
     seen_chapter: bool = False
     promoted_numbers: Set[int] = dataclasses.field(default_factory=set)
     max_number: int = 0
+    solid_numbers: Set[int] = dataclasses.field(default_factory=set)
 
 
 def _looks_like_body_prose(text: str) -> bool:
@@ -506,6 +522,9 @@ def _match_title_number_opening(
     number = int(tok)
     if number > 40 or number != state.max_number + 1:
         return None
+    before = plain[:pos].split()
+    if before and _PDF_MD_CAPTION_WORD_RE.fullmatch(before[-1]):
+        return None  # "Figure 2", "Table 3" — a label, not a chapter title
     title = (plain[:pos] + plain[pos + len(tok):]).strip()
     title = re.sub(r"\s{2,}", " ", title)
     if sum(c.isalpha() for c in title) < 3 or not title[:1].isupper():
@@ -526,14 +545,16 @@ def _normalize_pdf_markdown_headings(
       * ``## Chapter N ...`` / ``## Appendix X ...`` / ``## Part I`` /
         ``## Unit 3`` -> ``#`` (explicit chapter — handles multi-chapter
         PDFs like pattern-catalog books) — UNLESS the heading ends in a
-        bare integer (a TOC entry carrying its page number) or repeats a
-        chapter number already promoted (a running header); those demote
-        to ``###``.
+        bare integer (a TOC entry carrying its page number), sits on a
+        page with other "Chapter N" headings (a contents page), or repeats
+        a chapter number already opened with body prose (a running
+        header); those demote to ``###``.
       * ``## N.N ...`` -> ``##`` (top-level numbered section, kept).
       * ``## N.N.N ...`` -> ``###`` (subsection — emitted as prose
         paragraph by the IR builder).
       * Page-top ``## Title N`` where N is the next chapter number in
-        sequence and the page continues with prose -> ``# Chapter N
+        sequence, the word before N is not a caption label ("Figure",
+        "Table", ...), and the page continues with prose -> ``# Chapter N
         Title`` (the display-numeral opening-page layout; only when
         ``page_start`` is True).
       * First otherwise-unnumbered ``##`` -> ``#`` (handles single-chapter
@@ -567,6 +588,21 @@ def _normalize_pdf_markdown_headings(
     lines = md_text.split("\n")
     out_lines: List[str] = []
     content_seen = False
+
+    def _is_chapter_heading(line: str) -> bool:
+        hm = _PDF_MD_HEADING_RE.match(line)
+        return bool(hm and len(hm.group(1)) == 2
+                    and _PDF_MD_CHAPTER_PATTERN_RE.match(hm.group(2)))
+
+    chapter_rows = [i for i, l in enumerate(lines) if _is_chapter_heading(l)]
+    # One source page carrying several "Chapter N" headings is a contents
+    # page: none of its entries opens a chapter.
+    contents_page = page_start and len(chapter_rows) >= 2
+
+    def _prose_follows(idx: int) -> bool:
+        stop = next((i for i in chapter_rows if i > idx), len(lines))
+        return _looks_like_body_prose("\n".join(lines[idx + 1:stop]))
+
     for idx, line in enumerate(lines):
         m = _PDF_MD_HEADING_RE.match(line)
         if not m:
@@ -591,8 +627,12 @@ def _normalize_pdf_markdown_headings(
             # ("Chapter 12" with no title) must not trigger this.
             prefix_m = _PDF_MD_CHAPTER_PATTERN_RE.match(plain)
             remainder = plain[prefix_m.end():] if prefix_m else plain
-            is_reference = _PDF_MD_TRAILING_INT_RE.search(remainder) is not None
-            is_repeat = number is not None and number in state.promoted_numbers
+            is_reference = (_PDF_MD_TRAILING_INT_RE.search(remainder) is not None
+                            or contents_page)
+            # A repeat is a running header only when the number was already
+            # promoted from a real opening (prose followed it); a number
+            # taken by a hollow contents line yields to the real opening.
+            is_repeat = number is not None and number in state.solid_numbers
             if is_reference or is_repeat:
                 out_lines.append(f"### {content}")
             else:
@@ -601,6 +641,8 @@ def _normalize_pdf_markdown_headings(
                 if number is not None:
                     state.promoted_numbers.add(number)
                     state.max_number = max(state.max_number, number)
+                    if _prose_follows(idx):
+                        state.solid_numbers.add(number)
             continue
         # Numbered "N.N" or "N.N.N" — section vs subsection.
         num = _PDF_MD_NUMBER_PREFIX_RE.match(content)
@@ -621,6 +663,7 @@ def _normalize_pdf_markdown_headings(
                 out_lines.append(f"# Chapter {number} {title}")
                 state.seen_chapter = True
                 state.promoted_numbers.add(number)
+                state.solid_numbers.add(number)
                 state.max_number = number
                 continue
         # Unnumbered heading.

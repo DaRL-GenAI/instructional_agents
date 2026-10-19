@@ -614,20 +614,52 @@ def _scaled_slide_budget(base_target: int, n_sections: int) -> int:
     )
 
 
+def _escape_latex_backslashes(json_str: str) -> str:
+    """Make the backslash of every LaTeX command in a JSON document literal.
+
+    The outline agent echoes LaTeX into string values. Some commands are
+    invalid JSON escapes ("\\colorbox", "\\underline") and break parsing;
+    others start with a legal escape letter ("\\frac", "\\beta", "\\nabla",
+    "\\textbf", "\\rho") and silently decode into a control character plus
+    the remaining letters. A backslash is kept as a JSON escape only for
+    ``\\"``, ``\\\\``, ``\\/``, a ``\\uXXXX`` code point, or one of b f n r t
+    NOT followed by a lowercase letter; every other backslash is doubled.
+    Already-escaped pairs are copied through unchanged."""
+    out: List[str] = []
+    i, n = 0, len(json_str)
+    while i < n:
+        c = json_str[i]
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        nxt = json_str[i + 1] if i + 1 < n else ""
+        after = json_str[i + 2] if i + 2 < n else ""
+        if nxt in ('"', "\\", "/"):
+            out.append(json_str[i:i + 2])
+            i += 2
+        elif nxt == "u" and re.fullmatch(r"[0-9a-fA-F]{4}", json_str[i + 2:i + 6]):
+            out.append(json_str[i:i + 6])
+            i += 6
+        elif nxt in "bfnrt" and nxt and not ("a" <= after <= "z"):
+            out.append(json_str[i:i + 2])
+            i += 2
+        else:
+            out.append("\\\\")
+            i += 1
+    return "".join(out)
+
+
 def _parse_outline_json(response: str):
-    """Parse the outline agent's JSON (with the backslash repair). Raises
+    """Parse the outline agent's JSON, keeping LaTeX commands in string
+    values intact (see ``_escape_latex_backslashes``). Raises
     json.JSONDecodeError when it cannot."""
     json_match = re.search(r'\[\s*\{.*\}\s*\]', response, re.DOTALL)
     json_str = json_match.group(0) if json_match else response
     try:
-        return json.loads(json_str)
+        return json.loads(_escape_latex_backslashes(json_str))
     except json.JSONDecodeError:
-        # The outline agent sometimes echoes LaTeX commands into string
-        # values ("\colorbox", "\frac"), which are invalid JSON escapes.
-        # Double every backslash that does not start a legal JSON escape
-        # and retry before giving up.
-        repaired = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', json_str)
-        return json.loads(repaired)
+        return json.loads(json_str)
 
 
 _EXAMPLE_ID_RE = re.compile(
@@ -781,11 +813,14 @@ def _drop_empty_frames(text):
     def _has_content(body):
         if "\\includegraphics" in body:
             return True
-        b = _FRAMETITLE_RE.sub("", body)                # drop the title
         # Beamer also titles a frame inline, \begin{frame}{Title}; _FRAME_RE
         # leaves that title at the head of the body, where it would read as
-        # content and keep a blank slide alive.
-        b = re.sub(r"^\s*\{(?:[^{}]|\{[^{}]*\})*\}", "", b)
+        # content and keep a blank slide alive. Only a brace group directly
+        # after \begin{frame}[...] is a title: once \frametitle or any other
+        # token comes first, a leading {...} group is body text
+        # ({\Large Any questions?}) and must count as content.
+        b = re.sub(r"^\s*\{(?:[^{}]|\{[^{}]*\})*\}", "", body)
+        b = _FRAMETITLE_RE.sub("", b)                   # drop the title
         b = re.sub(r"\\(begin|end)\{[^}]*\}", "", b)    # env delimiters (name isn't content)
         b = re.sub(r"\[[^\]]*\]", "", b)                # bracket options like [fragile]
         b = re.sub(r"\\[a-zA-Z]+\*?", "", b)            # command tokens, keep braced text

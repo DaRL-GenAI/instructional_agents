@@ -517,8 +517,10 @@ class ADDIERunner:
             # Resume: skip this chapter entirely if all three final outputs
             # already exist and are non-empty. Partial chapters (e.g. empty
             # dir, or missing one of the three) fall through — the inner
-            # SlidesDeliberation will pick up from its own checkpoint.
-            if self.resume:
+            # SlidesDeliberation will pick up from its own checkpoint. A
+            # chapter named in --only-chapters is regenerated even when
+            # complete: selecting it is the request to redo it.
+            if self.resume and self.only_chapters is None:
                 required = ["slides.tex", "script.md", "assessment.md"]
                 if all(
                     os.path.exists(os.path.join(chapter_dir, f))
