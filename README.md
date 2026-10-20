@@ -35,6 +35,10 @@ An AI-powered instructional design system based on the ADDIE model for automated
 }
 ```
 
+> **📖 This branch: textbook grounding.** An opt-in feature built on Instructional Agents that writes course materials from an assigned textbook and checks every slide sentence against it. Without `--use-textbook`, the pipeline runs exactly as above. See [Textbook Grounding](#textbook-grounding) for why it exists, what it adds, and results.
+>
+> **Paper:** *Citations Are Not Enough: Grounding AI-Generated Instructional Materials in Real Sources*, AI-Native Academia Workshop at NeurIPS 2026 (poster). The exact code behind the paper's results is tagged [`paper-neurips2026-evaluated`](https://github.com/shrey-Bish/instructional_agents/tree/paper-neurips2026-evaluated).
+
 ---
 
 ### 📰 News
@@ -583,14 +587,28 @@ python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
 
 ### Textbook Grounding
 
-Opt-in. Pass `--use-textbook PATH` (a PDF, markdown file, or directory of either) and the system retrieves relevant textbook passages per chapter and writes each slide grounded in that retrieved evidence — teaching in its own words from the source rather than the model's parametric memory. Without the flag, vanilla output is unchanged.
+**Why.** Instructional Agents writes course materials from the model's own knowledge. When a course is taught from a specific textbook, the slides should say what that book says, and an instructor should be able to check that they do. A generated sentence can be plausible, or even correct, and still not be supported by the assigned book. Giving the model the book is not enough on its own: a model with the complete chapter in its prompt still falls back on what it already knows, and loose retrieval pulls in passages from the wrong part of the book. This feature therefore controls *which* evidence the model may use at each step, and measures how much of what it writes the book actually supports.
+
+**What it adds** (opt-in; without `--use-textbook` nothing changes):
+
+1. **Textbook parsing.** A PDF or markdown textbook becomes a chapter → section → paragraph structure. Figures are kept as images, and equation images are converted to LaTeX.
+2. **Search index.** Paragraphs are split into ~512-token chunks and indexed for keyword (BM25) and semantic (embedding) search, combined by rank fusion.
+3. **Chapter binding.** Before any slide is written, each course week is bound to a small set of textbook sections.
+4. **Grounded writing.** Each slide is written from excerpts retrieved only from its week's bound sections, under explicit grounding rules. Textbook figures, captions and tables are carried onto the slides.
+5. **Fidelity check.** Every slide sentence is checked against the full text of the bound sections. A sentence counts as supported only when the judge quotes supporting text that is then found, mechanically, in the source. The result is written to `content_verification.json` per chapter; the check never edits the slides.
+
+**Results** (from the paper). Grounding Fidelity is the share of generated claims supported by the assigned textbook. On three matched chapters the grounded system reaches 77.5%, compared with 64.6% for the original generator given the complete chapter text. Across the twelve course weeks with assigned chapters, fidelity rises from 47.9% to 60.9%. Ablations show that chapter binding matters most: removing it drops fidelity below the original generator, even with retrieval kept.
+
+**Usage.** Pass `--use-textbook PATH` (a PDF, a markdown file, or a directory of either):
 
 ```bash
 python run.py "Data Mining" --catalog default_catalog --exp dm_grounded \
     --use-textbook path/to/textbook.pdf
 ```
 
-Embeddings are cached on disk after the first ingest (one-time per textbook). Per-chapter generation is modestly slower than vanilla because prompts carry retrieved excerpts.
+`--only-chapters N[,N]` regenerates selected chapters, `--verifier-model MODEL` picks the model for the fidelity check, and `--no-strict-verification` switches to a cheaper check against the writer's excerpts only. Embeddings are cached on disk after the first ingest (one-time per textbook). Per-chapter generation is modestly slower than vanilla because prompts carry retrieved excerpts.
+
+**Citing.** Please cite Instructional Agents (above) and the textbook-grounding paper, *Citations Are Not Enough: Grounding AI-Generated Instructional Materials in Real Sources* (AI-Native Academia Workshop at NeurIPS 2026). A BibTeX entry will be added with the camera-ready version.
 
 **How the grounding works under the hood:**
 - The textbook is ingested (`pymupdf4llm`) into a chapter → section → paragraph IR; equation-shaped image crops are converted to native LaTeX by a focused VLM pass (cached). Paragraphs are chunked (~512 tokens) and indexed for BM25 + dense (`text-embedding-3-large`) retrieval.
