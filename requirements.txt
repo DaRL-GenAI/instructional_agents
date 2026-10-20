@@ -46,6 +46,7 @@ chromadb>=0.4.0
 # in mid-2026; numerical scores are identical (verified against the
 # original sentence-transformers backend on the same MiniLM weights).
 pymupdf>=1.24.0
+pymupdf4llm>=1.27
 markdown-it-py>=3.0.0
 rank-bm25>=0.2.2
 fastembed>=0.8,<1

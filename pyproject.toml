@@ -52,6 +52,7 @@ vector-db = ["chromadb>=0.4.0"]
 # Install:    pip install -e ".[grounding]"
 # Includes:
 #   - pymupdf            (PDF ingester)
+#   - pymupdf4llm        (PDF to markdown with figures; default PDF path)
 #   - markdown-it-py     (markdown ingester)
 #   - rank-bm25          (BM25 retrieval index)
 #   - fastembed          (ONNX bi-encoder for semantic gates +
@@ -63,6 +64,7 @@ vector-db = ["chromadb>=0.4.0"]
 # the same MiniLM models we used before.
 grounding = [
     "pymupdf>=1.24.0",
+    "pymupdf4llm>=1.27",
     "markdown-it-py>=3.0.0",
     "rank-bm25>=0.2.2",
     "fastembed>=0.8,<1",
