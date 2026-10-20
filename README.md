@@ -1,27 +1,133 @@
 <div align="center">
 
-# Instructional Agents: Reducing Teaching Faculty Workload through Multi-Agent Instructional Design
+# Textbook Grounding for Instructional Agents
 
-[![PyPI](https://img.shields.io/pypi/v/instructional-agents?style=flat-square&logo=pypi&logoColor=white)](https://pypi.org/project/instructional-agents/)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
-
-<p align="center">
-  <a href="https://darl-genai.github.io/instructional_agents_homepage/"><img src="https://img.shields.io/website?url=https%3A%2F%2Fdarl-genai.github.io%2Finstructional_agents_homepage%2F&up_message=Website&style=for-the-badge&logo=github&logoColor=white" alt="Website"></a>
-  &nbsp;&nbsp;
-  <a href="https://github.com/DaRL-GenAI/instructional_agents"><img src="https://img.shields.io/github/stars/DaRL-GenAI/instructional_agents?style=for-the-badge&logo=github&logoColor=white&color=red" alt="GitHub Stars"></a>
-</p>
-
-[**Claude Code**](#use-via-claude-code) · [**Quick Start**](#-quick-start-docker---recommended) · [**Core Modules**](#-core-modules) · [**FAQ**](#-faq)
-
-[🇨🇳 中文](README.zh.md) · [🇬🇧 English](README.md)
-
-![visitors](https://visitor-badge.laobi.icu/badge?page_id=DaRL-GenAI.instructional_agents&style=flat)
+[![Built on](https://img.shields.io/badge/built%20on-Instructional%20Agents-red?style=flat-square&logo=github)](https://github.com/DaRL-GenAI/instructional_agents)
 
 </div>
 
-An AI-powered instructional design system based on the ADDIE model for automated course creation and evaluation.
+This branch extends [Instructional Agents](https://github.com/DaRL-GenAI/instructional_agents) so that a course is written **from an assigned textbook**, and every sentence on every slide is **checked against that textbook**. It is opt-in: pass `--use-textbook PATH` to turn it on. Without the flag, Instructional Agents runs exactly as before.
+
+> **Paper:** *Citations Are Not Enough: Grounding AI-Generated Instructional Materials in Real Sources.* AI-Native Academia Workshop at NeurIPS 2026 (poster).
+> The exact code behind the paper's results is tagged [`paper-neurips2026-evaluated`](https://github.com/shrey-Bish/instructional_agents/tree/paper-neurips2026-evaluated).
+
+---
+
+## Why
+
+Instructional Agents generates a full course (syllabus, slides, speaker scripts and assessments) from a course name, using the language model's own knowledge. When a course is taught from a specific textbook, that is not enough: the slides should say what the book says, and an instructor should be able to check that they do.
+
+A generated sentence can be plausible, or even correct, and still not be supported by the assigned book. Giving the model the book does not fix this on its own. A model with the complete chapter in its prompt still falls back on what it already knows, and loose retrieval pulls in passages from the wrong part of the book. This feature therefore controls **which evidence the model may use** at each step, and measures **how much of what it writes the book actually supports**.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Textbook<br/>PDF or markdown] --> B[Parse into chapters,<br/>sections, paragraphs]
+    B --> C[Search index<br/>keyword + semantic]
+    S[Course syllabus<br/>from Instructional Agents] --> D[Bind each course week<br/>to textbook sections]
+    C --> D
+    D --> E[Write each slide from<br/>its week's sections only]
+    E --> F[Check every slide sentence<br/>against those sections]
+    F --> G[Slides, scripts,<br/>fidelity report]
+```
+
+1. **Textbook parsing.** A PDF or markdown textbook becomes a chapter → section → paragraph structure. Figures are kept as images, and equation images are converted to LaTeX.
+2. **Search index.** Paragraphs are split into ~512-token chunks and indexed for keyword search (BM25) and semantic search (OpenAI `text-embedding-3-large`), combined by reciprocal rank fusion. An optional cross-encoder reranker can refine the ranking.
+3. **Chapter binding.** Before any slide is written, each course week is bound to a small set of textbook sections. The week's topic is expanded into several search queries, and the sections that rank highest across all of them are chosen. Weeks that match the book only weakly are still bound to their best sections, with the low confidence recorded.
+4. **Grounded writing.** Each slide is written from excerpts retrieved only from its week's bound sections, under explicit grounding rules: teach in your own words, keep worked examples and notation, and do not add facts the excerpts do not contain. Textbook figures, captions and tables are carried onto the slides, and clean-up passes remove duplicate figures, empty slides and dangling figure references.
+5. **Fidelity check.** Every slide sentence is checked against the full text of the week's bound sections. A sentence counts as supported only when the judge quotes supporting text that is then found, mechanically, in the source. Loosely quoted passes and first-time flags each get one more focused check. The result is written to `content_verification.json` for each chapter; the check never edits the slides.
+
+## Results
+
+From the paper, on a twelve-week data mining course. **Grounding Fidelity** is the share of generated slide sentences that the assigned textbook supports, judged by `gpt-4o` with mechanically verified quotes.
+
+| | Three matched chapters | Twelve course weeks |
+|---|---|---|
+| Original generator, given the complete chapter text | 64.6% | 47.9% |
+| **Textbook grounding (this branch)** | **77.5%** | **60.9%** |
+
+- **Chapter binding matters most.** In ablations, removing the binding step drops fidelity below the original generator, even though retrieval is kept.
+- **The judge is reliable.** It agrees with majority human labels on 90.8% of decidable claims.
+- **Fidelity measures precision, not coverage.** It tells you how much of what was written the book supports, not how much of the book was taught.
+
+## Quick start
+
+```bash
+git clone https://github.com/shrey-Bish/instructional_agents.git
+cd instructional_agents
+git checkout feature/textbook-grounding
+
+pip install -e ".[grounding]"          # base install + grounding dependencies
+export OPENAI_API_KEY=your_api_key_here
+
+# Generate a course grounded in your textbook
+python run.py "Data Mining" --catalog default_catalog --exp dm_grounded \
+    --use-textbook path/to/textbook.pdf
+
+# Score it, including the Grounding Fidelity %
+python evaluate.py --exp dm_grounded --rigorous
+```
+
+The first run parses and embeds the textbook once; the result is cached in `.grounding_cache/` and reused afterwards. Compiling slides to PDF needs a LaTeX installation, and PowerPoint export needs Node.js with `pptxgenjs`; see the [Instructional Agents README](https://github.com/DaRL-GenAI/instructional_agents#readme) for those steps.
+
+Textbooks are not included in this repository. Bring your own PDF or markdown file.
+
+## Options
+
+| Flag | What it does |
+|---|---|
+| `--use-textbook PATH` | Turns grounding on. `PATH` is a PDF, a markdown file, or a directory of either. |
+| `--only-chapters N[,N]` | Generates only the listed chapters. With `--resume`, a listed chapter is regenerated even if it is already finished. |
+| `--verifier-model MODEL` | Model for the fidelity check (default `gpt-4o`). |
+| `--no-strict-verification` | Cheaper check against the writer's excerpts only, instead of the full bound sections. Scores are not comparable to strict runs. |
+| `--vlm-extraction` | Uses a vision model on complex pages to extract figures, tables and equations. Slower and costs more. |
+| `--model`, `--seed`, `--exp`, `--resume` | As in Instructional Agents (default generation model `gpt-4o-mini`). |
+
+The API server accepts the same option as a `textbook_path` request field, and the web interface has a textbook file picker.
+
+## What you get
+
+For each chapter, in `exp/<name>/chapter_<N>/`:
+
+| File | Contents |
+|---|---|
+| `slides.tex` | The slide deck (Beamer LaTeX), with textbook figures and captions |
+| `script.md` | Speaker script for each slide |
+| `assessment.md` | Questions and activities for the chapter |
+| `content_verification.json` | The fidelity report: every slide sentence, marked supported (with the textbook quote that supports it) or flagged (with the reason), plus the bound textbook sections |
+
+`evaluate.py --rigorous` adds up the per-chapter reports into one **Grounding Fidelity %** for the course, next to the standard rubric scores, under `eval/`.
+
+## Where the code lives
+
+| Path | Role |
+|---|---|
+| `src/textbook/` | Textbook parsing for PDF and markdown, including equation-to-LaTeX conversion |
+| `src/grounding/knowledge_base.py` | Splitting the textbook into searchable chunks |
+| `src/grounding/retriever.py` | Keyword + semantic search with rank fusion |
+| `src/grounding/contract.py` | Chapter binding: which textbook sections each course week may use |
+| `src/grounding/content_verifier.py` | The sentence-level fidelity check |
+| `src/slides.py` | Grounded slide writing and clean-up passes (active only with a textbook) |
+| `src/ADDIE.py`, `run.py`, `api_server.py` | Wiring and command-line options |
+| `evaluate.py` | Rubric scoring and the course-level Grounding Fidelity % |
+| `tests/` | Unit tests for every grounding component |
+
+## Known limitations
+
+- **Broad or survey weeks bind weakly.** An introduction or review week may not match one part of the book well, and its fidelity is usually lower.
+- **Fidelity is a precision measure.** A deck can score high while covering only part of a chapter.
+- **The judge is a language model.** Quotes are verified mechanically, but supported/unsupported verdicts can still be wrong in individual cases.
+
+## Everything else
+
+All other Instructional Agents features (the web interface, Docker deployment, API server, catalog and copilot modes, and LaTeX-to-PowerPoint conversion) work as in the original project. See the [Instructional Agents README](https://github.com/DaRL-GenAI/instructional_agents#readme).
+
+## Citation
+
+Please cite Instructional Agents, which this work builds on:
 
 ```
 @misc{yao2025instructionalagentsllmagents,
@@ -35,800 +141,8 @@ An AI-powered instructional design system based on the ADDIE model for automated
 }
 ```
 
-> **📖 This branch: textbook grounding.** An opt-in feature built on Instructional Agents that writes course materials from an assigned textbook and checks every slide sentence against it. Without `--use-textbook`, the pipeline runs exactly as above. See [Textbook Grounding](#textbook-grounding) for why it exists, what it adds, and results.
->
-> **Paper:** *Citations Are Not Enough: Grounding AI-Generated Instructional Materials in Real Sources*, AI-Native Academia Workshop at NeurIPS 2026 (poster). The exact code behind the paper's results is tagged [`paper-neurips2026-evaluated`](https://github.com/shrey-Bish/instructional_agents/tree/paper-neurips2026-evaluated).
+And the textbook-grounding paper: *Citations Are Not Enough: Grounding AI-Generated Instructional Materials in Real Sources*, AI-Native Academia Workshop at NeurIPS 2026. A BibTeX entry will be added with the camera-ready version.
 
----
+## License
 
-### 📰 News
-
-> **[2026.1.6]** Instructional Agents is accepted by EACL 2026 Main Conference!
-
-### 📦 Releases
-
-> **[2026.4.15]** Released [Claude Code Skills](https://github.com/DaRL-GenAI/instructional_agents-skills) - invoke the pipeline directly from Claude Code: `/plugin install DaRL-GenAI/instructional_agents-skills`
->
-> **[2026.4.13]** Release [v1.1.0](https://github.com/DaRL-GenAI/instructional_agents/releases) - Added [LaTeX-to-PPTX conversion](#latex-to-pptx-conversion) with pptxgenjs, Slide Masters, react-icons, and shadow effects
->
-> **[2026.3.26]** Published on [PyPI](https://pypi.org/project/instructional-agents/) - `pip install instructional-agents`
-
-<details>
-<summary>History releases</summary>
-
-> **[2026.1.6]** [v1.0.0](https://github.com/DaRL-GenAI/instructional_agents/releases) - Initial release with core features - Thanks to all the contributors! ❤️
->
-> **[2026.1.4]** [v0.1.0](https://github.com/DaRL-GenAI/instructional_agents/releases) - Docker deployment and web interface support
-
-</details>
-
----
-
-## ✨ Features
-
-| Feature | Description |
-|---------|-------------|
-| 🤖 **Multi-Agent Collaboration** | Multiple specialized LLM agents working together based on ADDIE instructional design model |
-| 📚 **Automated Course Generation** | Generate complete course materials including syllabus, slides, scripts, and assessments |
-| 🎯 **Catalog Mode** | Use structured catalog files to guide course generation with student profiles and institutional requirements |
-| 🤝 **Copilot Mode** | Interactive mode for providing feedback during generation at each ADDIE phase |
-| 📊 **Real-time Progress** | Monitor generation progress with real-time logs, progress bars, and file updates |
-| 🌐 **Web Interface** | User-friendly web interface for course generation, progress monitoring, and file management |
-| 📁 **Multiple Usage Methods** | Support for web interface, command-line, and RESTful API |
-| 📄 **LaTeX/PDF Output** | Generate professional LaTeX slides and compile to PDF format |
-| 🎨 **PowerPoint (PPTX) Export** | Convert LaTeX Beamer slides to visually rich PPTX using pptxgenjs with icons, shadows, and Slide Masters |
-| ✅ **Automatic Evaluation** | Built-in evaluation system for assessing generated course materials |
-| 📖 **Textbook Grounding** | *(opt-in)* Ground course content in a PDF or markdown textbook; each slide is written from retrieved textbook evidence. An advisory verifier checks claim faithfulness and a Grounding Fidelity % is reported. Available on CLI, API, and Web UI. |
-
-### 🎬 How It Works
-
-<p align="center">
-  <img src="docs/process-video.gif" alt="ADDIE Pipeline: Multi-Agent Collaboration Process" width="720">
-</p>
-
----
-
-<a id="use-via-claude-code"></a>
-
-## 🤖 Use via Claude Code
-
-Invoke the full ADDIE pipeline and related tools directly from [Claude Code](https://claude.com/claude-code) — no Python boilerplate.
-
-```bash
-pip install instructional-agents
-/plugin install DaRL-GenAI/instructional_agents-skills
-```
-
-Then ask Claude in natural language: *"Generate a course on Reinforcement Learning"*, *"Convert this Beamer .tex to an editable .pptx"*, *"Evaluate these slides as a Program Chair"*. See the [skills repo](https://github.com/DaRL-GenAI/instructional_agents-skills) for all available commands.
-
----
-
-## 🚀 Quick Start (Docker - Recommended)
-
-This guide will walk you through the complete workflow from setup to viewing results.
-
-<details>
-<summary><b>Step 1: Environment Setup</b></summary>
-
-#### 1.1 Prerequisites
-
-- **Docker** and **Docker Compose** installed
-  - Check installation: `docker --version` and `docker-compose --version`
-  - Install: [Docker Desktop](https://www.docker.com/products/docker-desktop)
-- **OpenAI API Key**
-  - Get one from: https://platform.openai.com/api-keys
-
-#### 1.2 Configuration
-
-```bash
-# Clone the repository (if not already done)
-git clone <repository-url>
-cd instructional_agents
-
-# Create environment variables file
-cp .env.example .env
-
-# Edit .env file and add your OPENAI_API_KEY
-# OPENAI_API_KEY=your_api_key_here
-# API_PORT=8000
-```
-
-> **Note**: You can also configure the API key directly in the web interface (see Step 2.2). If you skip setting it in `.env`, you'll need to enter it in the frontend.
-
-#### 1.3 Start Docker Service
-
-```bash
-# Option 1: Use the start script (recommended)
-./start.sh
-
-# Option 2: Start manually
-docker-compose up -d
-
-# Verify service is running
-curl http://localhost:8000/health
-# Should return: {"status":"healthy","version":"1.0.0",...}
-```
-
-> **Tip**: If port 8000 is already in use, modify `API_PORT` in your `.env` file.
-
-</details>
-
----
-
-<details>
-<summary><b>Step 2: Access Web Interface</b></summary>
-
-#### 2.1 Open the Frontend
-
-**Option A: Direct file access** (simplest)
-```bash
-# Open frontend/index.html directly in your browser
-open frontend/index.html  # macOS
-# or double-click frontend/index.html in your file manager
-```
-
-**Option B: Local server** (recommended for better CORS support)
-```bash
-# Using Python
-cd frontend
-python -m http.server 8080
-# Then open http://localhost:8080/index.html in your browser
-```
-
-#### 2.2 Configure API Key
-
-1. In the web interface, locate the **"API Configuration"** section at the top
-2. Enter your OpenAI API Key in the input field
-3. Click **"Save API Key"** to save it (stored locally in your browser)
-4. The status indicator will show "✅ API Key Configured" when successful
-
-> **Note**: Your API key is only stored in your browser's local storage and never sent to any server except OpenAI during course generation.
-
-#### 2.3 Submit a Course Generation Task
-
-1. **Fill in the course configuration form**:
-   - **Course Name** (required): e.g., "Introduction to Machine Learning"
-   - **Model Selection**: Choose from GPT-4o Mini (recommended), GPT-4o, or GPT-4 Turbo
-   - **Experiment Name**: Leave as "default" or specify a custom name
-   - **Copilot Mode**: Enable for interactive feedback during generation (optional)
-   - **Catalog Mode**: 
-     - Select "Not Use" for basic generation
-     - Select "Upload Catalog File" to upload a custom catalog JSON
-     - Select "Use Default Catalog" to use the default catalog
-   - **Textbook grounding** *(optional)*: upload one or more PDF/markdown files via the picker labelled "Textbook grounding (optional)". Leave empty to skip.
-
-2. **Click "Generate Course"** to start the task
-
-3. To look at the Generation Procedure on the following, please go to Step 3 and 4:
-   - Progress bar showing completion percentage
-   - Current stage information
-   - Real-time logs stream
-
-</details>
-
----
-
-<details>
-<summary><b>Step 3: Monitor Progress and Logs</b></summary>
-
-If you need to view logs outside the web interface:
-
-```bash
-# View container logs in real-time
-docker-compose logs -f api
-
-# View last 100 lines
-docker-compose logs --tail=100 api
-
-# View logs for a specific time range
-docker-compose logs --since 30m api
-```
-
-</details>
-
----
-
-<details>
-<summary><b>Step 4: View Generated Results</b></summary>
-
-#### 4.1 Via Web Interface (Recommended)
-
-Once generation starts, the **"Generation Results"** section will appear showing:
-
-1. **File Location**:
-   - Displays the local path where files are saved
-   - Example: `/Users/your_username/PycharmProjects/instructional_agents/exp/your_experiment_name/`
-   - Quick actions:
-     - **📋 Copy Path**: Copy the path to clipboard
-     - **📂 Open Directory**: Open the directory in Finder/Explorer
-
-2. **File List** (updates incrementally):
-   - Files appear as they are generated (no need to wait for completion)
-   - Each file shows:
-     - File icon based on type (📝 .md, 📄 .tex, 📕 .pdf, 📋 .json)
-     - File name and size
-     - **🆕 New** badge for newly generated files
-     - **📥 Download** button for immediate download
-
-3. **File Organization**:
-   - Files are grouped by directory
-   - Foundation files (syllabus, goals, etc.) in the root
-   - Chapter materials in `chapter_1/`, `chapter_2/`, etc.
-
-#### 4.2 Via File System
-
-Generated files are saved in the `exp/` directory in your project folder:
-
-```bash
-# List all experiments
-ls exp/
-
-# View a specific experiment's structure
-ls -R exp/your_experiment_name/
-
-# Open in Finder (macOS)
-open exp/your_experiment_name/
-
-# Open in Explorer (Windows)
-explorer exp\\your_experiment_name\\
-
-# View course syllabus
-cat exp/your_experiment_name/result_syllabus_design.md
-
-# View generated slides PDF
-open exp/your_experiment_name/chapter_1/slides.pdf
-```
-
-**File Structure**:
-```
-exp/{experiment_name}/
-├── result_instructional_goals.md          # Learning objectives
-├── result_resource_assessment.md          # Resource assessment
-├── result_target_audience.md              # Target audience analysis
-├── result_syllabus_design.md              # Course syllabus (⭐ important)
-├── result_assessment_planning.md          # Assessment planning
-├── result_final_exam_project.md           # Final project design
-├── processed_chapters.json                # Chapter metadata
-├── statistics.json                        # Generation statistics
-│
-├── chapter_1/                             # Chapter 1 materials
-│   ├── slides.tex                         # LaTeX source
-│   ├── slides.pdf                         # Compiled PDF slides (⭐ ready to use)
-│   ├── slides.pptx                        # PowerPoint slides (⭐ editable)
-│   ├── script.md                          # Presentation script
-│   ├── assessment.md                      # Assessment materials
-│   └── statistics_slides_chapter_1.json   # Chapter statistics
-│
-├── chapter_2/                             # Chapter 2 materials
-│   └── ...
-└── ...
-```
-
-> **Tip**: Files are generated incrementally. You can download or view them as soon as they appear, without waiting for the entire generation to complete.
-
-For detailed file descriptions, see [Generated Files Guide](docs/FILES_GENERATED.md).
-
-</details>
-
----
-
-<details>
-<summary><b>Step 5: Next Steps</b></summary>
-
-See [Documentation](#-documentation) section below for detailed guides and references.
-
-</details>
-
----
-
-## 📦 Install via PyPI
-
-```bash
-pip install instructional-agents
-```
-
-After installation, you can run the CLI directly:
-
-```bash
-# Set your OpenAI API key
-export OPENAI_API_KEY=your_api_key_here
-
-# Generate a course
-instructional-agents "Introduction to Machine Learning"
-```
-
----
-
-## 🔧 Local Development Setup
-
-For developers who want to run the system locally from source:
-
-### 1. Prerequisites
-
-- Python 3.11+
-- pip
-- LaTeX (for PDF generation)
-  - macOS: `brew install --cask mactex`
-  - Ubuntu: `sudo apt-get install texlive-full`
-  - Windows: Install [MiKTeX](https://miktex.org/)
-- Node.js 18+ (for PPTX generation)
-  - macOS: `brew install node`
-  - Ubuntu: `sudo apt-get install nodejs npm`
-  - Windows: Install from [nodejs.org](https://nodejs.org/)
-
-### 2. Install Dependencies
-
-```bash
-# Vanilla install — minimal footprint, supports the standard
-# course-writing pipeline (no textbook grounding).
-pip install -e .
-
-# Light install + textbook grounding (`--use-textbook PATH`).
-# Adds pymupdf, markdown-it-py, rank-bm25, fastembed (ONNX-based
-# bi-encoder and cross-encoder via onnxruntime; no torch dep).
-# ~100 MB total on top of the base install.
-pip install -e ".[grounding]"
-
-# All-in-one (also installs the optional chromadb extras and any
-# grounding deps): keeps the prior `requirements.txt`-based workflow
-# working unchanged.
-pip install -r requirements.txt
-
-# Node.js dependencies (for PPTX generation)
-npm install -g pptxgenjs
-
-# Optional: install react-icons for slide icons (recommended)
-npm install -g react-icons react react-dom sharp
-```
-
-> **Note**: `pptxgenjs` is required for LaTeX-to-PPTX conversion. The `react-icons` + `sharp` packages are optional but recommended — they add topic-specific icons to each slide (e.g., 🤖 for agent topics, 🧠 for AI topics). Without them, slides will use simple geometric shapes instead.
-
-### 3. Configuration
-
-**Option A: Using config.json**
-```json
-{
-  "OPENAI_API_KEY": "your_openai_api_key_here"
-}
-```
-
-**Option B: Using environment variable**
-```bash
-export OPENAI_API_KEY=your_api_key_here
-```
-
-### 4. Start API Server
-
-```bash
-# Start the API server
-python api_server.py
-
-# Or use uvicorn directly with auto-reload
-uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
-```
-
-The API will be available at `http://localhost:8000`
-- API Documentation: http://localhost:8000/docs
-- Health Check: http://localhost:8000/health
-
----
-
-## 🚀 Usage Methods
-
-### Method 1: Web Interface (Recommended)
-
-The easiest way to use the system. See Step 2 above for detailed instructions.
-
-**Features**:
-- 📝 Visual course configuration form
-- 📊 Real-time progress monitoring
-- 📁 Result file browsing and download
-- 📤 Catalog file upload and management
-- 🔄 Real-time log streaming
-
-### Method 2: Command Line
-
-**Entry Point**: `run.py` – Main workflow entry point
-
-```bash
-# Simple course generation
-python run.py "Introduction to Machine Learning"
-
-# With specific model
-python run.py "Data Structures" --model gpt-4o-mini
-
-# With experiment name
-python run.py "Web Development" --exp web_dev_v1
-
-# Interactive copilot mode
-python run.py "Database Systems" --copilot
-
-# Use catalog mode
-python run.py "Software Engineering" --catalog
-
-# Use specific catalog file
-python run.py "AI Fundamentals" --catalog ai_catalog
-
-# Combine catalog and copilot
-python run.py "Educational Psychology" --copilot --catalog edu_psy
-
-# Ground the course in a textbook (PDF/markdown file or directory)
-python run.py "Data Mining" --catalog default_catalog \
-    --use-textbook path/to/textbook.pdf
-```
-
-**Minimal Working Example** (generates a small 3-week course in ~5 min):
-```bash
-python run.py "Intro to Python" --catalog mwe_catalog --exp mwe_test --seed 42
-```
-
-**Command Line Arguments**:
-```bash
-python run.py <course_name> [OPTIONS]
-
-Required:
-  course_name              Name of the course to design
-
-Options:
-  --copilot                Enable interactive copilot mode
-  --catalog [name]         Use structured data from catalog/ directory
-                           (optional: specify catalog name without '.json')
-  --model MODEL            OpenAI model to use (default: gpt-4o-mini)
-  --exp EXP_NAME           Experiment name for saving output (default: exp1)
-  --seed SEED              Random seed for reproducibility
-  --temperature TEMP       Sampling temperature for LLM
-  --use-textbook PATH      Ground course generation in a textbook (PDF or
-                           markdown file, or a directory of either). When
-                           omitted, generation runs identically to a vanilla
-                           run — no grounding is applied.
-  --only-chapters N[,N]    Generate only these 1-based chapters (e.g. "2,5");
-                           every other chapter is skipped. Pair with --resume
-                           to redo one chapter after feedback.
-  --no-strict-verification Grounded runs only: judge claims against the
-                           writer's excerpts (capped, cheaper) instead of the
-                           complete bound source with second-chance passes.
-  --verifier-model MODEL   Grounded runs only: model for the content-fidelity
-                           verifier (default: the verifier's own default).
-  --optimize STORAGE_ID    Optimize mode: provide storage_id of uploaded PDFs
-  --requirements TEXT      User requirements for optimization (with --optimize)
-  --chapter NAME           Specific chapter to optimize (with --optimize)
-```
-
-### Method 3: Direct API Calls
-
-**API Server**: `api_server.py` – RESTful API service
-
-```bash
-# Start API server first (if not using Docker)
-python api_server.py
-
-# Generate a course
-curl -X POST http://localhost:8000/api/course/generate \
-  -H "Content-Type: application/json" \
-  -H "X-OpenAI-API-Key: your_api_key_here" \
-  -d '{
-    "course_name": "Introduction to Machine Learning",
-    "model_name": "gpt-4o-mini",
-    "exp_name": "ml_intro_v1"
-  }'
-
-# Check task status
-curl http://localhost:8000/api/course/status/{task_id}
-
-# Get result files
-curl http://localhost:8000/api/course/results/{task_id}/files
-
-# Download a file
-curl http://localhost:8000/api/course/results/{task_id}/download/chapter_1/slides.pdf \
-  --output slides.pdf
-
-# Textbook grounding (optional) — upload a textbook, then pass its
-# returned `path` as `textbook_path` in /api/course/generate above
-curl -X POST http://localhost:8000/api/textbooks/upload \
-  -F "files=@chapter_1.pdf" -F "files=@chapter_2.pdf"
-curl http://localhost:8000/api/textbooks/list
-```
-
-For complete API documentation, see [API Documentation](docs/API_DOCUMENTATION.md).
-
----
-
-## 🔧 Core Modules
-
-| Module | Description | Usage |
-|--------|-------------|-------|
-| **Course Generation** | Generate complete course materials based on ADDIE model | Web interface, CLI (`run.py`), or RESTful API |
-| **Catalog Mode** | Use structured catalog files for guided generation | `--catalog` flag or upload in web interface |
-| **Copilot Mode** | Interactive feedback during generation | `--copilot` flag in CLI or enable in web interface |
-| **Textbook Grounding** | Ground content in a PDF/markdown textbook from retrieved evidence | `--use-textbook PATH` flag in CLI, `textbook_path` in API, file picker in web interface |
-| **Evaluation** | Automatic assessment of generated materials, with an optional Grounding Fidelity % | `python evaluate.py --exp <exp_name> [--rigorous]` |
-| **Web Interface** | Visual interface for course generation | Open `frontend/index.html` in browser |
-| **API Server** | RESTful API for programmatic access | `python api_server.py` or Docker |
-
----
-
-## 📚 Advanced Usage
-
-### Catalog Mode
-
-Catalog files provide structured input data to guide the course generation process. They include:
-- Student profiles and backgrounds
-- Instructor preferences and style
-- Course structure requirements
-- Assessment design preferences
-- Teaching constraints
-- Institutional requirements
-
-**Using Catalogs**:
-```bash
-# Use default catalog
-python run.py "Software Engineering" --catalog
-
-# Use a specific catalog file (without .json extension)
-python run.py "AI Fundamentals" --catalog ai_catalog
-# System looks for: catalog/ai_catalog.json
-
-# Upload catalog via web interface
-# In the web interface, select "上传 Catalog 文件" and upload your JSON file
-```
-
-See [API Documentation](docs/API_DOCUMENTATION.md#catalog-format) for catalog format details.
-
-### Copilot Mode
-
-Interactive mode that prompts for feedback after each phase of the ADDIE workflow:
-- **Analysis** phase: Review and provide feedback on learning goals, resource assessment, target audience
-- **Design** phase: Review and refine syllabus design, assessment planning, final project
-- **Development** phase: Review and adjust chapter materials as they're generated
-
-```bash
-python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
-```
-
-### Textbook Grounding
-
-**Why.** Instructional Agents writes course materials from the model's own knowledge. When a course is taught from a specific textbook, the slides should say what that book says, and an instructor should be able to check that they do. A generated sentence can be plausible, or even correct, and still not be supported by the assigned book. Giving the model the book is not enough on its own: a model with the complete chapter in its prompt still falls back on what it already knows, and loose retrieval pulls in passages from the wrong part of the book. This feature therefore controls *which* evidence the model may use at each step, and measures how much of what it writes the book actually supports.
-
-**What it adds** (opt-in; without `--use-textbook` nothing changes):
-
-1. **Textbook parsing.** A PDF or markdown textbook becomes a chapter → section → paragraph structure. Figures are kept as images, and equation images are converted to LaTeX.
-2. **Search index.** Paragraphs are split into ~512-token chunks and indexed for keyword (BM25) and semantic (embedding) search, combined by rank fusion.
-3. **Chapter binding.** Before any slide is written, each course week is bound to a small set of textbook sections.
-4. **Grounded writing.** Each slide is written from excerpts retrieved only from its week's bound sections, under explicit grounding rules. Textbook figures, captions and tables are carried onto the slides.
-5. **Fidelity check.** Every slide sentence is checked against the full text of the bound sections. A sentence counts as supported only when the judge quotes supporting text that is then found, mechanically, in the source. The result is written to `content_verification.json` per chapter; the check never edits the slides.
-
-**Results** (from the paper). Grounding Fidelity is the share of generated claims supported by the assigned textbook. On three matched chapters the grounded system reaches 77.5%, compared with 64.6% for the original generator given the complete chapter text. Across the twelve course weeks with assigned chapters, fidelity rises from 47.9% to 60.9%. Ablations show that chapter binding matters most: removing it drops fidelity below the original generator, even with retrieval kept.
-
-**Usage.** Pass `--use-textbook PATH` (a PDF, a markdown file, or a directory of either):
-
-```bash
-python run.py "Data Mining" --catalog default_catalog --exp dm_grounded \
-    --use-textbook path/to/textbook.pdf
-```
-
-`--only-chapters N[,N]` regenerates selected chapters, `--verifier-model MODEL` picks the model for the fidelity check, and `--no-strict-verification` switches to a cheaper check against the writer's excerpts only. Embeddings are cached on disk after the first ingest (one-time per textbook). Per-chapter generation is modestly slower than vanilla because prompts carry retrieved excerpts.
-
-**Citing.** Please cite Instructional Agents (above) and the textbook-grounding paper, *Citations Are Not Enough: Grounding AI-Generated Instructional Materials in Real Sources* (AI-Native Academia Workshop at NeurIPS 2026). A BibTeX entry will be added with the camera-ready version.
-
-**How the grounding works under the hood:**
-- The textbook is ingested (`pymupdf4llm`) into a chapter → section → paragraph IR; equation-shaped image crops are converted to native LaTeX by a focused VLM pass (cached). Paragraphs are chunked (~512 tokens) and indexed for BM25 + dense (`text-embedding-3-large`) retrieval.
-- Each chapter is decomposed into subtopics by the LLM; each subtopic is HyDE-expanded into a hypothetical textbook paragraph and used as a retrieval query. Per-section rankings across queries are fused via Reciprocal Rank Fusion (RRF, k=60), and a **book-relative gate** binds each chapter to its top sections. When nothing scores above the floor it still binds the best-scoring sections and records the low confidence in the contract rationale — a chapter left unbound would be written with no evidence at all.
-- The writer injects a per-slide block of retrieved evidence with mandatory grounding rules (teach in your own words, abstain if unsupported, preserve worked examples / math notation). Deterministic post-passes handle figure placement, textbook captions, navigation frames, and LaTeX cleanup.
-- After each chapter, an advisory content-fidelity verifier splits the deck into sentence-level claims (titles and headings are not claims) and judges every one against the complete text of the chapter's bound sections. Judging is quote-anchored: a "supported" verdict only counts if it carries a verbatim evidence quote that is checked mechanically; loosely quoted passes and first-pass flags each get one focused re-judge. The result is logged to `content_verification.json` (supported claims with their quotes, flagged claims with reasons) — log-only, it never edits the deck. `--no-strict-verification` falls back to the cheaper capped check against the writer's excerpts. This feeds the Grounding Fidelity metric in evaluation.
-
-### Automatic Evaluation
-
-**Entry Point**: `evaluate.py` – Automatic assessment and scoring
-
-```bash
-# Rubric scoring + Program-Chair / Test-Student validation
-python evaluate.py --exp web_dev_v1
-
-# Measurement-grade scoring + a binary Grounding Fidelity % on grounded runs
-python evaluate.py --exp dm_grounded --rigorous
-```
-
-Evaluation results are saved in the `eval/{experiment_name}/` directory. The default run is a 1–5 multi-agent rubric. `--rigorous` adds deterministic scoring (fixed seed, median-of-3), a `core_quality` headline (excluding metrics a slide deck structurally can't satisfy), and — on grounded runs — a **Grounding Fidelity %** aggregated from the per-chapter content-fidelity reports (claims supported vs. unsupported). That binary percentage is the sharp, A/B-comparable grounding signal the coarse 1–5 rubric can't provide.
-
-### LaTeX-to-PPTX Conversion
-
-Convert generated LaTeX Beamer slides to editable PowerPoint presentations with professional design:
-
-```bash
-# Convert a single chapter
-python -c "
-from src.latex_to_pptx import LaTeXToPPTXConverter
-converter = LaTeXToPPTXConverter()
-converter.convert('exp/my_course/chapter_1/slides.tex', 'exp/my_course/chapter_1/slides.pptx')
-"
-
-# Convert all chapters in a course
-python -c "
-from src.latex_to_pptx import LaTeXToPPTXConverter
-converter = LaTeXToPPTXConverter()
-converter.convert_directory('exp/my_course/')
-"
-```
-
-**PPTX Design Features:**
-- 🎨 **Midnight Executive palette** — navy/ice-blue/orange color scheme with Georgia/Calibri fonts
-- 📐 **Slide Masters** — consistent layouts via `CONTENT_MASTER`, `CONTENT_CODE`, and `DARK_MASTER`
-- 🌓 **Dark/light sandwich** — dark slides for title/conclusion, light for content
-- 🔤 **Smart icons** — topic-aware icons from react-icons (robot, brain, code, etc.) in colored circles
-- 🎭 **Varied layouts** — auto-detected: single-text, list-only, blocks, code, columns, mixed
-- 💫 **Visual polish** — shadows on blocks/code, sidebar accent motif, decorative circles
-- 📏 **Typography** — 36pt+ titles, 14-16pt body, auto-scaling for long titles
-
-**Architecture**: `LaTeX .tex → [Python LaTeXParser] → JSON → [Node.js pptxgenjs] → .pptx`
-
-### Background Execution with Logging
-
-For long-running tasks, run in the background:
-
-```bash
-# Run in background with log file
-nohup python run.py "Advanced Machine Learning" --exp ml_advanced > logs/ml_course.log 2>&1 &
-
-# Monitor progress
-tail -f logs/ml_course.log
-
-# Check process status
-ps aux | grep "python run.py"
-```
-
----
-
-## 📚 Example Workflows
-
-### Complete Course Design
-
-```bash
-# Step 1: Generate course using catalog
-python run.py "Python Fundamentals" \
-  --catalog python_catalog \
-  --model gpt-4o \
-  --exp py_course_v1
-
-# Step 2: Evaluate results
-python evaluate.py --exp py_course_v1
-
-# Step 3: Review generated materials
-open exp/py_course_v1/result_syllabus_design.md
-open exp/py_course_v1/chapter_1/slides.pdf
-```
-
-### Interactive Development (Copilot)
-
-```bash
-python run.py "Advanced Algorithms" --copilot --exp algo_course_v2
-
-# You'll be prompted for feedback after each phase:
-# - Analysis → feedback on goals, resources, audience
-# - Design → feedback on syllabus, assessments
-# - Development → feedback on chapter materials
-```
-
-### Textbook-Grounded Course
-
-```bash
-# Step 1: Generate course grounded in a textbook
-python run.py "Data Mining" --catalog default_catalog --exp dm_grounded \
-  --use-textbook path/to/textbook.pdf
-
-# Step 2: Evaluate with the Grounding Fidelity % (rigorous mode)
-python evaluate.py --exp dm_grounded --rigorous
-
-# Step 3: Review per-chapter content-fidelity logs (claims supported vs. unsupported)
-open exp/dm_grounded/chapter_1/content_verification.json
-```
-
----
-
-## 📖 Documentation
-
-| [API Documentation](docs/API_DOCUMENTATION.md) | [Docker Deployment](docs/README_DOCKER.md) | [Generated Files Guide](docs/FILES_GENERATED.md) |
-|------------------------------------------------|---------------------------------------------|---------------------------------------------------|
-| Complete API reference and endpoints           | Docker setup and deployment guide           | Detailed description of generated files          |
-
-| [Workflow Documentation](docs/WORKFLOW_DOCUMENTATION.md) | [Development Guide](docs/README.md) | |
-|----------------------------------------------------------|--------------------------------------|--|
-| System workflow and agent collaboration details          | Development and debugging documentation | |
-
----
-
-## ❓ FAQ
-
-<details>
-<summary><b>How to configure API key?</b></summary>
-
-**Checklist**
-- Get OpenAI API key from https://platform.openai.com/api-keys
-- Configure in `.env` file or web interface
-
-**Solutions**
-- **Option 1**: Set in `.env` file: `OPENAI_API_KEY=your_key_here`
-- **Option 2**: Configure in web interface (stored in browser local storage only)
-
-</details>
-
-<details>
-<summary><b>Port 8000 already in use?</b></summary>
-
-**Problem**
-
-Starting the service shows "port already in use" error.
-
-**Solution**
-
-```bash
-# macOS/Linux: Find and kill the process
-lsof -i :8000
-kill -9 <PID>
-
-# Or change port in .env file
-API_PORT=8001
-```
-
-</details>
-
-<details>
-<summary><b>How to use catalog files?</b></summary>
-
-**Checklist**
-- Catalog files should be in JSON format
-- Place catalog files in `catalog/` directory
-
-**Solutions**
-- **Default catalog**: Use `--catalog` without value to use `catalog/default_catalog.json`
-- **Custom catalog**: Use `--catalog my_catalog` to use `catalog/my_catalog.json`
-- **Web interface**: Upload catalog file directly in the web interface
-
-</details>
-
-<details>
-<summary><b>Where are generated files saved?</b></summary>
-
-**Answer**
-
-Generated files are saved in `exp/{experiment_name}/` directory:
-- Foundation files (syllabus, goals, etc.) in the root
-- Chapter materials in `chapter_1/`, `chapter_2/`, etc.
-- Files are generated incrementally and can be downloaded as soon as they appear
-
-</details>
-
-<details>
-<summary><b>Web interface cannot connect to backend?</b></summary>
-
-**Checklist**
-- Confirm backend is running (visit http://localhost:8000/docs or http://localhost:8000/health)
-- Check browser console for error messages
-- Verify API address configuration
-
-**Solution**
-
-- **Docker**: Ensure Docker container is running: `docker-compose ps`
-- **Local**: Ensure API server is running: `python api_server.py`
-- Check that the port matches (default: 8000)
-
-</details>
-
-<details>
-<summary><b>What models are supported?</b></summary>
-
-**Answer**
-
-Currently supports OpenAI models:
-- GPT-4o Mini (recommended, cost-effective)
-- GPT-4o
-- GPT-4 Turbo
-
-Configure via model selection in web interface or `--model` flag in CLI.
-
-</details>
-
----
-
-## 📜 License
-
-MIT License
+MIT License, as in Instructional Agents.
