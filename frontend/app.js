@@ -169,6 +169,8 @@ const translations = {
         modelOptionGpt4Turbo: 'GPT-4 Turbo',
         expNameLabel: 'Experiment Name',
         expNamePlaceholder: 'Default: default',
+        textbookFileLabel: 'Textbook Reference File (optional)',
+        textbookFileTip: 'Supports PDF/TXT/MD. The system extracts a bounded excerpt and saves a textbook catalog JSON for review.',
         copilotLabel: 'Enable Copilot Mode (Interactive Feedback)',
         catalogModeLabel: 'Catalog Mode',
         catalogOptionNone: 'Do not use',
@@ -238,6 +240,8 @@ const translations = {
         catalogListFailed: 'Failed to load catalog list',
         catalogSelectDefault: 'Select Catalog...',
         uploadCatalogFailed: 'Failed to upload catalog file',
+        uploadTextbookFailed: 'Failed to process textbook reference file',
+        textbookCatalogReady: 'Textbook catalog generated: {filename}',
         modeGenerate: 'Generate Course',
         modeOptimize: 'Optimize Materials',
         pptxLabel: 'Also generate PPTX slides',
@@ -511,6 +515,13 @@ function setupEventListeners() {
     const catalogMode = document.getElementById('catalog-mode');
     catalogMode.addEventListener('change', handleCatalogModeChange);
 
+    // Textbook file input: when a file is selected, disable catalog mode dropdown
+    // since the textbook will generate its own catalog automatically.
+    const textbookFile = document.getElementById('textbook-file');
+    if (textbookFile) {
+        textbookFile.addEventListener('change', handleTextbookFileChange);
+    }
+
     // API Key management
     document.getElementById('save-api-key').addEventListener('click', saveApiKey);
     document.getElementById('toggle-api-key').addEventListener('click', toggleApiKeyVisibility);
@@ -656,6 +667,27 @@ function handleCatalogModeChange(e) {
     }
 }
 
+function handleTextbookFileChange() {
+    const textbookInput = document.getElementById('textbook-file');
+    const catalogMode = document.getElementById('catalog-mode');
+    const note = document.getElementById('textbook-catalog-note');
+    const hasFile = textbookInput && textbookInput.files.length > 0;
+
+    if (hasFile) {
+        catalogMode.value = 'none';
+        catalogMode.disabled = true;
+        if (note) note.style.display = 'block';
+        // Hide any open catalog sub-groups
+        ['catalog-upload-group', 'catalog-select-group', 'catalog-json-group'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'none';
+        });
+    } else {
+        catalogMode.disabled = false;
+        if (note) note.style.display = 'none';
+    }
+}
+
 async function handleFormSubmit(e) {
     e.preventDefault();
     
@@ -683,32 +715,48 @@ async function handleFormSubmit(e) {
             generate_pptx: document.getElementById('pptx-mode').checked
         };
 
-        // Handle catalog
-        const catalogMode = document.getElementById('catalog-mode').value;
-        if (catalogMode === 'default') {
-            formData.catalog = 'default_catalog';
-        } else if (catalogMode === 'select') {
-            const selected = document.getElementById('catalog-select').value;
-            if (selected) {
-                formData.catalog = selected;
-            }
-        } else if (catalogMode === 'upload') {
-            // Handle file upload or JSON input
-            const fileInput = document.getElementById('catalog-file');
-            const jsonInput = document.getElementById('catalog-json').value;
+        // Handle optional textbook reference upload first.
+        // When a textbook file is provided, it takes priority — the catalog mode
+        // dropdown is ignored because the textbook generates its own catalog.
+        const textbookInput = document.getElementById('textbook-file');
+        if (textbookInput && textbookInput.files.length > 0) {
+            const textbookResponse = await uploadTextbookCatalog(
+                textbookInput.files[0],
+                formData.course_name
+            );
 
-            if (fileInput.files.length > 0) {
-                // Upload file first
-                const uploadResponse = await uploadCatalogFile(fileInput.files[0]);
-                formData.catalog = uploadResponse.filename.replace('.json', '');
-            } else if (jsonInput.trim()) {
-                // Use JSON input directly
-                try {
-                    formData.catalog_data = JSON.parse(jsonInput);
-                } catch (err) {
-                    alert(t('invalidCatalogJson'));
-                    setSubmitButtonLoading(false);
-                    return;
+            formData.catalog = textbookResponse.catalog_name;
+
+            console.log(t('textbookCatalogReady', { filename: textbookResponse.filename }));
+            await loadCatalogs();
+        } else {
+            // Handle catalog mode (only when no textbook is uploaded)
+            const catalogMode = document.getElementById('catalog-mode').value;
+            if (catalogMode === 'default') {
+                formData.catalog = 'default_catalog';
+            } else if (catalogMode === 'select') {
+                const selected = document.getElementById('catalog-select').value;
+                if (selected) {
+                    formData.catalog = selected;
+                }
+            } else if (catalogMode === 'upload') {
+                // Handle file upload or JSON input
+                const fileInput = document.getElementById('catalog-file');
+                const jsonInput = document.getElementById('catalog-json').value;
+
+                if (fileInput.files.length > 0) {
+                    // Upload file first
+                    const uploadResponse = await uploadCatalogFile(fileInput.files[0]);
+                    formData.catalog = uploadResponse.filename.replace('.json', '');
+                } else if (jsonInput.trim()) {
+                    // Use JSON input directly
+                    try {
+                        formData.catalog_data = JSON.parse(jsonInput);
+                    } catch (err) {
+                        alert(t('invalidCatalogJson'));
+                        setSubmitButtonLoading(false);
+                        return;
+                    }
                 }
             }
         }
@@ -797,6 +845,24 @@ async function uploadCatalogFile(file) {
 
     if (!response.ok) {
         throw new Error(t('uploadCatalogFailed'));
+    }
+
+    return await response.json();
+}
+
+async function uploadTextbookCatalog(file, courseName) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('course_name', courseName || '');
+
+    const response = await fetch(`${API_BASE_URL}/api/textbook/catalog`, {
+        method: 'POST',
+        body: formData
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`${t('uploadTextbookFailed')}: ${errorText}`);
     }
 
     return await response.json();
