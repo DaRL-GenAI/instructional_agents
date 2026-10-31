@@ -45,7 +45,6 @@ This branch adds an opt-in textbook mode to [Instructional Agents](https://githu
 <img src="docs/images/grounding-ablation.png" alt="Removing one part at a time on three matched chapters: full pipeline 77.5%, without structured parsing 67.6%, without grounding instructions 63.6%, without dense indexing 63.1%, without chapter binding 53.1%. The original generator with the full chapter scores 64.6%.">
 
 - The automated judge agrees with majority human labels on 90.8% of decidable claims.
-- Fidelity measures precision, not coverage. It shows how much of what was written the book supports, not how much of the book was taught.
 
 <details>
 <summary><b>Week-by-week results</b></summary>
@@ -122,7 +121,6 @@ exp/<name>/chapter_<N>/
 ## Known limitations
 
 - Broad survey weeks, such as an introduction or a review, match the book weakly and usually score lower.
-- A deck can score high on fidelity while covering only part of a chapter.
 - The judge is a language model. Its quotes are checked mechanically, but individual verdicts can still be wrong.
 
 ## Everything else
