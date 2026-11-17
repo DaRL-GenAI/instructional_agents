@@ -13,7 +13,7 @@
   <a href="https://github.com/DaRL-GenAI/instructional_agents"><img src="https://img.shields.io/github/stars/DaRL-GenAI/instructional_agents?style=for-the-badge&logo=github&logoColor=white&color=red" alt="GitHub Stars"></a>
 </p>
 
-[**Claude Code**](#use-via-claude-code) · [**Quick Start**](#-quick-start-docker---recommended) · [**Core Modules**](#-core-modules) · [**FAQ**](#-faq)
+[**Studio (no-code app)**](#studio) · [**Claude Code**](#use-via-claude-code) · [**Quick Start**](#-quick-start-docker---recommended) · [**Core Modules**](#-core-modules) · [**FAQ**](#-faq)
 
 [🇨🇳 中文](README.zh.md) · [🇬🇧 English](README.md)
 
@@ -73,6 +73,7 @@ An AI-powered instructional design system based on the ADDIE model for automated
 | 📁 **Multiple Usage Methods** | Support for web interface, command-line, and RESTful API |
 | 📄 **LaTeX/PDF Output** | Generate professional LaTeX slides and compile to PDF format |
 | 🎨 **PowerPoint (PPTX) Export** | Convert LaTeX Beamer slides to visually rich PPTX using pptxgenjs with icons, shadows, and Slide Masters |
+| 🧪 **Studio (no-code app)** | [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio): `npx instructional-agents` opens the pipeline in your browser, imports existing slides, and edits slides and Word files with Claude Code or Codex. [User guide](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md) |
 | ✅ **Automatic Evaluation** | Built-in evaluation system for assessing generated course materials |
 
 ### 🎬 How It Works
@@ -80,6 +81,23 @@ An AI-powered instructional design system based on the ADDIE model for automated
 <p align="center">
   <img src="docs/process-video.gif" alt="ADDIE Pipeline: Multi-Agent Collaboration Process" width="720">
 </p>
+
+---
+
+<a id="studio"></a>
+
+## 🧪 Studio: the no-code app for instructors
+
+[**Instructional Agents Studio**](https://github.com/DaRL-GenAI/instructional_agents_studio) runs this pipeline as an app on your own computer, with no Python or Docker:
+
+```bash
+npx instructional-agents     # needs Node.js 20.19+; opens the Studio in your browser
+```
+
+Generate a course from scratch, or open a folder of slides you already have and rebuild the syllabus and objectives
+from them. Slides and Word files open in a built-in editor, Claude Code and Codex run inside the app to edit any
+file in the course, and every change is kept as a version you can restore.
+**[Step-by-step user guide with screenshots](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md)** · [Browser edition (no install)](https://darl-genai.github.io/instructional_agents_studio/)
 
 ---
 
