@@ -13,7 +13,7 @@
   <a href="https://github.com/DaRL-GenAI/instructional_agents"><img src="https://img.shields.io/github/stars/DaRL-GenAI/instructional_agents?style=for-the-badge&logo=github&logoColor=white&color=red" alt="GitHub Stars"></a>
 </p>
 
-[**Studio（免代码应用）**](#studio) · [**Claude Code**](#use-via-claude-code) · [**快速开始**](#-快速开始docker-方式---推荐) · [**核心模块**](#-核心模块) · [**常见问题**](#-常见问题)
+[**Studio 应用**](#studio) · [**Claude Code**](#use-via-claude-code) · [**快速开始**](#-快速开始docker-方式---推荐) · [**核心模块**](#-核心模块) · [**常见问题**](#-常见问题)
 
 > 🚀 **Studio 应用已发布**：运行 `npx instructional-agents`，即可在自己电脑上使用 Instructional Agents，无需 Python 或 Docker。[开始使用](#studio) · [使用说明](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md)
 >
@@ -44,7 +44,7 @@
 
 ### 📰 最新动态
 
-> **[2026.11.17]** 🚀 免代码应用 [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio) 正式发布：`npx instructional-agents`（支持 Windows、macOS、Linux），详见[使用说明](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md)。
+> **[2026.11.17]** 🚀 备课应用 [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio) 正式发布：`npx instructional-agents`（支持 Windows、macOS、Linux），详见[使用说明](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md)。
 >
 > **[2026.11.14]** 🎬 姊妹项目 [EduCAST](https://darl-genai.github.io/EduCAST/)（个性化教学视频生成 + 闭环审查）被 AAAI-27 Demonstration Program 接收！欢迎试用 [Demo](https://darl-genai.github.io/EduCAST/demo/)。
 >
@@ -84,7 +84,7 @@
 | 📁 **多种使用方式** | 支持 Web 界面、命令行和 RESTful API |
 | 📄 **LaTeX/PDF 输出** | 生成专业的 LaTeX 幻灯片并编译为 PDF 格式 |
 | 🎨 **PowerPoint (PPTX) 导出** | 通过 pptxgenjs 将 LaTeX Beamer 幻灯片转换为精美的 PPTX，支持图标、阴影和 Slide Masters |
-| 🧪 **Studio（免代码应用）** | [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio)：`npx instructional-agents` 在浏览器里打开整套流程，可导入现成幻灯片，用 Claude Code 或 Codex 修改幻灯片和 Word 文件。[使用说明](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md) |
+| 🧪 **Studio 应用** | [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio)：`npx instructional-agents` 在浏览器里打开整套流程，可导入现成幻灯片，用 Claude Code 或 Codex 修改幻灯片和 Word 文件。[使用说明](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md) |
 | ✅ **自动评估** | 内置评估系统，用于评估生成的课程材料 |
 
 ### 🎬 工作流程
@@ -97,7 +97,7 @@
 
 <a id="studio"></a>
 
-## 🧪 Studio：给老师用的免代码应用
+## 🧪 Studio：给老师用的备课应用
 
 [**Instructional Agents Studio**](https://github.com/DaRL-GenAI/instructional_agents_studio) 把这套流程做成了在你自己电脑上运行的应用，不需要 Python 或 Docker：
 

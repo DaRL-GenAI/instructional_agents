@@ -13,7 +13,7 @@
   <a href="https://github.com/DaRL-GenAI/instructional_agents"><img src="https://img.shields.io/github/stars/DaRL-GenAI/instructional_agents?style=for-the-badge&logo=github&logoColor=white&color=red" alt="GitHub Stars"></a>
 </p>
 
-[**Studio (no-code app)**](#studio) · [**Claude Code**](#use-via-claude-code) · [**Quick Start**](#-quick-start-docker---recommended) · [**Core Modules**](#-core-modules) · [**FAQ**](#-faq)
+[**Studio app**](#studio) · [**Claude Code**](#use-via-claude-code) · [**Quick Start**](#-quick-start-docker---recommended) · [**Core Modules**](#-core-modules) · [**FAQ**](#-faq)
 
 > 🚀 **New: the Studio app is out.** Run `npx instructional-agents` to open Instructional Agents on your own computer, no Python or Docker needed. [Get started](#studio) · [User guide](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md)
 >
@@ -43,7 +43,7 @@ An AI-powered instructional design system based on the ADDIE model for automated
 
 ### 📰 News
 
-> **[2026.11.17]** 🚀 [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio), the no-code app for instructors, is released: `npx instructional-agents` (Windows, macOS, Linux). See the [user guide](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md).
+> **[2026.11.17]** 🚀 [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio), the course-building app for instructors, is released: `npx instructional-agents` (Windows, macOS, Linux). See the [user guide](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md).
 >
 > **[2026.11.14]** 🎬 Our sister project [EduCAST](https://darl-genai.github.io/EduCAST/), personalized lesson videos with closed-loop review, is accepted to the AAAI-27 Demonstration Program! Try the [demo](https://darl-genai.github.io/EduCAST/demo/).
 >
@@ -83,7 +83,7 @@ An AI-powered instructional design system based on the ADDIE model for automated
 | 📁 **Multiple Usage Methods** | Support for web interface, command-line, and RESTful API |
 | 📄 **LaTeX/PDF Output** | Generate professional LaTeX slides and compile to PDF format |
 | 🎨 **PowerPoint (PPTX) Export** | Convert LaTeX Beamer slides to visually rich PPTX using pptxgenjs with icons, shadows, and Slide Masters |
-| 🧪 **Studio (no-code app)** | [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio): `npx instructional-agents` opens the pipeline in your browser, imports existing slides, and edits slides and Word files with Claude Code or Codex. [User guide](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md) |
+| 🧪 **Studio app** | [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio): `npx instructional-agents` opens the pipeline in your browser, imports existing slides, and edits slides and Word files with Claude Code or Codex. [User guide](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md) |
 | ✅ **Automatic Evaluation** | Built-in evaluation system for assessing generated course materials |
 
 ### 🎬 How It Works
@@ -96,7 +96,7 @@ An AI-powered instructional design system based on the ADDIE model for automated
 
 <a id="studio"></a>
 
-## 🧪 Studio: the no-code app for instructors
+## 🧪 Studio: the course-building app for instructors
 
 [**Instructional Agents Studio**](https://github.com/DaRL-GenAI/instructional_agents_studio) runs this pipeline as an app on your own computer, with no Python or Docker:
 
