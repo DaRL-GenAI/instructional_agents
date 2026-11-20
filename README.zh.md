@@ -15,6 +15,10 @@
 
 [**Studio（免代码应用）**](#studio) · [**Claude Code**](#use-via-claude-code) · [**快速开始**](#-快速开始docker-方式---推荐) · [**核心模块**](#-核心模块) · [**常见问题**](#-常见问题)
 
+> 🚀 **Studio 应用已发布**：运行 `npx instructional-agents`，即可在自己电脑上使用 Instructional Agents，无需 Python 或 Docker。[开始使用](#studio) · [使用说明](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md)
+>
+> 🎬 **[EduCAST](https://darl-genai.github.io/EduCAST/)**（AAAI-27 Demo）：输入主题和学习者画像，生成带旁白、可互动的教学视频。[项目主页](https://darl-genai.github.io/EduCAST/) · [Demo](https://darl-genai.github.io/EduCAST/demo/) · [代码](https://github.com/DaRL-GenAI/EduCAST)
+
 [🇬🇧 English](README.md) · [🇨🇳 中文](README.zh.md)
 
 ![visitors](https://visitor-badge.laobi.icu/badge?page_id=DaRL-GenAI.instructional_agents&style=flat)
@@ -40,10 +44,16 @@
 
 ### 📰 最新动态
 
+> **[2026.11.17]** 🚀 免代码应用 [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio) 正式发布：`npx instructional-agents`（支持 Windows、macOS、Linux），详见[使用说明](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md)。
+>
+> **[2026.11.14]** 🎬 姊妹项目 [EduCAST](https://darl-genai.github.io/EduCAST/)（个性化教学视频生成 + 闭环审查）被 AAAI-27 Demonstration Program 接收！欢迎试用 [Demo](https://darl-genai.github.io/EduCAST/demo/)。
+>
 > **[2026.1.6]** Instructional Agents 被EACL 2026主会接收！
 
 ### 📦 版本发布
 
+> **[2026.11.17]** [Studio](https://github.com/DaRL-GenAI/instructional_agents_studio) 0.1.1 发布到 [npm](https://www.npmjs.com/package/instructional-agents) - `npx instructional-agents` 以本地应用运行完整流水线：导入已有幻灯片、在内置编辑器中修改幻灯片和 Word 文件、用 Claude Code 或 Codex 修改课程中的任意文件
+>
 > **[2026.4.15]** 发布 [Claude Code Skills](https://github.com/DaRL-GenAI/instructional_agents-skills) - 在 Claude Code 中直接调用本项目流水线：`/plugin install DaRL-GenAI/instructional_agents-skills`
 >
 > **[2026.4.13]** 发布 [v1.1.0](https://github.com/DaRL-GenAI/instructional_agents/releases) - 新增 [LaTeX 转 PPTX](#latex-转-pptx) 功能，支持 pptxgenjs、Slide Masters、react-icons 图标和阴影效果

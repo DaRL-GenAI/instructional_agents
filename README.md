@@ -15,6 +15,10 @@
 
 [**Studio (no-code app)**](#studio) · [**Claude Code**](#use-via-claude-code) · [**Quick Start**](#-quick-start-docker---recommended) · [**Core Modules**](#-core-modules) · [**FAQ**](#-faq)
 
+> 🚀 **New: the Studio app is out.** Run `npx instructional-agents` to open Instructional Agents on your own computer, no Python or Docker needed. [Get started](#studio) · [User guide](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md)
+>
+> 🎬 **New: [EduCAST](https://darl-genai.github.io/EduCAST/)** (AAAI-27 Demo) turns a topic and a learner profile into a narrated, interactive lesson video. [Project page](https://darl-genai.github.io/EduCAST/) · [Demo](https://darl-genai.github.io/EduCAST/demo/) · [Code](https://github.com/DaRL-GenAI/EduCAST)
+
 [🇨🇳 中文](README.zh.md) · [🇬🇧 English](README.md)
 
 ![visitors](https://visitor-badge.laobi.icu/badge?page_id=DaRL-GenAI.instructional_agents&style=flat)
@@ -39,10 +43,16 @@ An AI-powered instructional design system based on the ADDIE model for automated
 
 ### 📰 News
 
+> **[2026.11.17]** 🚀 [Instructional Agents Studio](https://github.com/DaRL-GenAI/instructional_agents_studio), the no-code app for instructors, is released: `npx instructional-agents` (Windows, macOS, Linux). See the [user guide](https://github.com/DaRL-GenAI/instructional_agents_studio/blob/main/docs/user-guide.md).
+>
+> **[2026.11.14]** 🎬 Our sister project [EduCAST](https://darl-genai.github.io/EduCAST/), personalized lesson videos with closed-loop review, is accepted to the AAAI-27 Demonstration Program! Try the [demo](https://darl-genai.github.io/EduCAST/demo/).
+>
 > **[2026.1.6]** Instructional Agents is accepted by EACL 2026 Main Conference!
 
 ### 📦 Releases
 
+> **[2026.11.17]** Released [Studio](https://github.com/DaRL-GenAI/instructional_agents_studio) 0.1.1 on [npm](https://www.npmjs.com/package/instructional-agents) - `npx instructional-agents` runs the full pipeline as a local app: import existing slides, edit slides and Word files in a built-in editor, and revise any file with Claude Code or Codex
+>
 > **[2026.4.15]** Released [Claude Code Skills](https://github.com/DaRL-GenAI/instructional_agents-skills) - invoke the pipeline directly from Claude Code: `/plugin install DaRL-GenAI/instructional_agents-skills`
 >
 > **[2026.4.13]** Release [v1.1.0](https://github.com/DaRL-GenAI/instructional_agents/releases) - Added [LaTeX-to-PPTX conversion](#latex-to-pptx-conversion) with pptxgenjs, Slide Masters, react-icons, and shadow effects
